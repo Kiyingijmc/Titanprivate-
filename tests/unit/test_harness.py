@@ -45,5 +45,18 @@ class WinRateCI(unittest.TestCase):
         self.assertEqual(bt.win_rate_ci(0, 0), (0.0, 0.0, 0.0))
 
 
+class TradesInWindow(unittest.TestCase):
+    def _t(self, hour, outcome="TP", r=1.0):
+        return {"time": f"2026-01-01 {hour:02d}:30:00", "outcome": outcome, "r": r}
+
+    def test_filters_by_entry_hour(self):
+        trades = [self._t(2), self._t(3), self._t(10), self._t(11), self._t(23)]
+        got = [int(t["time"][11:13]) for t in bt.trades_in_window(trades, [(2, 4), (10, 11)])]
+        self.assertEqual(got, [2, 3, 10])
+
+    def test_empty_window(self):
+        self.assertEqual(bt.trades_in_window([self._t(5)], [(8, 9)]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -192,6 +192,17 @@ def win_rate_ci(wins, n, z=1.96):
     return (p, max(0.0, centre - margin), min(1.0, centre + margin))
 
 
+def _trade_hour(t):
+    tm = t["time"]
+    if hasattr(tm, "hour"):
+        return tm.hour
+    return int(str(tm).split()[1].split(":")[0])
+
+def trades_in_window(trades, windows):
+    """Keep trades whose entry hour falls in any [start, end) window."""
+    return [t for t in trades if any(s <= _trade_hour(t) < e for s, e in windows)]
+
+
 # 3. Mock Logger for Backtesting (Silent)
 class MockLogger:
     def log_event(self, t, m, msg, p=None): pass
@@ -212,14 +223,15 @@ class Backtester:
     - Enforces Numeric Types (cleaning dirty strings).
     - Removes Duplicate Columns to prevent pandas crashes.
     """
-    def __init__(self, csv_path, shift_hours=-7):
+    def __init__(self, csv_path, shift_hours=-7, only=None):
         self.csv_path = csv_path
         self.shift_hours = shift_hours
+        self.only = only
         self.logger = MockLogger()
         self.strategies = []
         self.m5_df = pd.DataFrame()
         self.h1_df = pd.DataFrame()
-        
+
         self._bias_h1_n = -1
         self._bias_cache = ("NEUTRAL", {})
         self._load_and_process_data()
@@ -326,6 +338,8 @@ class Backtester:
         self.strategies.append(UnicornModel(TEST_CONFIG['unicorn_model'], self.logger))
         self.strategies.append(ICT_OTE(TEST_CONFIG['ict_ote'], self.logger))
         self.strategies.append(CandleRangeTheory(TEST_CONFIG['crt'], self.logger))
+        if self.only:
+            self.strategies = [s for s in self.strategies if s.name == self.only]
 
     async def run(self, trades_out=None, equity=10000.0, risk_pct=1.0, split=0.7,
                   specs_path="data/specs.json", costs=True):
@@ -476,6 +490,7 @@ if __name__ == "__main__":
     p.add_argument("--split", type=float, default=0.7)
     p.add_argument("--specs", default="data/specs.json")
     p.add_argument("--no-costs", action="store_true")
+    p.add_argument("--only", default=None)
     a = p.parse_args()
 
     target = a.csv
@@ -488,6 +503,6 @@ if __name__ == "__main__":
         print("❌ No CSV found. Pass --csv <path>.")
         sys.exit(1)
 
-    engine = Backtester(target, shift_hours=a.shift)
+    engine = Backtester(target, shift_hours=a.shift, only=a.only)
     asyncio.run(engine.run(trades_out=a.trades_out, equity=a.equity, risk_pct=a.risk_pct,
                            split=a.split, specs_path=a.specs, costs=not a.no_costs))

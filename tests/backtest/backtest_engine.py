@@ -148,7 +148,7 @@ def simulate_signals(signals, bars):
     return trades
 
 
-def trade_dollars(r, entry, sl, spec, spread_points, commission_per_lot, risk_dollars):
+def trade_dollars(r, entry, sl, spec, spread_points, commission_per_lot, risk_dollars, max_lots=5.0):
     """Convert an R-multiple trade into dollars net of spread + commission, sizing from
     broker tick specs at a fixed risk. Indicative costs (spread is an assumption).
 
@@ -165,6 +165,7 @@ def trade_dollars(r, entry, sl, spec, spread_points, commission_per_lot, risk_do
     if money_per_lot <= 0:
         return {"lots": 0.0, "gross": 0.0, "commission": 0.0, "spread_cost": 0.0, "net": 0.0}
     lots = _math.floor((risk_dollars / money_per_lot) / step) * step
+    lots = min(lots, max_lots)  # cap (mirrors RiskManager hard_max_lots; prevents tiny-stop blowups)
     gross = r * risk_dollars
     commission = lots * commission_per_lot
     spread_cost = spread_points * tick_value * lots

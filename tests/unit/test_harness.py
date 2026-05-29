@@ -22,6 +22,13 @@ class TradeDollars(unittest.TestCase):
         self.assertEqual(d["lots"], 0.0)
         self.assertEqual(d["net"], 0.0)
 
+    def test_lots_capped_to_hard_max(self):
+        # 1-tick stop -> money/lot tiny -> would size to ~100 lots; must cap at 5.0
+        spec = {"tick_value": 1.0, "tick_size": 0.00001, "vol_step": 0.01}
+        d = bt.trade_dollars(r=-1.0, entry=1.10000, sl=1.09999, spec=spec,
+                             spread_points=10, commission_per_lot=7.0, risk_dollars=100.0)
+        self.assertLessEqual(d["lots"], 5.0)
+
 
 class SplitTrades(unittest.TestCase):
     def test_70_30_chronological(self):

@@ -23,19 +23,33 @@ class SilverBullet(BaseStrategy):
     def __init__(self, config, logger):
         super().__init__("SilverBullet", config, logger)
         
-        # Parse Config Time (Robust)
-        times = config.get('session_ny', ["10:00", "11:00"])
-        try:
-            self.start_h = int(times[0].split(':')[0])
-            self.end_h = int(times[1].split(':')[0])
-        except (ValueError, IndexError):
-            self.logger.log_event("WARN", "STRATEGY", "SilverBullet Config Invalid. Defaulting to 10:00-11:00.")
-            self.start_h = 10
-            self.end_h = 11
-            
+        # Timing windows (broker-time hours, end exclusive). Prefer multi-window
+        # 'windows'; fall back to the legacy single 'session_ny' window.
+        self.windows = self._parse_windows(config)
         self.rr = config.get('risk_reward', 2.0)
 
-    async def analyze_tick(self, tick_data, history_df): 
+    def _parse_windows(self, config):
+        raw = config.get('windows')
+        if raw:
+            out = []
+            for w in raw:
+                try:
+                    out.append((int(str(w[0]).split(':')[0]), int(str(w[1]).split(':')[0])))
+                except (ValueError, IndexError, TypeError):
+                    continue
+            if out:
+                return out
+        times = config.get('session_ny', ["10:00", "11:00"])
+        try:
+            return [(int(str(times[0]).split(':')[0]), int(str(times[1]).split(':')[0]))]
+        except (ValueError, IndexError):
+            self.logger.log_event("WARN", "STRATEGY", "SilverBullet timing config invalid; default 10-11.")
+            return [(10, 11)]
+
+    def _in_window(self, hour):
+        return any(start <= hour < end for start, end in self.windows)
+
+    async def analyze_tick(self, tick_data, history_df):
         # Low frequency strategy (Candle close only)
         pass
 
@@ -59,7 +73,7 @@ class SilverBullet(BaseStrategy):
             return None
             
         # Strict Window Check (e.g. 10 <= Hour < 11)
-        if not (self.start_h <= h_part < self.end_h): 
+        if not self._in_window(h_part):
             return None
 
         # Get latest closed candle

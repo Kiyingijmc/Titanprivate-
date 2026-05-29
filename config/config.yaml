@@ -54,7 +54,7 @@ strategies:
   # 2. Unicorn (Breaker + FVG + Sweep)
   # Requires Liquidity Sweep confirmation before entry
   unicorn_model:
-    enabled: true
+    enabled: false
     scan_depth: 50     # Lookback candles for Breaker Block
     min_atr_size: 1.5  # Displacement Strength threshold
     pairs: ["BTCUSD", "EURUSD", "GBPUSD", "XAUUSD", "GBPJPY", "USDJPY"]
@@ -62,7 +62,7 @@ strategies:
   # 3. ICT OTE (Trend Continuation)
   # Optimal Trade Entry (Fibo 0.705)
   ict_ote:
-    enabled: true
+    enabled: false
     ote_level: 0.705
     min_swing_atr: 2.0 # Swing depth requirement
     pairs: ["EURUSD", "GBPUSD", "AUDUSD", "BTCUSD", "USDCAD", "XAUUSD"]
@@ -70,7 +70,7 @@ strategies:
   # 4. CRT (Mean Reversion - Counter Trend)
   # Candle Range Theory: Previous Day High/Low sweeps
   crt:
-    enabled: true
+    enabled: false
     trend_filter: true # If True: Only fade Highs in Bear Trend / Lows in Bull Trend
     active_hours: [2, 17] # Broker Time active window
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]

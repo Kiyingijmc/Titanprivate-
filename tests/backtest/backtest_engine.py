@@ -280,7 +280,7 @@ class Backtester:
         self.strategies.append(ICT_OTE(TEST_CONFIG['ict_ote'], self.logger))
         self.strategies.append(CandleRangeTheory(TEST_CONFIG['crt'], self.logger))
 
-    async def run(self):
+    async def run(self, trades_out=None):
         print("\n--- STARTING OPTIMIZED BACKTEST ---")
         start_time = time.time()
         signals = []
@@ -327,53 +327,80 @@ class Backtester:
                 
                 if decision:
                     sig_type = decision['signal']
-                    price = decision['price']
-                    
+
                     if strat.name != "CRT":
                         if (htf_bias == "BULLISH" and sig_type == "SELL") or \
                            (htf_bias == "BEARISH" and sig_type == "BUY"):
                                continue
-                    
+
                     signals.append({
                         'time': current_time,
                         'strat': strat.name,
-                        'type': sig_type,
-                        'price': price,
-                        'bias_confluence': (sig_type == "BUY" and htf_bias=="BULLISH") or (sig_type == "SELL" and htf_bias=="BEARISH")
+                        'dir': sig_type,
+                        'cmd': decision['type'],
+                        'entry': float(decision['price']),
+                        'sl': float(decision['sl']),
+                        'tp': float(decision['tp']),
+                        'ttl_bars': 12 if "Silver" in strat.name else 24,
+                        'bar_idx': i,
                     })
 
+        bars = enriched_m5[['open', 'high', 'low', 'close']].to_dict('records')
+        trades = simulate_signals(signals, bars)
         duration = time.time() - start_time
-        self._print_results(signals, duration)
+        self._report(trades, duration, trades_out)
+        return trades
 
-    def _print_results(self, signals, duration):
-        print("\n" + "="*50)
-        print(f"SIMULATION COMPLETE in {duration:.2f}s")
-        print(f"TRADES GENERATED: {len(signals)}")
-        print("="*50)
-        
-        tally = {}
-        for s in signals:
-            name = s['strat']
-            tally[name] = tally.get(name, 0) + 1
-        
-        for name, count in tally.items():
-            print(f" - {name}: {count}")
-            
-        confluence_trades = len([s for s in signals if s['bias_confluence']])
-        pct = int(confluence_trades/len(signals)*100) if signals else 0
-        print(f"\nContext Alignment: {confluence_trades}/{len(signals)} ({pct}%)")
+    def _report(self, trades, duration, trades_out=None):
+        print("\n" + "=" * 60)
+        print(f"BACKTEST COMPLETE in {duration:.1f}s | {len(trades)} trades taken")
+        print("=" * 60)
+
+        def line(name, m):
+            print(f"\n[{name}]")
+            print(f"  trades={m['trades']}  win%={m['win_rate']*100:.1f}  "
+                  f"expectancy={m['expectancy']:+.2f}R  totalR={m['total_r']:+.2f}")
+            pf = m['profit_factor']
+            pf_str = "inf" if pf == float('inf') else f"{pf:.2f}"
+            print(f"  PF={pf_str}  maxDD={m['max_drawdown_r']:.2f}R  "
+                  f"avgW={m['avg_win']:+.2f}R avgL={m['avg_loss']:+.2f}R  "
+                  f"streak={m['max_losing_streak']}  expired={m['expired']} open={m['open_at_end']}")
+
+        by_strat = {}
+        for t in trades:
+            by_strat.setdefault(t['strat'], []).append(t)
+        for name in sorted(by_strat):
+            line(name, aggregate_metrics(by_strat[name]))
+        line("COMBINED", aggregate_metrics(trades))
+
+        if trades_out:
+            import csv
+            keys = ['time', 'strat', 'dir', 'cmd', 'entry', 'sl', 'tp',
+                    'outcome', 'r', 'bar_idx', 'fill_offset', 'exit_offset']
+            with open(trades_out, 'w', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
+                w.writeheader()
+                for t in trades:
+                    w.writerow(t)
+            print(f"\n[CSV] wrote {len(trades)} trades -> {trades_out}")
 
 if __name__ == "__main__":
-    target = None
-    candidates = ["test_data.csv", "../../test_data.csv", "data/history/EURUSD_M5.csv"]
-    
-    for c in candidates:
-        if os.path.exists(c):
-            target = c
-            break
-            
-    if target:
-        bt = Backtester(target, shift_hours=-7)
-        asyncio.run(bt.run())
-    else:
-        print("❌ 'test_data.csv' not found. Place a CSV in the folder.")
+    import argparse
+    p = argparse.ArgumentParser(description="Signal-edge PnL backtest (R-multiples).")
+    p.add_argument("--csv", default=None, help="path to OHLC CSV (default: auto-discover)")
+    p.add_argument("--shift", type=int, default=-7, help="hours to shift broker time toward NY")
+    p.add_argument("--trades-out", default=None, help="optional path to write a per-trade CSV")
+    a = p.parse_args()
+
+    target = a.csv
+    if not target:
+        for c in ["test_data.csv", "../../test_data.csv", "data/history/EURUSD_M5.csv"]:
+            if os.path.exists(c):
+                target = c
+                break
+    if not target:
+        print("❌ No CSV found. Pass --csv <path>.")
+        sys.exit(1)
+
+    engine = Backtester(target, shift_hours=a.shift)
+    asyncio.run(engine.run(trades_out=a.trades_out))

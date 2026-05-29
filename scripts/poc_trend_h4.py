@@ -13,7 +13,8 @@ import backtest_engine as bt  # noqa: E402
 
 def resample_h4(m5_df):
     df = m5_df.copy()
-    df["time"] = pd.to_datetime(df["time"])
+    tcol = "time" if "time" in df.columns else "datetime"  # exported CSVs use 'datetime'
+    df["time"] = pd.to_datetime(df[tcol])
     df = df.set_index("time")
     h4 = df.resample("4h").agg({"open": "first", "high": "max",
                                 "low": "min", "close": "last"}).dropna()
@@ -79,3 +80,76 @@ def net_r_after_costs(r, entry, sl, spread_price, tick_size, tick_value, comm_rt
     money_per_lot = (stop / tick_size) * tick_value
     cost = 2 * spread_price / stop + (comm_rt / money_per_lot if money_per_lot > 0 else 0.0)
     return r - cost
+
+
+SYMS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "GBPCAD",
+        "GBPJPY", "XAUUSD", "US30", "BTCUSD", "XBRUSD"]
+# Typical weekday spreads in price (confirm live later); wide structural stops -> robust.
+SPREAD = {"EURUSD": 0.00010, "GBPUSD": 0.00016, "USDJPY": 0.013, "AUDUSD": 0.00016,
+          "USDCAD": 0.00020, "GBPCAD": 0.00040, "GBPJPY": 0.025, "XAUUSD": 0.25,
+          "US30": 2.0, "BTCUSD": 8.0, "XBRUSD": 0.03}
+
+
+def _signals_to_dicts(signals, h4, atrs, stop_mult=2.0, rr=3.0):
+    """Build resolve_trade-style signal dicts (fixed-RR variant) from Donchian breakouts."""
+    out = []
+    for i, d in signals:
+        risk = stop_mult * atrs[i]
+        if not (risk > 0):
+            continue
+        entry = float(h4["close"].iloc[i])
+        is_long = d == "LONG"
+        sl = entry - risk if is_long else entry + risk
+        tp = entry + rr * risk if is_long else entry - rr * risk
+        out.append({"bar_idx": i, "dir": "BUY" if is_long else "SELL", "cmd": "MARKET",
+                    "entry": entry, "sl": sl, "tp": tp, "ttl_bars": 1})
+    return out
+
+
+def _net(trades, sym):
+    """Attach net-of-cost R to each trade using sym specs + typical spread."""
+    import json
+    sp = SPREAD.get(sym, 0.0002)
+    specs = json.load(open("data/specs.json")) if os.path.exists("data/specs.json") else {}
+    spec = specs.get(sym, {"tick_size": 1e-5, "tick_value": 1.0})
+    for t in trades:
+        t["r"] = net_r_after_costs(t["r"], t["entry"], t["sl"], sp,
+                                   spec["tick_size"], spec["tick_value"])
+        t["outcome"] = "TP" if t["r"] > 0 else "SL"   # so aggregate_metrics counts it
+    return trades
+
+
+def main():
+    flip_all, rr_all = [], []
+    for s in SYMS:
+        path = f"data/history/{s}_M5.csv"
+        if not os.path.exists(path):
+            continue
+        m5 = pd.read_csv(path)
+        h4 = resample_h4(m5)
+        atrs = atr_series(h4).fillna(0.0).values
+        sigs = donchian_signals(h4, n=20)
+        flip_all += _net(simulate_flip(sigs, h4.to_dict("records"), atrs, stop_mult=2.0), s)
+        rr = bt.simulate_signals(_signals_to_dicts(sigs, h4, atrs),
+                                 h4[["open", "high", "low", "close"]].to_dict("records"))
+        rr_all += _net(rr, s)
+
+    def report(name, trades):
+        m = bt.aggregate_metrics(trades)
+        p, lo, hi = bt.win_rate_ci(m["wins"], m["trades"])
+        norm = [{**t, "bar_idx": t.get("entry_idx", t.get("bar_idx", 0))} for t in trades]
+        _, test = bt.split_trades(norm, 0.7)
+        mt = bt.aggregate_metrics(test)
+        pt, _, _ = bt.win_rate_ci(mt["wins"], mt["trades"])
+        flag = " [insuf n<30]" if m["trades"] < 30 else ""
+        print(f"{name:14} n={m['trades']:4d} win={p*100:4.1f}% CI[{lo*100:.0f}-{hi*100:.0f}] "
+              f"netExpR={m['expectancy']:+.3f} totR={m['total_r']:+.1f} PF={m['profit_factor']:.2f} "
+              f"DD={m['max_drawdown_r']:.0f}R | TEST n={mt['trades']} exp={mt['expectancy']:+.3f}{flag}")
+
+    print("H4 Donchian(20) trend PoC -- NET OF COSTS, pooled across instruments\n")
+    report("SIGNAL-FLIP", flip_all)
+    report("FIXED-3R", rr_all)
+
+
+if __name__ == "__main__":
+    main()

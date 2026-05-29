@@ -85,7 +85,7 @@ class SystemController:
         offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
         self.time_engine = TimeNormalizer(broker_gmt_offset=offset)
         
-        self.risk_manager = RiskManager(self.config)
+        self.risk_manager = RiskManager(self.config, self.logger)
         self.exposure_manager = ExposureManager(self.config, self.market_data)
         self.news_manager = NewsManager(self.logger)
         

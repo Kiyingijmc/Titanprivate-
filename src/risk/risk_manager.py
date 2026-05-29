@@ -9,6 +9,7 @@
 # ==============================================================================
 
 import math
+from decimal import Decimal
 from src.utils.instrument import InstrumentHelper
 
 class RiskManager:
@@ -19,8 +20,9 @@ class RiskManager:
     - Implements Quantized Price Normalization (Supports non-power-of-10 ticks).
     - Enforces Broker-Specific Contract Specs over Generic Fallbacks.
     """
-    def __init__(self, config):
+    def __init__(self, config, logger=None):
         self.config = config['risk']
+        self.logger = logger  # optional AuditLogger; used to surface skipped trades
         
         # Original oper.txt constants
         self.max_dd = self.config['account']['max_daily_drawdown_pct']
@@ -86,9 +88,12 @@ class RiskManager:
             # We calculate required precision based on the tick size string logic or log10 just for formatting
             precision = 0
             if tick_size < 1:
-                # reliable string counting for formatting
-                precision = len(str(float(tick_size)).split('.')[1])
-                
+                # Count decimal places via Decimal's exponent. This handles
+                # sub-0.0001 ticks (e.g. 5-digit forex 0.00001) that Python
+                # renders in scientific notation ("1e-05"), which the previous
+                # str().split('.') logic could not parse (see boot_crash.log).
+                precision = max(0, -Decimal(str(tick_size)).as_tuple().exponent)
+
             return round(normalized, precision)
         
         # Fallback to InstrumentHelper if no specs from Broker
@@ -111,8 +116,9 @@ class RiskManager:
 
     def calculate_lot_size(self, entry, sl, symbol, htf_bias="NEUTRAL") -> float:
         """
-        FULL POSITION SIZER (Restored oper.txt Logic)
-        Includes: Net Risk Adjustment, Hard Caps, and Asset Fallbacks.
+        FULL POSITION SIZER.
+        Sizes from broker tick_value/tick_size (any asset class); includes Net
+        Risk Adjustment and Hard Caps. Fails safe (returns 0) without specs.
         """
         # 1. Circuit Breaker
         if not self.check_can_trade(): 
@@ -126,40 +132,29 @@ class RiskManager:
         diff = abs(entry - sl)
         if diff == 0: return 0.0
 
+        # 3. BROKER-SPEC SIZING (the only correct, asset-agnostic path).
+        # Sizing requires real tick_value/tick_size from MT5. If they have not
+        # arrived for this symbol we FAIL SAFE -- skip the trade rather than guess
+        # with forex-shaped assumptions, which silently mis-sized non-forex assets
+        # (gold/oil collapsed to 0 lots; indices mis-scaled). See test_risk_manager_sizing.
         spec = self.symbol_specs.get(symbol)
-        lots_gross = 0.0
-        min_vol = 0.01; vol_step = 0.01
+        if not (spec and spec['val'] > 0 and spec['ts'] > 0):
+            if self.logger:
+                self.logger.log_event(
+                    "RISK", "SIZING",
+                    f"No broker specs for {symbol}; skipping trade (cannot size safely)."
+                )
+            return 0.0
 
-        # 3. LIVE PRECISION MODE (Tick-Value Logic)
-        # This is the "Audit Preferred" path: Broker-provided math
-        if spec and spec['val'] > 0 and spec['ts'] > 0:
-            tick_size = spec['ts']
-            tick_val = spec['val']
-            
-            # Risk Equation: Money = Lots * (DistPoints) * TickValue
-            # But wait: MT5 TickValue is "Value of 1 Lot for 1 Tick Change"
-            
-            ticks_at_risk = diff / tick_size
-            money_loss_per_lot = ticks_at_risk * tick_val
-            
-            if money_loss_per_lot > 0: 
-                lots_gross = raw_risk_money / money_loss_per_lot
-                
-            min_vol = spec['vm']
-            vol_step = spec['vs']
-            
-        # 4. RESTORED FALLBACK MODE (oper.txt Instrument Specs)
-        else:
-            pip_size = InstrumentHelper.get_pip_size(symbol)
-            pip_dist = diff / pip_size
-            
-            val_per_pip = 10.0 # Forex Std
-            if "JPY" in symbol: val_per_pip = 8.5
-            if "XAU" in symbol: val_per_pip = 100.0 
-            if "BTC" in symbol: val_per_pip = 1.0
-            
-            if pip_dist > 0: 
-                lots_gross = raw_risk_money / (pip_dist * val_per_pip)
+        # MT5 TickValue is the account-currency P/L of a 1.0-lot, 1-tick move,
+        # so this sizes any asset class the broker prices correctly.
+        ticks_at_risk = diff / spec['ts']
+        money_loss_per_lot = ticks_at_risk * spec['val']
+        lots_gross = raw_risk_money / money_loss_per_lot if money_loss_per_lot > 0 else 0.0
+
+        # Volume constraints (guard against a broker reporting 0 to avoid /0).
+        min_vol = spec['vm'] if spec['vm'] > 0 else 0.01
+        vol_step = spec['vs'] if spec['vs'] > 0 else 0.01
 
         # 5. RESTORED NET RISK ADJUSTMENT (The 2-Step Solver)
         # Calculates "True" risk by accounting for Commission drag

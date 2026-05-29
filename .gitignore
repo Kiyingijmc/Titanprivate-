@@ -1,0 +1,20 @@
+# --- Secrets / environment ---
+.env
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Runtime state (databases) ---
+data/db/*.db
+data/db/*.db-shm
+data/db/*.db-wal
+
+# --- Generated history exports (reproducible via scripts/export_history.py) ---
+data/history/
+
+# --- Logs & crash dumps ---
+data/logs/*.log
+boot_crash.log

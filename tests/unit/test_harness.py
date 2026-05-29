@@ -23,5 +23,27 @@ class TradeDollars(unittest.TestCase):
         self.assertEqual(d["net"], 0.0)
 
 
+class SplitTrades(unittest.TestCase):
+    def test_70_30_chronological(self):
+        trades = [{"bar_idx": i, "r": 0.0} for i in [5, 1, 9, 3, 7, 2, 8, 4, 6, 10]]
+        train, test = bt.split_trades(trades, train_frac=0.7)
+        self.assertEqual([t["bar_idx"] for t in train], [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual([t["bar_idx"] for t in test], [8, 9, 10])
+
+    def test_empty(self):
+        self.assertEqual(bt.split_trades([], 0.7), ([], []))
+
+
+class WinRateCI(unittest.TestCase):
+    def test_known_wilson_interval(self):
+        p, lo, hi = bt.win_rate_ci(50, 100)
+        self.assertAlmostEqual(p, 0.50, places=3)
+        self.assertAlmostEqual(lo, 0.404, places=2)
+        self.assertAlmostEqual(hi, 0.596, places=2)
+
+    def test_zero_n_safe(self):
+        self.assertEqual(bt.win_rate_ci(0, 0), (0.0, 0.0, 0.0))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -172,6 +172,26 @@ def trade_dollars(r, entry, sl, spec, spread_points, commission_per_lot, risk_do
             "spread_cost": spread_cost, "net": gross - commission - spread_cost}
 
 
+def split_trades(trades, train_frac=0.7):
+    """Chronological (by bar_idx) train/test partition."""
+    if not trades:
+        return [], []
+    ordered = sorted(trades, key=lambda t: t.get("bar_idx", 0))
+    k = int(len(ordered) * train_frac)
+    return ordered[:k], ordered[k:]
+
+
+def win_rate_ci(wins, n, z=1.96):
+    """Wilson score 95% CI for a win rate. Returns (p, low, high)."""
+    if n == 0:
+        return (0.0, 0.0, 0.0)
+    p = wins / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    margin = (z * _math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
+    return (p, max(0.0, centre - margin), min(1.0, centre + margin))
+
+
 # 3. Mock Logger for Backtesting (Silent)
 class MockLogger:
     def log_event(self, t, m, msg, p=None): pass

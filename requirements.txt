@@ -1,0 +1,23 @@
+# ==============================================================================
+# TITAN ICT BOT v14.3 - PRODUCTION REQUIREMENTS
+# AUDIT UPGRADE: Added 'python-dotenv' (Critical missing dependency)
+# ==============================================================================
+
+# Core Logic & Vectorization (SMC Analyzer)
+pandas>=2.1.4
+numpy>=1.26
+
+# Messaging & Bridge (Execution)
+pyzmq>=25.1.2
+
+# Configuration & Persistence
+python-dotenv>=1.0.0
+pyyaml>=6.0
+sqlalchemy>=2.0.0
+
+# Network & Telemetry
+requests>=2.31.0
+pytz>=2023.3
+
+# Utilities
+colorama>=0.4.6

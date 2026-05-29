@@ -1,0 +1,569 @@
+# ==============================================================================
+# FILE: src/core/system_controller.py
+# TYPE: UX UPDATE (Live Ticker)
+# AUDIT: 
+#   1. Added "Live Ticker" log to show active trade prices every 10s.
+#   2. Confirms visual activity for symbols like BTCUSD without console spam.
+# STATUS: PRODUCTION READY
+# ==============================================================================
+
+import asyncio
+import yaml
+import sys
+import os
+import subprocess
+import pytz
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from enum import Enum
+from dotenv import load_dotenv
+
+# Internal Logic Imports
+from src.core.audit_logger import AuditLogger
+from src.execution.bridge_zmq import ZMQBridge
+from src.core.data_store import MultiTimeframeStore
+from src.analysis.bias_engine import BiasEngine
+from src.analysis.time_math import TimeNormalizer
+from src.analysis.news_manager import NewsManager
+from src.analysis.smc_analyzer import SMCAnalyzer
+from src.risk.risk_manager import RiskManager
+from src.risk.exposure import ExposureManager
+from src.ops.telemetry import TelegramBot
+from src.execution.trade_manager import TradeManager
+from src.core.state_manager import StateManager
+
+# Strategy Models
+from src.strategies.models.silver_bullet import SilverBullet
+from src.strategies.models.unicorn import UnicornModel
+from src.strategies.models.ict_ote import ICT_OTE
+from src.strategies.models.crt import CandleRangeTheory
+
+class BotState(Enum):
+    BOOTING, WARMUP, ACTIVE, PAUSED, EMERGENCY = range(5)
+
+class SystemController:
+    def __init__(self):
+        self.root_dir = Path(__file__).resolve().parent.parent.parent
+        self._load_env()
+        
+        self.state = BotState.BOOTING
+        self.config = self._load_config()
+        
+        db_path = self.root_dir / self.config['system']['database_path']
+        self.logger = AuditLogger(str(db_path))
+        
+        self.uganda_tz = pytz.timezone('Africa/Kampala')
+        
+        self.telemetry = TelegramBot(self.logger)
+        self.telemetry.register_controller(self)
+        self.bridge = None
+        self.last_heartbeat_time = datetime.now()
+        
+        # AUDIT FIX: Ticker Timer
+        self.last_ticker_print = 0
+        
+        self.market_data = {} 
+        self.current_open_positions = []
+        self.current_pending_orders = [] 
+        self.live_prices = {}
+        self.active_symbols = set()
+        
+        self.daily_closed_trades = [] 
+        self.report_sent_today = False
+        
+        offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
+        self.time_engine = TimeNormalizer(broker_gmt_offset=offset)
+        
+        self.risk_manager = RiskManager(self.config)
+        self.exposure_manager = ExposureManager(self.config, self.market_data)
+        self.news_manager = NewsManager(self.logger)
+        
+        state_db_path = self.root_dir / "data/db/trade_state.db"
+        self.state_manager = StateManager(str(state_db_path))
+        
+        self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager)
+        
+        self.recon_interval = 60 
+        self.last_recon_time = time.time()
+
+        self.strategies = []
+        self.is_manual_pause = False
+
+        strats = self.config.get('strategies', {})
+        for _, s_cfg in strats.items():
+            if s_cfg.get('enabled', False):
+                for pair in s_cfg.get('pairs', []):
+                    self.active_symbols.add(pair)
+        
+        if not self.active_symbols: self.active_symbols.add("BTCUSD")
+
+    def _load_env(self):
+        env_path = self.root_dir / ".env"
+        load_dotenv(dotenv_path=env_path)
+
+    def _load_config(self):
+        cfg_path = self.root_dir / "config" / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, 'r') as f:
+                return yaml.safe_load(f)
+        sys.exit(f"[FATAL] config.yaml not found at {cfg_path}")
+
+    async def run(self):
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] TITAN V14.3 PRO (INSTITUTIONAL) IGNITION...")
+        
+        if not await self._boot_sequence():
+            print("[FATAL] Bridge initialization failed. Check ZMQ ports.")
+            return
+
+        await self._wait_for_bridge_connection()
+
+        self._init_strategies()
+        await self.news_manager.update_calendar()
+        
+        for sym in self.active_symbols:
+            self.market_data[sym] = MultiTimeframeStore(sym)
+
+        self.state = BotState.WARMUP
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] RUNNING 5-CYCLE BUFFER SATURATION...")
+        await self._perform_warmup(list(self.active_symbols))
+
+        self.state = BotState.ACTIVE
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] TRANSITION TO ACTIVE MODE.")
+        
+        await self.telemetry.send_message(
+            f"🚀 **Titan V14.3 Pro Online**\n"
+            f"📍 Clock (NY): `{self.time_engine.get_current_ny_string()}`\n"
+            f"📡 Sync Guard: ACTIVE"
+        )
+
+        try:
+            while True:
+                now_ts = time.time()
+                now_dt = datetime.now()
+
+                if now_ts - self.last_recon_time > self.recon_interval:
+                    await self._perform_reconciliation()
+                    self.last_recon_time = now_ts
+
+                time_since_last_pulse = (now_dt - self.last_heartbeat_time).total_seconds()
+                is_weekend = now_dt.weekday() >= 5
+                has_crypto = any(s for s in self.active_symbols if "BTC" in s or "ETH" in s)
+                should_monitor = (not is_weekend) or has_crypto
+
+                if should_monitor and time_since_last_pulse > 60:
+                    await self._reboot_terminal()
+
+                await self.telemetry.poll_commands()
+                await self._check_news_status() 
+
+                # --- AUDIT FIX: DRAIN QUEUE + LIVE TICKER ---
+                if self.bridge:
+                    msgs = await self.bridge.poll_data()
+                    # Process entire batch
+                    for msg in msgs:
+                        await self._process_incoming_data(msg)
+                        
+                    # UX: Print Ticker Heartbeat every 10 seconds
+                    # Shows: [LIVE] Equity | Open Position Prices
+                    if time.time() - self.last_ticker_print > 10:
+                        self._print_live_ticker()
+                        self.last_ticker_print = time.time()
+
+                if now_dt.second == 0 and now_dt.microsecond < 10000:
+                    await self._cleanup_ghost_orders()
+
+                now_uganda = datetime.now(self.uganda_tz)
+                if now_uganda.hour == 23 and now_uganda.minute == 45:
+                    if not self.report_sent_today:
+                        await self._send_detailed_performance_report()
+                        self.report_sent_today = True
+                        self.risk_manager.reset_daily_metrics()
+                
+                if now_uganda.hour == 0: self.report_sent_today = False
+
+                if (now_dt.second % 10 == 0) and (now_dt.microsecond < 50000):
+                    await self.bridge.send_command("PING")
+                    await asyncio.sleep(0.01)
+
+                await asyncio.sleep(0.001) 
+
+        except Exception as e:
+            await self.telemetry.send_message(f"☠️ **FATAL SYSTEM CRASH**\nError: `{str(e)}`")
+            self.logger.log_event("ERROR", "CORE", f"System Exit: {str(e)}")
+            raise e
+
+    def _print_live_ticker(self):
+        """Displays active price action for open positions."""
+        if not self.current_open_positions:
+            return # Silence if no trades
+            
+        ticker_str = f"[{datetime.now().strftime('%H:%M:%S')}] LIVE ⚡ "
+        equity = self.risk_manager.current_equity
+        ticker_str += f"Eq: ${equity:,.0f} | "
+        
+        printed_syms = set()
+        for p in self.current_open_positions:
+            sym = p.get('s')
+            if sym and sym not in printed_syms and sym in self.live_prices:
+                price = self.live_prices[sym]
+                pnl = float(p.get('pf', 0))
+                # Format: BTCUSD: 95000 ($-50)
+                ticker_str += f"{sym}: {price:,.2f} ({pnl:+.0f}) | "
+                printed_syms.add(sym)
+                
+        print(ticker_str.rstrip(" | "))
+
+    async def _wait_for_bridge_connection(self):
+        print("[INIT] Waiting for MT5 ZMQ Handshake (Start the EA now)...")
+        while True:
+            connected = await self.bridge.ping()
+            if connected:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ BRIDGE CONNECTED. SYNCED.")
+                return
+            await asyncio.sleep(2.0)
+
+    async def _perform_reconciliation(self):
+        mt5_tickets = [int(p['t']) for p in self.current_open_positions if 't' in p]
+        ghosts = self.state_manager.reconcile_state(mt5_tickets)
+        for tid in ghosts:
+            self.state_manager.archive_trade(tid, 0.0)
+            await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)")
+
+    async def _execute_signal(self, symbol, decision, name, htf_bias):
+        p = self.risk_manager.normalize_price(decision['price'], symbol)
+        sl = self.risk_manager.normalize_price(decision['sl'], symbol)
+        tp = self.risk_manager.normalize_price(decision['tp'], symbol)
+        
+        cur_bid = self.live_prices.get(symbol, 0.0)
+        cmd = decision['type']
+        if "LIMIT" in cmd and cur_bid > 0:
+            if abs(p - cur_bid) < (cur_bid * 0.0002): 
+                cmd = "MARKET"
+                p = cur_bid
+
+        lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias)
+        if lot <= 0: return
+
+        allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
+        if not allowed:
+            self.logger.log_event("RISK", "EXPOSURE", f"Block {symbol}: {reason}")
+            return
+
+        payload = {
+            "action": "TRADE", "symbol": symbol, "cmd": cmd, "side": decision['signal'],
+            "price": float(p), "p": float(p), "entry": float(p), 
+            "sl": float(sl), "tp": float(tp), "volume": float(lot),
+            "magic": self.config['system'].get('magic_number_base', 88000), 
+            "comment": name, "strat": name
+        }
+        
+        success = await self.bridge.send_order_reliable(payload)
+        
+        if success:
+            await self.telemetry.notify_signal(symbol, name, decision['signal'], lot, p, sl, tp)
+            self.logger.log_event("EXEC", "SENT", f"Order {cmd} {symbol} sent. Handshake OK.")
+        else:
+            self.logger.log_event("ERROR", "EXECUTION", f"Order handshake FAILED for {symbol}")
+
+    async def _process_incoming_data(self, msg):
+        if not isinstance(msg, dict): 
+            return
+            
+        self.last_heartbeat_time = datetime.now() 
+        msg_type = msg.get('type')
+        
+        if msg_type == 'HISTORY':
+            sym = msg.get('symbol')
+            if sym in self.market_data: 
+                self.market_data[sym].ingest_history(msg.get('tf'), msg.get('data'))
+                if 'tv' in msg:
+                    self.risk_manager.update_symbol_specs(
+                        sym, msg.get('tv'), msg.get('ts'), msg.get('vm'), msg.get('vs')
+                    )
+
+        elif msg_type == 'EXECUTION':
+            status = msg.get('status')
+            if status == 'OPENED':
+                entry_p = float(msg.get('price', 0))
+                self.state_manager.register_order(
+                    msg['ticket'], msg['s'], msg.get('strat', 'Manual'), msg.get('cmd'), 
+                    status="ACTIVE", entry=entry_p, tp=0.0
+                )
+                await self.telemetry.notify_execution(msg['ticket'], msg['s'], msg.get('cmd'), entry_p, 0, msg.get('strat', 'Auto'))
+            
+            elif status == 'CLOSED':
+                tid = msg.get('ticket')
+                if self.state_manager.exists(tid):
+                    pnl = float(msg.get('pn', 0.0))
+                    strat_name = "Manual"
+                    try:
+                        with self.state_manager._get_conn() as conn:
+                            res = conn.execute("SELECT strategy FROM active_orders WHERE ticket_id=?", (tid,)).fetchone()
+                            if res and res['strategy']: strat_name = res['strategy']
+                    except: pass
+                    
+                    self.daily_closed_trades.append({'ticket': tid, 'sym': msg.get('s'), 'pnl': pnl, 'strat': strat_name})
+                    self.state_manager.archive_trade(tid, pnl) 
+                    await self.telemetry.notify_close(tid, pnl, msg.get('s'), strat_name)
+
+        elif msg_type == 'TICK':
+            symbol = msg.get('s')
+            if not symbol: return
+            
+            self.live_prices[symbol] = float(msg.get('b', 0))
+            if self.state == BotState.ACTIVE:
+                closed_candles = self.market_data[symbol].process_tick(msg)
+                
+                if self.current_open_positions and symbol in self.live_prices:
+                    relevant = [p for p in self.current_open_positions if p.get('s') == symbol]
+                    cmds = self.trade_manager.sync_positions(relevant, self.live_prices)
+                    for c in cmds: 
+                        await self.bridge.send_command(c['action'], c)
+                
+                for tf, df in closed_candles:
+                    if tf == "M5": 
+                        await self._run_strategies(symbol, df)
+
+        elif msg_type == 'HEARTBEAT':
+            bal = float(msg.get('bal', 0))
+            eq = float(msg.get('eq', 0))
+            if eq > 0: 
+                self.risk_manager.update_account_info(bal, eq)
+                self.risk_manager.track_equity(eq)
+            
+            self.current_open_positions = msg.get('pos', [])
+            self.current_pending_orders = msg.get('orders', [])
+            
+            for p in self.current_open_positions:
+                tid_raw = p.get('t')
+                if tid_raw:
+                    tid = int(tid_raw)
+                    if not self.state_manager.exists(tid):
+                        self.state_manager.register_order(
+                            tid, p.get('s', '?'), "Adopted", "MARKET", 
+                            status="ACTIVE", entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
+                        )
+
+    async def _cleanup_ghost_orders(self):
+        pending = self.state_manager.get_pending_orders()
+        now = datetime.now().timestamp()
+        for o in pending:
+            ttl = 3600 if "Silver" in o.get('strategy','') else 7200
+            if now - o['time_placed'] > ttl:
+                await self.bridge.send_command("TRADE", {"action": "CANCEL", "ticket": o['ticket_id']})
+                self.state_manager.delete_order(o['ticket_id'])
+                await self.telemetry.send_message(f"♻️ **Auto-Clean:** Expired {o['strategy']} Order `#{o['ticket_id']}`")
+
+    async def _send_detailed_performance_report(self):
+        now = datetime.now(self.uganda_tz)
+        summary = {}
+        for trade in self.daily_closed_trades:
+            strat = trade.get('strat', 'Unknown')
+            if strat not in summary: summary[strat] = {'pnl': 0, 'w': 0, 'l': 0}
+            summary[strat]['pnl'] += trade['pnl']
+            if trade['pnl'] > 0: summary[strat]['w'] += 1
+            else: summary[strat]['l'] += 1
+            
+        strat_breakdown = "".join([f"• **{k}**: `${v['pnl']:+,.2f}` ({v['w']}W / {v['l']}L)\n" for k, v in summary.items()])
+        report = (
+            f"🏛️ **TITAN INSTITUTIONAL DEBRIEF**\n📍 Location: `Kampala, Uganda`\n🕒 Report Time: `{now.strftime('%H:%M:%S')}`\n"
+            f"➖➖➖➖➖➖➖➖\n💰 **Equity Metrics:**\n• Day High: `${self.risk_manager.equity_max:,.2f}`\n"
+            f"• Day Low:  `${self.risk_manager.equity_min:,.2f}`\n• Closing:  `${self.risk_manager.current_equity:,.2f}`\n\n"
+            f"🧠 **Strategy Performance:**\n{strat_breakdown if strat_breakdown else '_No trade closings recorded today._'}\n\n🛰️ **System Health:** OPTIMAL"
+        )
+        await self.telemetry.send_message(report)
+        self.daily_closed_trades = [] 
+
+    async def _reboot_terminal(self):
+        print(f"🚨 WATCHDOG: HEARTBEAT LOST. ATTEMPTING RECOVERY...")
+        subprocess.run("taskkill /F /IM terminal64.exe", shell=True, capture_output=True)
+        await asyncio.sleep(2)
+        mt5_path_str = self.config['system'].get('mt5_path', '')
+        if mt5_path_str and os.path.exists(mt5_path_str):
+             subprocess.Popen([mt5_path_str])
+        self.last_heartbeat_time = datetime.now()
+
+    async def _boot_sequence(self):
+        try:
+            cfg = self.config['connection']['zeromq']
+            self.bridge = ZMQBridge(
+                push_port=cfg.get('push_port', 32768), 
+                pull_port=cfg.get('pull_port', 32769), 
+                req_port=32770
+            )
+            return True
+        except Exception as e: 
+            print(f"[BOOT ERROR] {e}")
+            return False
+
+    def _init_strategies(self):
+        s = self.config.get('strategies', {})
+        self.strategies = [
+            SilverBullet(s.get('silver_bullet',{}), self.logger),
+            UnicornModel(s.get('unicorn_model',{}), self.logger),
+            ICT_OTE(s.get('ict_ote',{}), self.logger),
+            CandleRangeTheory(s.get('crt',{}), self.logger)
+        ]
+
+    async def _run_strategies(self, symbol, m5_df):
+        smc = SMCAnalyzer(m5_df)
+        enriched_df = smc.process()
+        
+        h1 = self.market_data[symbol].get_data("H1")
+        bias_str, liq = BiasEngine(h1).get_bias_context()
+        
+        ctx = {
+            'symbol': symbol, 
+            'bias': bias_str, 
+            'liquidity': liq, 
+            'ny_time': self.time_engine.get_current_ny_string(), 
+            'smc_df': enriched_df
+        }
+        
+        for strat in self.strategies:
+            decision = await strat.on_new_candle(enriched_df, context=ctx)
+            if decision:
+                if strat.name != "CRT":
+                    if (bias_str == "BULLISH" and decision['signal'] == "SELL") or \
+                       (bias_str == "BEARISH" and decision['signal'] == "BUY"): 
+                           continue 
+                await self._execute_signal(symbol, decision, strat.name, bias_str)
+
+    async def _perform_warmup(self, symbols_list):
+        await asyncio.sleep(2)
+        
+        for sym in symbols_list:
+            await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "M5", "count": 500})
+            await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "H1", "count": 200})
+        
+        print(f"[WARMUP] Syncing {len(symbols_list)} pairs...")
+        for _ in range(20): 
+            msgs = await self.bridge.poll_data()
+            for m in msgs: await self._process_incoming_data(m)
+            
+            loaded = sum(1 for s in symbols_list if self.market_data[s].history_loaded)
+            if loaded == len(symbols_list):
+                print("[WARMUP] All pairs synced.")
+                break
+            await asyncio.sleep(0.5)
+
+    async def _check_news_status(self):
+        await self.news_manager.update_calendar()
+        blocked, reason = self.news_manager.check_news_block() 
+        if blocked and self.state == BotState.ACTIVE:
+            self.state = BotState.PAUSED
+            await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}")
+        elif not blocked and self.state == BotState.PAUSED and not self.is_manual_pause:
+            self.state = BotState.ACTIVE
+            await self.telemetry.send_message("✅ News Cleared. Resuming.")
+
+    def get_status_report(self):
+        eq = self.risk_manager.current_equity
+        status_name = self.state.name
+        if self.is_manual_pause: status_name += " (MANUAL PAUSE)"
+        
+        feeds_ready = sum(1 for _, s in self.market_data.items() if s.history_loaded)
+        total_feeds = len(self.active_symbols)
+        health_icon = "🟢" if feeds_ready == total_feeds else "🟡" if feeds_ready > 0 else "🔴"
+
+        trades_str = ""
+        if not self.current_open_positions:
+            trades_str = "\n_(No Active Trades)_"
+        else:
+            for p in self.current_open_positions:
+                try:
+                    tid = int(p.get('t', 0))
+                    symbol = p.get('s', '?')
+                    profit = float(p.get('pf', 0.0))
+                    raw_type = int(p.get('type', 0))
+                    direction = "BUY" if raw_type == 0 else "SELL"
+                    
+                    strat = p.get('comment', '')
+                    if not strat: strat = "Manual"
+                        
+                    emoji = "🟢" if profit >= 0 else "🔴"
+                    
+                    trades_str += (
+                        f"\n{emoji} `#{tid}` **{symbol}** ({direction})\n"
+                        f"   ├─ Strat: `{strat}`\n"
+                        f"   └─ P/L: `${profit:+.2f}`"
+                    )
+                except: continue
+
+        return (
+            f"📊 **TITAN STATUS BOARD**\n"
+            f"➖➖➖➖➖➖➖➖\n"
+            f"🚦 State: `{status_name}`\n"
+            f"💰 Equity: `${eq:,.2f}`\n"
+            f"📡 Sync: `{health_icon} {feeds_ready}/{total_feeds}` Pairs\n"
+            f"📋 **Active ({len(self.current_open_positions)}):**"
+            f"{trades_str}"
+        )
+
+    def get_balance_report(self):
+        eq = self.risk_manager.current_equity
+        bal = self.risk_manager.starting_balance
+        pnl = eq - bal
+        pnl_pct = (pnl / bal * 100) if bal > 0 else 0
+        emoji = "📈" if pnl >= 0 else "📉"
+        
+        return (
+            f"💰 **TITAN BALANCE SHEET**\n"
+            f"➖➖➖➖➖➖➖➖\n"
+            f"💵 Balance: `${bal:,.2f}`\n"
+            f"📊 Equity: `${eq:,.2f}`\n"
+            f"{emoji} Net P/L: `${pnl:+,.2f}` (`{pnl_pct:+.2f}%`)\n"
+            f"🛡️ Daily DD Limit: `{self.risk_manager.max_dd}%`"
+        )
+
+    def get_pending_orders_report(self):
+        pending = getattr(self, 'current_pending_orders', [])
+        if not pending: return "📭 **No Pending Orders Active.**"
+        report = "📋 **PENDING ORDER BOOK**\n➖➖➖➖➖➖➖➖\n"
+        for o in pending:
+            tid = o.get('t', '0')
+            symbol = o.get('s', '???')
+            price = o.get('p', 0)
+            report += (f"🎫 `#{tid}` **{symbol}** @ `{price}`\n")
+        return report
+
+    def set_system_pause(self, p: bool):
+        self.is_manual_pause = p
+        self.state = BotState.PAUSED if p else BotState.ACTIVE
+        return self.state.name
+
+    async def trigger_panic(self):
+        self.state = BotState.EMERGENCY
+        await self.telemetry.send_message("🚨 **PANIC PROTOCOL ENGAGED** 🚨")
+        m_count = await self.close_all_market_orders()
+        p_count = await self.cancel_pending_orders('all')
+        await self.telemetry.send_message(f"✅ **Global Flatten:** Closed `{m_count}` | Cancelled `{p_count}`")
+
+    async def close_all_market_orders(self):
+        count = 0
+        for pos in self.current_open_positions:
+            ticket = int(pos.get('t', 0))
+            if ticket > 0:
+                await self.bridge.send_command("CLOSE_POS", {"ticket": ticket})
+                count += 1
+        return count
+
+    async def close_specific_market_order(self, ticket_id):
+        ticket_id = int(ticket_id)
+        if any(int(p.get('t')) == ticket_id for p in self.current_open_positions):
+            await self.bridge.send_command("CLOSE_POS", {"ticket": ticket_id})
+            return f"✂️ **Request Sent:** Closing `#{ticket_id}`"
+        return f"⚠️ Ticket `#{ticket_id}` not found."
+
+    async def cancel_pending_orders(self, target_id='all'):
+        pending = getattr(self, 'current_pending_orders', [])
+        count = 0
+        if target_id == 'all':
+            for o in pending:
+                await self.bridge.send_command("CANCEL", {"ticket": int(o.get('t'))})
+                count += 1
+        elif target_id:
+            await self.bridge.send_command("CANCEL", {"ticket": int(target_id)})
+            count = 1
+        return count

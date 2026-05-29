@@ -1,0 +1,76 @@
+# ==============================================================================
+# FILE: config/config.yaml
+# TYPE: SYSTEM CONFIGURATION
+# AUDIT:
+#   1. Generalized MT5 Path (Removed hardcoded user path).
+#   2. Clarified Risk Semantics (Exposure Count).
+#   3. Bumped Version to 14.3 (Institutional).
+# STATUS: PRODUCTION READY
+# ==============================================================================
+
+system:
+  app_name: "Titan_ICT_Institutional"
+  version: "14.3_Institutional"
+  database_path: "data/db/titan_core.db"
+  magic_number_base: 88000
+  
+  # AUDIT FIX: WATCHDOG CONFIGURATION
+  # Path to terminal64.exe. Used by SystemController to auto-restart MT5 if it crashes.
+  # Default: "C:\Program Files\MetaTrader 5\terminal64.exe"
+  # Update this if your Broker installs to a different folder (e.g., "MetaTrader 5 IC Markets")
+  mt5_path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+
+connection:
+  zeromq:
+    push_port: 32768  # Commands (Py -> MT5)
+    pull_port: 32769  # Data (MT5 -> Py)
+    host: "127.0.0.1"
+  broker:
+    # Hours offset from UTC. e.g. 2 = UTC+2 (EET/standard Forex server time)
+    timezone_offset: 2 
+
+risk:
+  account:
+    max_daily_drawdown_pct: 3.0  # Circuit Breaker: Stop trading if equity drops 3% in a day
+    
+    # AUDIT NOTE: Although named 'pct', the ExposureManager treats this as an INTEGER COUNT.
+    # Logic: Maximum total number of simultaneous open positions allowed.
+    max_global_exposure_pct: 6.0 # e.g., Max 6 trades at once
+    
+  trade:
+    risk_per_trade_pct: 1.0     # Risk 1% of Equity per trade
+    hard_max_lots: 5.0          # Absolute Cap to prevent fat-finger errors
+    static_commission_usd: 7.0  # Used for Net-Risk Calculation ($7.00 per round turn lot)
+
+strategies:
+  # 1. Silver Bullet (Time-Based Volatility)
+  # Trades strictly during specific NY Session hours with Momentum
+  silver_bullet:
+    enabled: true
+    session_ny: ["10:00", "11:00"] 
+    risk_reward: 2.0
+    pairs: ["EURUSD", "GBPUSD", "XAUUSD", "US30", "GBPCAD"] 
+  
+  # 2. Unicorn (Breaker + FVG + Sweep)
+  # Requires Liquidity Sweep confirmation before entry
+  unicorn_model:
+    enabled: true
+    scan_depth: 50     # Lookback candles for Breaker Block
+    min_atr_size: 1.5  # Displacement Strength threshold
+    pairs: ["BTCUSD", "EURUSD", "GBPUSD", "XAUUSD", "GBPJPY", "USDJPY"]
+  
+  # 3. ICT OTE (Trend Continuation)
+  # Optimal Trade Entry (Fibo 0.705)
+  ict_ote:
+    enabled: true
+    ote_level: 0.705
+    min_swing_atr: 2.0 # Swing depth requirement
+    pairs: ["EURUSD", "GBPUSD", "AUDUSD", "BTCUSD", "USDCAD", "XAUUSD"]
+
+  # 4. CRT (Mean Reversion - Counter Trend)
+  # Candle Range Theory: Previous Day High/Low sweeps
+  crt:
+    enabled: true
+    trend_filter: true # If True: Only fade Highs in Bear Trend / Lows in Bull Trend
+    active_hours: [2, 17] # Broker Time active window
+    pairs: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]

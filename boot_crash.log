@@ -1,0 +1,33 @@
+2026-01-05 01:51:08.720520 - FATAL BOOT CRASH:
+Traceback (most recent call last):
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\main.py", line 67, in <module>
+    asyncio.run(main())
+  File "C:\Users\JMC\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\JMC\AppData\Local\Programs\Python\Python311\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\JMC\AppData\Local\Programs\Python\Python311\Lib\asyncio\base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\main.py", line 59, in main
+    raise e
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\main.py", line 52, in main
+    await bot.run()
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\core\system_controller.py", line 209, in run
+    raise e
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\core\system_controller.py", line 182, in run
+    await self._process_incoming_data(msg)
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\core\system_controller.py", line 320, in _process_incoming_data
+    await self._run_strategies(symbol, df)
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\core\system_controller.py", line 425, in _run_strategies
+    await self._execute_signal(symbol, decision, strat.name, bias_str)
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\core\system_controller.py", line 228, in _execute_signal
+    p = self.risk_manager.normalize_price(decision['price'], symbol)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\JMC\Desktop\bots\Titan_ICT_Bot_v14_3pro\src\risk\risk_manager.py", line 90, in normalize_price
+    precision = len(str(float(tick_size)).split('.')[1])
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+IndexError: list index out of range
+

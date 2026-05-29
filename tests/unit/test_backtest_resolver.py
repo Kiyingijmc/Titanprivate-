@@ -107,5 +107,32 @@ class AggregateMetrics(unittest.TestCase):
         self.assertEqual(m["expectancy"], 0.0)
 
 
+class SimulateSignals(unittest.TestCase):
+    def test_skips_overlapping_then_takes_later(self):
+        # 10 bars; flat at 100 except TP spikes at index 3 and 6.
+        bars = [bar(100, 101, 99, 100) for _ in range(10)]
+        bars[3] = bar(100, 111, 99, 110)  # A's TP
+        bars[6] = bar(100, 111, 99, 110)  # C's TP
+        common = {"dir": "BUY", "cmd": "MARKET", "sl": 90, "tp": 110, "ttl_bars": 24}
+        signals = [
+            {**common, "entry": 100, "bar_idx": 0, "strat": "A"},  # fills at bar1 open, TP bar3 -> busy_until 3
+            {**common, "entry": 100, "bar_idx": 1, "strat": "B"},  # 1 <= 3 -> skipped
+            {**common, "entry": 100, "bar_idx": 5, "strat": "C"},  # 5 > 3 -> taken, TP bar6
+        ]
+        trades = bt.simulate_signals(signals, bars)
+        self.assertEqual([t["bar_idx"] for t in trades], [0, 5])
+        self.assertTrue(all(t["outcome"] == "TP" for t in trades))
+
+    def test_invalid_signal_does_not_occupy_symbol(self):
+        bars = [bar(100, 111, 99, 110) for _ in range(5)]
+        signals = [
+            {"dir": "BUY", "cmd": "MARKET", "entry": 100, "sl": 100, "tp": 110, "ttl_bars": 24, "bar_idx": 0, "strat": "A"},
+            {"dir": "BUY", "cmd": "MARKET", "entry": 100, "sl": 90, "tp": 110, "ttl_bars": 24, "bar_idx": 1, "strat": "B"},
+        ]
+        trades = bt.simulate_signals(signals, bars)
+        self.assertEqual(len(trades), 1)          # invalid dropped, B taken
+        self.assertEqual(trades[0]["strat"], "B")
+
+
 if __name__ == "__main__":
     unittest.main()

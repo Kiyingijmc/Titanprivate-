@@ -126,6 +126,27 @@ def aggregate_metrics(trades):
     }
 
 
+def simulate_signals(signals, bars):
+    """Resolve signals under one-open-per-symbol concurrency.
+
+    signals: chronologically ordered, each with bar_idx + resolve_trade fields.
+    bars: full 0-indexed list of OHLC dicts (positionally aligned with bar_idx).
+    Returns trade dicts (signal fields merged with the resolution).
+    """
+    trades = []
+    busy_until = -1
+    for sig in signals:
+        if sig["bar_idx"] <= busy_until:
+            continue  # a trade/limit is live for this symbol
+        future = bars[sig["bar_idx"] + 1:]
+        res = resolve_trade(sig, future)
+        if res["outcome"] == "INVALID":
+            continue  # never placed -> does not occupy the symbol
+        trades.append({**sig, **res})
+        busy_until = sig["bar_idx"] + 1 + res["exit_offset"]
+    return trades
+
+
 # 3. Mock Logger for Backtesting (Silent)
 class MockLogger:
     def log_event(self, t, m, msg, p=None): pass

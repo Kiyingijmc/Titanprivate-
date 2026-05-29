@@ -327,7 +327,8 @@ class Backtester:
         self.strategies.append(ICT_OTE(TEST_CONFIG['ict_ote'], self.logger))
         self.strategies.append(CandleRangeTheory(TEST_CONFIG['crt'], self.logger))
 
-    async def run(self, trades_out=None):
+    async def run(self, trades_out=None, equity=10000.0, risk_pct=1.0, split=0.7,
+                  specs_path="data/specs.json", costs=True):
         print("\n--- STARTING OPTIMIZED BACKTEST ---")
         start_time = time.time()
         signals = []
@@ -398,38 +399,67 @@ class Backtester:
 
         bars = enriched_m5[['open', 'high', 'low', 'close']].to_dict('records')
         trades = simulate_signals(signals, bars)
+
+        # Attach dollar PnL + costs to resolved trades when specs are available.
+        import json
+        SPREADS = {  # indicative spread in price-ticks; tune later
+            "EURUSD": 8, "GBPUSD": 12, "USDJPY": 10, "AUDUSD": 10, "USDCAD": 12,
+            "GBPCAD": 30, "GBPJPY": 25, "XAUUSD": 20, "US30": 200, "BTCUSD": 1000, "XBRUSD": 30,
+        }
+        specs = {}
+        if costs and os.path.exists(specs_path):
+            with open(specs_path) as f:
+                specs = json.load(f)
+        sym = os.path.splitext(os.path.basename(self.csv_path))[0].split("_")[0]
+        spec = specs.get(sym)
+        risk_dollars = equity * risk_pct / 100.0
+        if spec:
+            for t in trades:
+                if t["outcome"] in ("TP", "SL"):
+                    t.update(trade_dollars(t["r"], t["entry"], t["sl"], spec,
+                                           SPREADS.get(sym, 20), 7.0, risk_dollars))
+
         duration = time.time() - start_time
-        self._report(trades, duration, trades_out)
+        self._report(trades, duration, trades_out, split=split, has_costs=bool(spec))
         return trades
 
-    def _report(self, trades, duration, trades_out=None):
-        print("\n" + "=" * 60)
-        print(f"BACKTEST COMPLETE in {duration:.1f}s | {len(trades)} trades taken")
-        print("=" * 60)
+    def _report(self, trades, duration, trades_out=None, split=0.7, has_costs=False):
+        print("\n" + "=" * 64)
+        print(f"BACKTEST COMPLETE in {duration:.1f}s | {len(trades)} trade records")
+        print("=" * 64)
 
-        def line(name, m):
-            print(f"\n[{name}]")
-            print(f"  trades={m['trades']}  win%={m['win_rate']*100:.1f}  "
-                  f"expectancy={m['expectancy']:+.2f}R  totalR={m['total_r']:+.2f}")
-            pf = m['profit_factor']
-            pf_str = "inf" if pf == float('inf') else f"{pf:.2f}"
-            print(f"  PF={pf_str}  maxDD={m['max_drawdown_r']:.2f}R  "
-                  f"avgW={m['avg_win']:+.2f}R avgL={m['avg_loss']:+.2f}R  "
-                  f"streak={m['max_losing_streak']}  expired={m['expired']} open={m['open_at_end']}")
+        def block(title, ts):
+            print(f"\n--- {title} ({len(ts)} records) ---")
+            groups = {}
+            for t in ts:
+                groups.setdefault(t["strat"], []).append(t)
+            for name in sorted(groups) + ["COMBINED"]:
+                grp = ts if name == "COMBINED" else groups[name]
+                m = aggregate_metrics(grp)
+                p, lo, hi = win_rate_ci(m["wins"], m["trades"])
+                pf = "inf" if m["profit_factor"] == float("inf") else f"{m['profit_factor']:.2f}"
+                flag = "  [INSUFFICIENT n<30]" if m["trades"] < 30 else ""
+                line = (f"  {name:12} n={m['trades']:4d} win={p*100:4.1f}% "
+                        f"CI[{lo*100:.0f}-{hi*100:.0f}] exp={m['expectancy']:+.2f}R "
+                        f"totR={m['total_r']:+.1f} PF={pf} DD={m['max_drawdown_r']:.0f}R")
+                if has_costs:
+                    net = sum(t.get("net", 0.0) for t in grp)
+                    cost = sum(t.get("commission", 0.0) + t.get("spread_cost", 0.0) for t in grp)
+                    line += f" | net=${net:+.0f} cost=${cost:.0f}"
+                print(line + flag)
 
-        by_strat = {}
-        for t in trades:
-            by_strat.setdefault(t['strat'], []).append(t)
-        for name in sorted(by_strat):
-            line(name, aggregate_metrics(by_strat[name]))
-        line("COMBINED", aggregate_metrics(trades))
+        train, test = split_trades(trades, split)
+        block("TRAIN (in-sample)", train)
+        block("TEST (out-of-sample)", test)
+        block("ALL", trades)
 
         if trades_out:
             import csv
-            keys = ['time', 'strat', 'dir', 'cmd', 'entry', 'sl', 'tp',
-                    'outcome', 'r', 'bar_idx', 'fill_offset', 'exit_offset']
-            with open(trades_out, 'w', newline='') as f:
-                w = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
+            keys = ["time", "strat", "dir", "cmd", "entry", "sl", "tp", "outcome", "r",
+                    "bar_idx", "fill_offset", "exit_offset", "lots", "gross",
+                    "commission", "spread_cost", "net"]
+            with open(trades_out, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
                 w.writeheader()
                 for t in trades:
                     w.writerow(t)
@@ -441,6 +471,11 @@ if __name__ == "__main__":
     p.add_argument("--csv", default=None, help="path to OHLC CSV (default: auto-discover)")
     p.add_argument("--shift", type=int, default=-7, help="hours to shift broker time toward NY")
     p.add_argument("--trades-out", default=None, help="optional path to write a per-trade CSV")
+    p.add_argument("--equity", type=float, default=10000.0)
+    p.add_argument("--risk-pct", type=float, default=1.0)
+    p.add_argument("--split", type=float, default=0.7)
+    p.add_argument("--specs", default="data/specs.json")
+    p.add_argument("--no-costs", action="store_true")
     a = p.parse_args()
 
     target = a.csv
@@ -454,4 +489,5 @@ if __name__ == "__main__":
         sys.exit(1)
 
     engine = Backtester(target, shift_hours=a.shift)
-    asyncio.run(engine.run(trades_out=a.trades_out))
+    asyncio.run(engine.run(trades_out=a.trades_out, equity=a.equity, risk_pct=a.risk_pct,
+                           split=a.split, specs_path=a.specs, costs=not a.no_costs))

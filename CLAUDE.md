@@ -1,0 +1,53 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Titan is a Python ICT/SMC trading engine that trades through **MetaTrader 5 over a ZeroMQ bridge** — it does **not** use the `MetaTrader5` Python package. The Python side is the strategy/risk brain; an MQL5 Expert Advisor (`Titan_Gateway.mq5`) running inside MT5 on Windows is the execution venue. They talk over three ZMQ sockets. Because of this, the Python side is cross-platform and runs in WSL/Linux; only MT5 + the EA require Windows.
+
+## Commands
+
+The virtualenv is at `.venv` (it ships without `pip`; if pip is missing, bootstrap with `curl -sSL https://bootstrap.pypa.io/get-pip.py | .venv/bin/python -`).
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt   # deps (pandas/numpy/pyzmq/...)
+
+# Tests (stdlib unittest — there is no pytest)
+.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'   # all unit tests
+.venv/bin/python -m unittest tests.unit.test_risk_manager_sizing -v  # a single test module
+
+# Offline backtest (reads test_data.csv; needs no MT5)
+.venv/bin/python tests/backtest/backtest_engine.py
+
+# Live MT5 bridge tooling (run ONLY when main.py is NOT running — same ports)
+.venv/bin/python scripts/check_bridge.py                              # prove EA<->Python link, prints WSL IP
+.venv/bin/python scripts/export_history.py --symbol EURUSD --tf M5 --count 5000 --out data/history/EURUSD_M5.csv
+
+# Run the live bot
+.venv/bin/python main.py
+```
+
+There is no linter/build step configured.
+
+## Architecture (the big picture)
+
+- **`main.py`** is only a bootstrap (Python ≥3.10 guard, `sys.path`, fatal logging to `boot_crash.log`). The real system is **`src/core/system_controller.py`**: a single `async while True` loop that polls the bridge, routes messages, runs strategies on M5 candle close, manages open trades, reconciles state, and sends Telegram reports.
+- **ZMQ bridge** (`src/execution/bridge_zmq.py` ⇄ `mql5_bridge/Experts/Titan_Gateway.mq5`): **Python BINDS, the EA CONNECTS.** Three sockets: `32768` PUSH (Py→MT5 commands), `32769` PULL (MT5→Py data, drained in batches), `32770` REQ/REP (reliable order handshake + PING). Only one process can bind these ports — never run the bot and the `scripts/` tools simultaneously.
+- **Message flow** (EA→Py JSON `type`s): `TICK`, `HEARTBEAT` (balance/equity + open positions + pending orders), `HISTORY` (bars **plus broker specs** `tv`/`ts`/`vm`/`vs`), `EXECUTION` (OPENED/CLOSED). Commands Py→EA: `TRADE` (cmd `MARKET`/`LIMIT`/`MODIFY`), `CLOSE_POS`, `CANCEL`, `GET_HISTORY`, `PING`. The EA supports market + **limit** pending orders only (no stop orders).
+- **Strategy contract**: `src/strategies/models/{silver_bullet,unicorn,ict_ote,crt}.py` extend `base_strategy.py` and return a decision dict `{signal, type, price, sl, tp}` from `on_new_candle()`. Only `on_new_candle` is used by the controller and backtester; the abstract `analyze_tick` is never called. The controller enriches data via `SMCAnalyzer` + `BiasEngine` and filters signals against HTF bias (except CRT).
+- **Risk/sizing** (`src/risk/risk_manager.py`): position sizing is **broker-spec driven** — it uses MT5 `tick_value`/`tick_size` (asset-agnostic and correct for forex/metals/indices/crypto/oil). Specs arrive via the `HISTORY` message and are stored per-symbol by `update_symbol_specs`. **If specs have not loaded for a symbol, `calculate_lot_size` fails safe (returns 0 + logs) rather than guessing** — do not reintroduce a hardcoded per-asset fallback. `normalize_price` snaps to the broker tick grid; precision is counted via `Decimal` to survive scientific-notation ticks like `1e-05`.
+- **State** (`src/core/state_manager.py`): a persistent SQLite connection (WAL) tracking `active_orders`/`trade_history`; survives reboots and reconciles "ghost" trades closed externally.
+- **Telemetry** (`src/ops/telemetry.py`): Telegram notifications **and remote control** (`/panic`, `/closeall`, `/close`, `/pause`…), authorized by a single chat ID.
+
+## Critical conventions & gotchas
+
+- **Trading only happens for symbols in `config/config.yaml` strategy `pairs`** (they seed `active_symbols`, get `GET_HISTORY` at warmup, and thus get broker specs). To trade a new FBS asset, add it there with the **exact** broker symbol name; a "cold" symbol may return no history on the first request and simply won't trade until specs+data load.
+- **WSL↔Windows networking**: the EA's `InpIP` input must point at the WSL IP (it changes on WSL reboot — re-read with `ip -4 addr show eth0`). The live MT5 is **FBS MetaTrader 5**; its data folder is `…/Terminal/776D2ACDFA4F66FAF3C8985F75FA9FF6`. `libzmq.dll` + `libsodium.dll` (x64) must sit in that terminal's `MQL5/Libraries`.
+- **Secrets**: `.env` holds the live Telegram token and is git-ignored (use `.env.example` as the template). `config.yaml`'s `mt5_path` and the `_reboot_terminal` watchdog are Windows-only (`taskkill`/`terminal64.exe`) and no-op on Linux.
+- **Dead code — do not build on it**: `src/core/event_bus.py`, `src/execution/reconciliation.py`, `config/dev_override.yaml`, `mql5_bridge/Include/Zmq_Wrapper.mqh`, the `TITAN_ENV` flag, and the `sqlalchemy` dependency are all unused.
+- The files carry verbose `AUDIT:`/`STATUS: PRODUCTION READY` headers from the previous owner; treat them as historical commentary, not ground truth.
+
+## Working style for this repo
+
+Use TDD for fixes (a failing `tests/unit` case first, then the minimal change), keep changes small and anchored to existing patterns, and verify by running the unit suite before claiming done. Ask before adding new dependencies, layers, or frameworks. Work on a feature branch (`main` holds the inherited baseline).

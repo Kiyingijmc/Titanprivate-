@@ -26,6 +26,60 @@ from src.strategies.models.crt import CandleRangeTheory
 from src.analysis.bias_engine import BiasEngine
 from src.analysis.smc_analyzer import SMCAnalyzer
 
+def resolve_trade(signal, future_bars):
+    """Resolve one signal into an outcome over the bars that follow it.
+
+    signal: {dir 'BUY'/'SELL', cmd 'MARKET'/'LIMIT', entry, sl, tp, ttl_bars}.
+    future_bars: ordered dicts with open/high/low/close, strictly after the signal bar.
+    Returns {filled, outcome, r, fill_offset, exit_offset}; outcome in
+    {TP, SL, EXPIRED, OPEN_AT_END, INVALID}. R = SL -> -1.0, TP -> +|tp-entry|/risk.
+    """
+    entry = float(signal["entry"]); sl = float(signal["sl"]); tp = float(signal["tp"])
+    risk = abs(entry - sl)
+    if risk == 0:
+        return {"filled": False, "outcome": "INVALID", "r": 0.0, "fill_offset": None, "exit_offset": 0}
+
+    is_long = signal["dir"] == "BUY"
+    n = len(future_bars)
+    if n == 0:
+        return {"filled": False, "outcome": "OPEN_AT_END", "r": 0.0, "fill_offset": None, "exit_offset": 0}
+
+    # 1. Fill.
+    if signal["cmd"] == "MARKET":
+        fill_offset = 0
+    else:  # LIMIT: filled when a bar's range touches entry, within TTL.
+        ttl = min(int(signal["ttl_bars"]), n)
+        fill_offset = None
+        for k in range(ttl):
+            b = future_bars[k]
+            if b["low"] <= entry <= b["high"]:
+                fill_offset = k
+                break
+        if fill_offset is None:
+            return {"filled": False, "outcome": "EXPIRED", "r": 0.0,
+                    "fill_offset": None, "exit_offset": max(0, ttl - 1)}
+
+    # 2. Resolve SL/TP from the fill bar onward (inclusive). Same bar both hit -> SL.
+    for j in range(fill_offset, n):
+        b = future_bars[j]
+        if is_long:
+            sl_hit = b["low"] <= sl
+            tp_hit = b["high"] >= tp
+        else:
+            sl_hit = b["high"] >= sl
+            tp_hit = b["low"] <= tp
+        if sl_hit:
+            return {"filled": True, "outcome": "SL", "r": -1.0,
+                    "fill_offset": fill_offset, "exit_offset": j}
+        if tp_hit:
+            return {"filled": True, "outcome": "TP", "r": abs(tp - entry) / risk,
+                    "fill_offset": fill_offset, "exit_offset": j}
+
+    # 3. Never resolved.
+    return {"filled": True, "outcome": "OPEN_AT_END", "r": 0.0,
+            "fill_offset": fill_offset, "exit_offset": n - 1}
+
+
 # 3. Mock Logger for Backtesting (Silent)
 class MockLogger:
     def log_event(self, t, m, msg, p=None): pass

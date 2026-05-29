@@ -220,6 +220,8 @@ class Backtester:
         self.m5_df = pd.DataFrame()
         self.h1_df = pd.DataFrame()
         
+        self._bias_h1_n = -1
+        self._bias_cache = ("NEUTRAL", {})
         self._load_and_process_data()
         self._init_strategies()
 
@@ -353,13 +355,17 @@ class Backtester:
 
             # Context slice
             h1_context = self.h1_df[self.h1_df['time'] < current_time]
-            
-            htf_bias = "NEUTRAL"
-            liquidity = {}
+            h1_n = len(h1_context)
 
-            if len(h1_context) > 20:
-                bias_eng = BiasEngine(h1_context.iloc[-100:]) 
-                htf_bias, liquidity = bias_eng.get_bias_context()
+            if h1_n != getattr(self, "_bias_h1_n", -1):
+                # New H1 bar closed -> recompute and cache (bias is constant within an H1 bar)
+                if h1_n > 20:
+                    self._bias_cache = BiasEngine(h1_context.iloc[-100:]).get_bias_context()
+                else:
+                    self._bias_cache = ("NEUTRAL", {})
+                self._bias_h1_n = h1_n
+
+            htf_bias, liquidity = self._bias_cache
 
             ctx = {
                 'bias': htf_bias,

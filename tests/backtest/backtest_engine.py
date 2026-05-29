@@ -8,6 +8,7 @@
 # STATUS: DEBUGGED & PRODUCTION READY
 # ==============================================================================
 
+import math as _math
 import pandas as pd
 import sys
 import os
@@ -145,6 +146,30 @@ def simulate_signals(signals, bars):
         trades.append({**sig, **res})
         busy_until = sig["bar_idx"] + 1 + res["exit_offset"]
     return trades
+
+
+def trade_dollars(r, entry, sl, spec, spread_points, commission_per_lot, risk_dollars):
+    """Convert an R-multiple trade into dollars net of spread + commission, sizing from
+    broker tick specs at a fixed risk. Indicative costs (spread is an assumption).
+
+    tick_size is the broker's real tick size from data/specs.json (e.g. 1e-05 for
+    EURUSD, 0.01 for XAUUSD/US30) -- the same field RiskManager sizes from, so this
+    stays consistent and asset-agnostic.
+    """
+    tick_size = float(spec.get("tick_size") or 0.0)
+    tick_value = float(spec.get("tick_value") or 0.0)
+    step = float(spec.get("vol_step") or 0.01) or 0.01
+    # round() clears IEEE-754 noise (e.g. 500.0000000000115) before the floor sizing
+    stop_ticks = round(abs(float(entry) - float(sl)) / tick_size, 8) if tick_size > 0 else 0.0
+    money_per_lot = stop_ticks * tick_value
+    if money_per_lot <= 0:
+        return {"lots": 0.0, "gross": 0.0, "commission": 0.0, "spread_cost": 0.0, "net": 0.0}
+    lots = _math.floor((risk_dollars / money_per_lot) / step) * step
+    gross = r * risk_dollars
+    commission = lots * commission_per_lot
+    spread_cost = spread_points * tick_value * lots
+    return {"lots": round(lots, 2), "gross": gross, "commission": commission,
+            "spread_cost": spread_cost, "net": gross - commission - spread_cost}
 
 
 # 3. Mock Logger for Backtesting (Silent)

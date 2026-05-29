@@ -78,5 +78,34 @@ class ResolveTrade(unittest.TestCase):
         self.assertEqual(res["fill_offset"], 1)
 
 
+class AggregateMetrics(unittest.TestCase):
+    def test_known_trade_list(self):
+        trades = [
+            {"strat": "A", "outcome": "TP", "r": 2.0},
+            {"strat": "A", "outcome": "SL", "r": -1.0},
+            {"strat": "A", "outcome": "TP", "r": 2.0},
+            {"strat": "A", "outcome": "SL", "r": -1.0},
+            {"strat": "A", "outcome": "EXPIRED", "r": 0.0},
+            {"strat": "A", "outcome": "OPEN_AT_END", "r": 0.0},
+        ]
+        m = bt.aggregate_metrics(trades)
+        self.assertEqual(m["trades"], 4)
+        self.assertEqual(m["wins"], 2)
+        self.assertEqual(m["losses"], 2)
+        self.assertAlmostEqual(m["win_rate"], 0.5)
+        self.assertAlmostEqual(m["expectancy"], 0.5)
+        self.assertAlmostEqual(m["total_r"], 2.0)
+        self.assertAlmostEqual(m["profit_factor"], 2.0)
+        self.assertAlmostEqual(m["max_drawdown_r"], 1.0)
+        self.assertEqual(m["max_losing_streak"], 1)
+        self.assertEqual(m["expired"], 1)
+        self.assertEqual(m["open_at_end"], 1)
+
+    def test_empty_is_safe(self):
+        m = bt.aggregate_metrics([])
+        self.assertEqual(m["trades"], 0)
+        self.assertEqual(m["expectancy"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

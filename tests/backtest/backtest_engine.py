@@ -85,6 +85,47 @@ def resolve_trade(signal, future_bars):
             "fill_offset": fill_offset, "exit_offset": n - 1}
 
 
+def aggregate_metrics(trades):
+    """Summarise resolved trades (TP/SL only) in R-multiples."""
+    resolved = [t for t in trades if t["outcome"] in ("TP", "SL")]
+    wins = [t["r"] for t in resolved if t["r"] > 0]
+    losses = [t["r"] for t in resolved if t["r"] < 0]
+    total_r = sum(t["r"] for t in resolved)
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+
+    equity = peak = max_dd = 0.0
+    for t in resolved:
+        equity += t["r"]
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+
+    streak = max_streak = 0
+    for t in resolved:
+        if t["r"] < 0:
+            streak += 1
+            max_streak = max(max_streak, streak)
+        else:
+            streak = 0
+
+    n = len(resolved)
+    return {
+        "trades": n,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": (len(wins) / n) if n else 0.0,
+        "expectancy": (total_r / n) if n else 0.0,
+        "total_r": total_r,
+        "profit_factor": (gross_win / gross_loss) if gross_loss else float("inf"),
+        "avg_win": (gross_win / len(wins)) if wins else 0.0,
+        "avg_loss": (sum(losses) / len(losses)) if losses else 0.0,
+        "max_drawdown_r": max_dd,
+        "max_losing_streak": max_streak,
+        "expired": sum(1 for t in trades if t["outcome"] == "EXPIRED"),
+        "open_at_end": sum(1 for t in trades if t["outcome"] == "OPEN_AT_END"),
+    }
+
+
 # 3. Mock Logger for Backtesting (Silent)
 class MockLogger:
     def log_event(self, t, m, msg, p=None): pass

@@ -65,6 +65,18 @@ class ResolveTrade(unittest.TestCase):
         self.assertEqual(res["outcome"], "INVALID")
         self.assertFalse(res["filled"])
 
+    def test_unknown_direction_is_invalid(self):
+        sig = {"dir": "FLAT", "cmd": "MARKET", "entry": 100, "sl": 90, "tp": 120, "ttl_bars": 24}
+        res = bt.resolve_trade(sig, [bar(100, 121, 99, 120)])
+        self.assertEqual(res["outcome"], "INVALID")
+
+    def test_limit_fills_on_last_ttl_bar_and_resolves_same_bar(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 90, "sl": 85, "tp": 100, "ttl_bars": 2}
+        future = [bar(95, 96, 92, 94), bar(91, 101, 89, 100)]  # entry touched at offset 1; TP same bar
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "TP")
+        self.assertEqual(res["fill_offset"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,8 +33,13 @@ def resolve_trade(signal, future_bars):
     future_bars: ordered dicts with open/high/low/close, strictly after the signal bar.
     Returns {filled, outcome, r, fill_offset, exit_offset}; outcome in
     {TP, SL, EXPIRED, OPEN_AT_END, INVALID}. R = SL -> -1.0, TP -> +|tp-entry|/risk.
+    Lives with the backtester (tests/backtest) by design; not used by live src/ code.
     """
-    entry = float(signal["entry"]); sl = float(signal["sl"]); tp = float(signal["tp"])
+    entry = float(signal["entry"])
+    sl = float(signal["sl"])
+    tp = float(signal["tp"])
+    if signal["dir"] not in ("BUY", "SELL"):
+        return {"filled": False, "outcome": "INVALID", "r": 0.0, "fill_offset": None, "exit_offset": 0}
     risk = abs(entry - sl)
     if risk == 0:
         return {"filled": False, "outcome": "INVALID", "r": 0.0, "fill_offset": None, "exit_offset": 0}
@@ -57,7 +62,7 @@ def resolve_trade(signal, future_bars):
                 break
         if fill_offset is None:
             return {"filled": False, "outcome": "EXPIRED", "r": 0.0,
-                    "fill_offset": None, "exit_offset": max(0, ttl - 1)}
+                    "fill_offset": None, "exit_offset": max(0, ttl - 1)}  # exit_offset marks the last bar the resting limit occupied (its TTL window) so the caller can free the symbol
 
     # 2. Resolve SL/TP from the fill bar onward (inclusive). Same bar both hit -> SL.
     for j in range(fill_offset, n):

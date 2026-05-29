@@ -237,6 +237,8 @@ void HandleCommand(string json) {
       string tf_str = GetJSONString(json, "tf");
       ENUM_TIMEFRAMES tf = PERIOD_M5;
       if(tf_str == "H1") tf = PERIOD_H1;
+      else if(tf_str == "H4") tf = PERIOD_H4;
+      else if(tf_str == "D1") tf = PERIOD_D1;
       
       int copied = CopyRates(sym, tf, 0, bars_count, rates);
       

@@ -119,14 +119,25 @@ def _net(trades, sym):
     return trades
 
 
+def _load_bars(sym, tf):
+    """tf 'h4' -> resample existing M5; tf 'd1' -> load native D1 CSV directly."""
+    if tf == "d1":
+        path = f"data/history/{sym}_D1.csv"
+        return pd.read_csv(path) if os.path.exists(path) else None
+    path = f"data/history/{sym}_M5.csv"
+    return resample_h4(pd.read_csv(path)) if os.path.exists(path) else None
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tf", default="h4", choices=["h4", "d1"])
+    args = ap.parse_args()
     flip_all, rr_all = [], []
     for s in SYMS:
-        path = f"data/history/{s}_M5.csv"
-        if not os.path.exists(path):
+        h4 = _load_bars(s, args.tf)
+        if h4 is None or len(h4) < 30:
             continue
-        m5 = pd.read_csv(path)
-        h4 = resample_h4(m5)
         atrs = atr_series(h4).fillna(0.0).values
         sigs = donchian_signals(h4, n=20)
         flip_all += _net(simulate_flip(sigs, h4.to_dict("records"), atrs, stop_mult=2.0), s)
@@ -146,7 +157,7 @@ def main():
               f"netExpR={m['expectancy']:+.3f} totR={m['total_r']:+.1f} PF={m['profit_factor']:.2f} "
               f"DD={m['max_drawdown_r']:.0f}R | TEST n={mt['trades']} exp={mt['expectancy']:+.3f}{flag}")
 
-    print("H4 Donchian(20) trend PoC -- NET OF COSTS, pooled across instruments\n")
+    print(f"{args.tf.upper()} Donchian(20) trend PoC -- NET OF COSTS, pooled across instruments\n")
     report("SIGNAL-FLIP", flip_all)
     report("FIXED-3R", rr_all)
 

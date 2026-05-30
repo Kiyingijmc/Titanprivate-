@@ -79,5 +79,32 @@ class ImpulseLegAndOTE(unittest.TestCase):
         self.assertAlmostEqual(z_lo, 13 - 0.79 * 7, places=6)
 
 
+class FVG(unittest.TestCase):
+    def test_find_bullish_fvg(self):
+        bars = [{"open": 1, "high": 2, "low": 1, "close": 2},   # c1 high=2
+                {"open": 2, "high": 5, "low": 2, "close": 5},   # displacement
+                {"open": 4, "high": 6, "low": 3, "close": 5}]   # c3 low=3 > c1 high=2 -> gap
+        self.assertEqual(m2.find_fvg(bars, 2, "BULLISH"), (2, 3))
+
+    def test_no_fvg_when_no_gap(self):
+        bars = [{"open": 1, "high": 4, "low": 1, "close": 3},
+                {"open": 3, "high": 5, "low": 2, "close": 4},
+                {"open": 4, "high": 6, "low": 3, "close": 5}]   # c3 low=3 < c1 high=4
+        self.assertIsNone(m2.find_fvg(bars, 2, "BULLISH"))
+
+    def test_qualifying_fvg_needs_30pct_in_zone(self):
+        leg = [{"open": 8, "high": 10, "low": 8, "close": 10},
+               {"open": 10, "high": 16, "low": 10, "close": 16},
+               {"open": 15, "high": 18, "low": 14, "close": 17}]
+        self.assertEqual(m2.qualifying_fvg(leg, (12, 20), "BULLISH"), (10, 14))
+
+    def test_qualifying_fvg_rejected_when_below_threshold(self):
+        leg = [{"open": 8, "high": 10, "low": 8, "close": 10},
+               {"open": 10, "high": 16, "low": 10, "close": 16},
+               {"open": 15, "high": 18, "low": 14, "close": 17}]
+        # zone (13.5, 20): overlap (13.5,14)=0.5 of size 4 = 12.5% < 30% -> None
+        self.assertIsNone(m2.qualifying_fvg(leg, (13.5, 20), "BULLISH"))
+
+
 if __name__ == "__main__":
     unittest.main()

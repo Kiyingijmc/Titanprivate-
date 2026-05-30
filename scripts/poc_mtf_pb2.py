@@ -101,3 +101,38 @@ def ote_zone(leg_low, leg_high, bias, lo=0.62, hi=0.79):
     if bias == "BULLISH":
         return (leg_high - hi * rng, leg_high - lo * rng)
     return (leg_low + lo * rng, leg_low + hi * rng)
+
+
+def find_fvg(bars, j, bias):
+    """3-candle imbalance ending at index j. BULL gap = (c1.high, c3.low) when c1.high <
+    c3.low; BEAR gap = (c3.high, c1.low) when c1.low > c3.high. Returns (lo, hi) or None."""
+    if j < 2:
+        return None
+    c1, c3 = bars[j - 2], bars[j]
+    if bias == "BULLISH" and c1["high"] < c3["low"]:
+        return (c1["high"], c3["low"])
+    if bias == "BEARISH" and c1["low"] > c3["high"]:
+        return (c3["high"], c1["low"])
+    return None
+
+
+def _overlap(a_lo, a_hi, b_lo, b_hi):
+    return max(0.0, min(a_hi, b_hi) - max(a_lo, b_lo))
+
+
+def qualifying_fvg(leg_bars, zone, bias, min_frac=0.30):
+    """First FVG within the leg whose body is >=min_frac inside the golden zone, or lies
+    entirely within it. zone=(z_lo,z_hi). Returns (lo,hi) or None."""
+    z_lo, z_hi = zone
+    for j in range(2, len(leg_bars)):
+        g = find_fvg(leg_bars, j, bias)
+        if not g:
+            continue
+        g_lo, g_hi = g
+        size = g_hi - g_lo
+        if size <= 0:
+            continue
+        entirely = g_lo >= z_lo and g_hi <= z_hi
+        if entirely or _overlap(g_lo, g_hi, z_lo, z_hi) / size >= min_frac:
+            return g
+    return None

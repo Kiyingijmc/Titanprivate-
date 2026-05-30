@@ -54,3 +54,13 @@ def structure_bias(df, lk=3):
         else:
             out.append("NEUTRAL")
     return out
+
+
+def combined_structure_bias(m5_df, h4, h1, lk=3):
+    """Per-5m-bar combined H4+H1 BOS bias, using only closed HTF bars (no look-ahead).
+    Reuses v1's last_closed_indexer + combine_bias_lists."""
+    tcol = "time" if "time" in m5_df.columns else "datetime"
+    m5t = list(pd.to_datetime(m5_df[tcol]))
+    idx4 = last_closed_indexer(m5t, list(pd.to_datetime(h4["time"])), 4)
+    idx1 = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
+    return combine_bias_lists(structure_bias(h4, lk), structure_bias(h1, lk), idx4, idx1)

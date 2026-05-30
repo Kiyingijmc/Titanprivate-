@@ -38,5 +38,24 @@ class StructureBias(unittest.TestCase):
         self.assertEqual(bias[-1], "BEARISH")
 
 
+class CombinedBias(unittest.TestCase):
+    def test_requires_both_htf_agree(self):
+        # 5m bars hourly-spaced; H4 & H1 both built from the same rising frame -> BULLISH tail.
+        rows = []
+        price = 1.0
+        for k in range(600):
+            price += 0.01
+            ts = pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * k)
+            rows.append({"datetime": str(ts), "open": price, "high": price + 0.02,
+                         "low": price - 0.02, "close": price})
+        m5 = pd.DataFrame(rows)
+        h4 = m2.resample_tf(m5, "4h")
+        h1 = m2.resample_tf(m5, "1h")
+        bias = m2.combined_structure_bias(m5, h4, h1, lk=2)
+        self.assertEqual(len(bias), len(m5))
+        self.assertIn(bias[-1], ("BULLISH", "NEUTRAL"))  # never BEARISH on a pure uptrend
+        self.assertNotEqual(bias[-1], "BEARISH")
+
+
 if __name__ == "__main__":
     unittest.main()

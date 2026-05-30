@@ -152,5 +152,63 @@ class ConfirmedEntry(unittest.TestCase):
         self.assertFalse(mp.confirmed_entry(bar, leg, "BEARISH"))
 
 
+class BuildSignals(unittest.TestCase):
+    def test_signal_fields_and_structural_stop(self):
+        # One clean BULLISH setup; verify entry=next open, stop=1.0xATR(1H), tp=2.5R.
+        opens = [10]*25
+        closes = [10]*25
+        highs = [10]*5 + [9] + [10,11,12,13,14,15] + [14]*13
+        lows  = [ 9]*5 + [8] + [ 9,10,11,12,13,14] + [13]*13
+        # decision bar i=18 must tag fib zone of leg(8,15): rng=7 -> zone=[15-0.705*7, 15-0.5*7]
+        # = [10.065, 11.5]; craft bar 18 to tag (low<=11.5) + close up.
+        highs[18], lows[18], opens[18], closes[18] = 11.4, 10.0, 10.2, 11.2
+        m5 = pd.DataFrame({"open": opens, "high": highs, "low": lows, "close": closes})
+        bias = ["NEUTRAL"]*25
+        for k in range(12, 25):
+            bias[k] = "BULLISH"
+        atr1h = [0.5]*25
+        m5.loc[19, "open"] = 100.0  # distinctive next-open so we can assert entry picks it
+        sigs = mp.build_signals(m5, bias, atr1h, lk=2, rr=2.5)
+        self.assertEqual(len(sigs), 1)
+        s = sigs[0]
+        self.assertEqual(s["bar_idx"], 19)
+        self.assertEqual(s["dir"], "BUY")
+        self.assertEqual(s["entry"], 100.0)
+        self.assertAlmostEqual(s["risk"], 0.5)            # 1.0 x ATR(1H)
+        self.assertAlmostEqual(s["sl"], 99.5)             # entry - risk
+        self.assertAlmostEqual(s["tp"], 100.0 + 2.5*0.5)  # entry + rr*risk
+        self.assertEqual(s["cmd"], "MARKET")
+
+    def test_skips_neutral_and_zero_atr(self):
+        m5 = pd.DataFrame({"open": [1]*10, "high": [1]*10, "low": [1]*10, "close": [1]*10})
+        self.assertEqual(mp.build_signals(m5, ["NEUTRAL"]*10, [1.0]*10, lk=2), [])
+        self.assertEqual(mp.build_signals(m5, ["BULLISH"]*10, [0.0]*10, lk=2), [])
+
+    def test_sell_signal_mirrors(self):
+        # Inverted shape: swing high idx5=11, swing low idx11=4 -> down-leg for BEARISH.
+        highs = [10,10,10,10,10, 11, 10,9,8,7,6,5, 6,6,6,6,6,6,6, 6,6,6,6,6,6]
+        lows  = [ 9, 9, 9, 9, 9, 10,  9,8,7,6,5,4, 5,5,5,5,5,5,5, 5,5,5,5,5,5]
+        opens = [10]*25
+        closes = [10]*25
+        # leg=(4,11), rng=7 -> BEARISH premium zone [4+0.5*7, 4+0.705*7] = [7.5, 8.935];
+        # craft bar18 to tag (high>=7.5) + close DOWN (close<open).
+        highs[18], lows[18], opens[18], closes[18] = 8.2, 7.5, 8.2, 7.6
+        m5 = pd.DataFrame({"open": opens, "high": highs, "low": lows, "close": closes})
+        bias = ["NEUTRAL"]*25
+        for k in range(12, 19):
+            bias[k] = "BEARISH"
+        atr1h = [0.5]*25
+        m5.loc[19, "open"] = 1.0  # distinctive next-open
+        sigs = mp.build_signals(m5, bias, atr1h, lk=2, rr=2.5)
+        self.assertEqual(len(sigs), 1)
+        s = sigs[0]
+        self.assertEqual(s["bar_idx"], 19)
+        self.assertEqual(s["dir"], "SELL")
+        self.assertEqual(s["entry"], 1.0)
+        self.assertAlmostEqual(s["risk"], 0.5)
+        self.assertAlmostEqual(s["sl"], 1.5)              # entry + risk (short)
+        self.assertAlmostEqual(s["tp"], 1.0 - 2.5*0.5)    # entry - rr*risk
+
+
 if __name__ == "__main__":
     unittest.main()

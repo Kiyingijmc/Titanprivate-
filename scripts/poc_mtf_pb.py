@@ -162,3 +162,36 @@ def confirmed_entry(bar, leg, bias, lo=FIB_LO, hi=FIB_HI):
         resume = bar["close"] < bar["open"]
         return tagged and held and resume
     return False
+
+
+def build_signals(m5_df, bias_list, atr1h, lk=5, rr=2.5):
+    """Scan 5m bars; on a confirmed pullback entry in the trend direction, emit a signal:
+    entry at the NEXT bar open, structural stop = 1.0xATR(1H), fixed target = rr*risk.
+    Carries 'risk' and 'atr' for the partial/trail exit. One signal per qualifying bar;
+    concurrency (one-open-per-symbol) is enforced by the exit simulators."""
+    highs = list(m5_df["high"].values)
+    lows = list(m5_df["low"].values)
+    recs = m5_df[["open", "high", "low", "close"]].to_dict("records")
+    n = len(recs)
+    sigs = []
+    for i in range(lk + 1, n - 1):
+        bias = bias_list[i]
+        if bias == "NEUTRAL":
+            continue
+        a = atr1h[i]
+        if not (a > 0):
+            continue
+        leg = impulse_leg(highs, lows, i, lk, bias)
+        if leg is None:
+            continue
+        if not confirmed_entry(recs[i], leg, bias):
+            continue
+        entry = recs[i + 1]["open"]
+        risk = 1.0 * a
+        if bias == "BULLISH":
+            sl, tp, d = entry - risk, entry + rr * risk, "BUY"
+        else:
+            sl, tp, d = entry + risk, entry - rr * risk, "SELL"
+        sigs.append({"bar_idx": i + 1, "dir": d, "cmd": "MARKET", "entry": entry,
+                     "sl": sl, "tp": tp, "risk": risk, "atr": a, "ttl_bars": 1})
+    return sigs

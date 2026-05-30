@@ -46,3 +46,14 @@ def ma_bias(htf_df, ma_len=50):
         else:
             out.append("NEUTRAL")
     return out
+
+
+def last_closed_indexer(m5_times, htf_times, tf_hours):
+    """For each m5 timestamp, the index of the most recently CLOSED htf bar (or -1).
+    An htf bar stamped T closes at T + tf_hours; it may only be used from then on.
+    No look-ahead: a bar in progress is never visible to an earlier m5 bar."""
+    close_times = [t + pd.Timedelta(hours=tf_hours) for t in htf_times]  # ascending
+    out = []
+    for t in m5_times:
+        out.append(bisect.bisect_right(close_times, t) - 1)
+    return out

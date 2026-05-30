@@ -44,5 +44,17 @@ class MaBias(unittest.TestCase):
         self.assertEqual(bias[-1], "BEARISH")        # falling tail, price below EMA
 
 
+class ClosedIndexer(unittest.TestCase):
+    def test_htf_bar_unused_until_closed(self):
+        ts = pd.to_datetime
+        htf_times = [ts("2026-01-01 00:00:00"), ts("2026-01-01 04:00:00")]  # 4h bars
+        m5_times = [ts("2026-01-01 03:55:00"),   # before 1st bar closes (04:00) -> -1
+                    ts("2026-01-01 04:00:00"),   # 1st bar just closed -> idx 0
+                    ts("2026-01-01 04:05:00"),   # still only 1st closed -> idx 0
+                    ts("2026-01-01 08:00:00")]   # 2nd bar (04:00) closed at 08:00 -> idx 1
+        idx = mp.last_closed_indexer(m5_times, htf_times, 4)
+        self.assertEqual(idx, [-1, 0, 0, 1])
+
+
 if __name__ == "__main__":
     unittest.main()

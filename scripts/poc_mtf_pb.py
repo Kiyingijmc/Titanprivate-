@@ -1,5 +1,5 @@
-# scripts/poc_mtf_pb.py
 #!/usr/bin/env python3
+# scripts/poc_mtf_pb.py
 # MTF trend-pullback proof-of-concept. 4H+1H 50-EMA bias -> 5m fib(0.5-0.705) pullback
 # + confirmation-close entry -> 1.0xATR(1H) structural stop -> two exit models
 # (fixed-2.5R, partial-at-1R+ATR-trail). Screens net-of-cost, OOS edge across asset

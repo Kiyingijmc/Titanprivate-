@@ -19,6 +19,18 @@ class Resample(unittest.TestCase):
         self.assertEqual(h4.iloc[0]["low"], -1)
         self.assertEqual(h4.iloc[0]["close"], 4)  # close of bar 3 = 3+1
 
+    def test_resample_tf_time_col_and_timestamp(self):
+        rows = []
+        for h in range(8):
+            rows.append({"time": f"2026-01-01 {h:02d}:00:00", "open": h, "high": h + 2,
+                         "low": h - 1, "close": h + 1})
+        h4 = mp.resample_tf(pd.DataFrame(rows), "4h")
+        self.assertEqual(len(h4), 2)
+        self.assertEqual(h4.iloc[0]["time"], pd.Timestamp("2026-01-01 00:00:00"))
+        self.assertEqual(h4.iloc[1]["time"], pd.Timestamp("2026-01-01 04:00:00"))
+        self.assertEqual(h4.iloc[0]["close"], 4)
+        self.assertEqual(h4.iloc[1]["open"], 4)   # open of bar 4
+
 
 if __name__ == "__main__":
     unittest.main()

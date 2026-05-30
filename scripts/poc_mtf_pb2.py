@@ -136,3 +136,47 @@ def qualifying_fvg(leg_bars, zone, bias, min_frac=0.30):
         if entirely or _overlap(g_lo, g_hi, z_lo, z_hi) / size >= min_frac:
             return g
     return None
+
+
+def swept_liquidity(lows, highs, start, end, bias, lk=2):
+    """Did the pullback (bars start..end) take out a prior confirmed minor swing?
+    BULL: a later bar's low breaches an earlier confirmed swing low. Returns
+    (swept_bool, sweep_extreme) where sweep_extreme is the breach low (bull)/high (bear)."""
+    sub_h = highs[start:end + 1]
+    sub_l = lows[start:end + 1]
+    his, los = confirmed_swing_seq(sub_h, sub_l, lk)
+    if bias == "BULLISH":
+        for li in los:
+            after = sub_l[li + lk + 1:]
+            if after and min(after) < sub_l[li]:
+                return (True, min(after))
+        return (False, None)
+    for hi in his:
+        after = sub_h[hi + lk + 1:]
+        if after and max(after) > sub_h[hi]:
+            return (True, max(after))
+    return (False, None)
+
+
+def mss_confirm(highs, lows, closes, i, bias, lk=2):
+    """M5 CHoCH at bar i in the trend direction. BULL: close[i] > the most recent confirmed
+    swing high before i. Returns (confirmed, mss_level) where mss_level is the swing low
+    (bull) / swing high (bear) the shift breaks away from -- used by the no-FVG stop."""
+    his, los = confirmed_swing_seq(highs[:i], lows[:i], lk)
+    if bias == "BULLISH":
+        cand = [j for j in his if j + lk < i]
+        if not cand:
+            return (False, None)
+        sh = cand[-1]
+        if closes[i] > highs[sh]:
+            after = [j for j in los if j > sh and j + lk < i]
+            return (True, lows[after[-1]] if after else lows[sh])
+        return (False, None)
+    cand = [j for j in los if j + lk < i]
+    if not cand:
+        return (False, None)
+    sl = cand[-1]
+    if closes[i] < lows[sl]:
+        after = [j for j in his if j > sl and j + lk < i]
+        return (True, highs[after[-1]] if after else highs[sl])
+    return (False, None)

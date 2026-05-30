@@ -106,5 +106,30 @@ class FVG(unittest.TestCase):
         self.assertIsNone(m2.qualifying_fvg(leg, (13.5, 20), "BULLISH"))
 
 
+class SweepAndMSS(unittest.TestCase):
+    def test_sweep_detects_breached_swing_low(self):
+        # lows form a minor swing low at idx 2 (val 4), later bar dips to 3 -> swept.
+        highs = [10, 9, 8, 9, 10, 11]
+        lows = [7, 6, 4, 6, 3, 5]
+        swept, extreme = m2.swept_liquidity(lows, highs, 0, 5, "BULLISH", lk=1)
+        self.assertTrue(swept)
+        self.assertEqual(extreme, 3)
+
+    def test_no_sweep_when_holds_above(self):
+        highs = [10, 9, 8, 9, 10, 11]
+        lows = [7, 6, 4, 6, 5, 6]   # never below the 4 swing low
+        swept, _ = m2.swept_liquidity(lows, highs, 0, 5, "BULLISH", lk=1)
+        self.assertFalse(swept)
+
+    def test_mss_confirms_when_close_breaks_swing_high(self):
+        # swing high at idx 2 (val 8); bar 5 closes 9 > 8 -> MSS up.
+        highs = [5, 6, 8, 6, 5, 9]
+        lows = [3, 4, 6, 4, 3, 7]
+        closes = [4, 5, 7, 5, 4, 9]
+        confirmed, lvl = m2.mss_confirm(highs, lows, closes, i=5, bias="BULLISH", lk=1)
+        self.assertTrue(confirmed)
+        self.assertIsInstance(lvl, (int, float))
+
+
 if __name__ == "__main__":
     unittest.main()

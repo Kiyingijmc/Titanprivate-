@@ -134,3 +134,31 @@ def impulse_leg(highs, lows, i, lk, bias):
     if bias == "BEARISH" and lo_idx > hi_idx:
         return (lows[lo_idx], highs[hi_idx])
     return None
+
+
+FIB_LO, FIB_HI = 0.5, 0.705  # a-priori discount/premium band (NOT swept)
+
+
+def confirmed_entry(bar, leg, bias, lo=FIB_LO, hi=FIB_HI):
+    """A just-closed 5m bar triggers entry if it tagged the fib zone AND closed back in the
+    trend direction (a resumption candle). Never a passive limit at the level (limits get
+    wicked / expire -- the OTE failure mode)."""
+    leg_low, leg_high = leg
+    rng = leg_high - leg_low
+    if rng <= 0:
+        return False
+    if bias == "BULLISH":
+        z_hi = leg_high - lo * rng    # shallow (0.5) retrace
+        z_lo = leg_high - hi * rng    # deep (0.705) retrace
+        tagged = bar["low"] <= z_hi
+        held = bar["close"] >= z_lo
+        resume = bar["close"] > bar["open"]
+        return tagged and held and resume
+    if bias == "BEARISH":
+        z_lo = leg_low + lo * rng
+        z_hi = leg_low + hi * rng
+        tagged = bar["high"] >= z_lo
+        held = bar["close"] <= z_hi
+        resume = bar["close"] < bar["open"]
+        return tagged and held and resume
+    return False

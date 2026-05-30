@@ -119,5 +119,23 @@ class ImpulseLeg(unittest.TestCase):
         self.assertIsNone(mp.impulse_leg(highs, lows, 18, lk=2, bias="BEARISH"))
 
 
+class ConfirmedEntry(unittest.TestCase):
+    # leg_low=0, leg_high=10 -> bullish discount zone = [10-0.705*10, 10-0.5*10] = [2.95, 5.0]
+    def test_bullish_confirmation(self):
+        leg = (0.0, 10.0)
+        bar = {"open": 3.0, "high": 4.5, "low": 3.0, "close": 4.0}  # dips into zone, closes up
+        self.assertTrue(mp.confirmed_entry(bar, leg, "BULLISH"))
+
+    def test_no_entry_when_not_tagged(self):
+        leg = (0.0, 10.0)
+        bar = {"open": 6.0, "high": 7.0, "low": 5.5, "close": 6.5}  # low 5.5 never reaches 5.0
+        self.assertFalse(mp.confirmed_entry(bar, leg, "BULLISH"))
+
+    def test_no_entry_when_close_not_resuming(self):
+        leg = (0.0, 10.0)
+        bar = {"open": 4.5, "high": 4.6, "low": 3.0, "close": 3.2}  # tagged but bearish close
+        self.assertFalse(mp.confirmed_entry(bar, leg, "BULLISH"))
+
+
 if __name__ == "__main__":
     unittest.main()

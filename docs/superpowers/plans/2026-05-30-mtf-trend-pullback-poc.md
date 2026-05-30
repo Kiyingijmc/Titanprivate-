@@ -406,12 +406,16 @@ Expected: FAIL — no attribute `impulse_leg`.
 - [ ] **Step 3: Write minimal implementation** (append)
 
 ```python
+# NOTE (implementation correction): use STRICT inequality vs the neighbours, not `==` to
+# the window extreme. With `==`, a flat plateau makes every bar qualify as BOTH a swing
+# high and a swing low, collapsing recent_swing to hi_idx==lo_idx (leg -> None). Strict
+# fractal pivots are the standard definition and what the tests require.
 def _is_swing_high(highs, j, lk):
-    return highs[j] == max(highs[j - lk:j + lk + 1])
+    return highs[j] > max(highs[j - lk:j] + highs[j + 1:j + lk + 1])
 
 
 def _is_swing_low(lows, j, lk):
-    return lows[j] == min(lows[j - lk:j + lk + 1])
+    return lows[j] < min(lows[j - lk:j] + lows[j + 1:j + lk + 1])
 
 
 def recent_swing(highs, lows, i, lk):

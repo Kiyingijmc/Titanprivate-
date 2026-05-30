@@ -253,7 +253,9 @@ def conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_extreme, 
     if qfvg is not None and not fully_swept:
         return leg_low if bias == "BULLISH" else leg_high
     elif qfvg is not None:
-        return sweep_extreme
+        if sweep_extreme is not None:
+            return sweep_extreme
+        return leg_low if bias == "BULLISH" else leg_high
     return mss_level
 
 
@@ -454,6 +456,8 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
             fully_swept = (pullback_low < qfvg[0]) if bias == "BULLISH" else (pullback_high > qfvg[1])
         stop = conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_ext, mss_level)
 
+        if stop is None:
+            continue
         entry = bars[i + 1]["open"]
         risk = abs(entry - stop)
         if not (risk > 0):

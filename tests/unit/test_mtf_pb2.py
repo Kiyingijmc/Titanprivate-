@@ -192,6 +192,14 @@ class ConditionalStop(unittest.TestCase):
                                 fully_swept=False, sweep_extreme=None, mss_level=9.0)
         self.assertEqual(s, 13.0)
 
+    def test_fvg_swept_but_no_extreme_falls_back_to_leg_origin(self):
+        s = m2.conditional_stop("BULLISH", 6.0, 13.0, qfvg=(7.0, 8.0),
+                                fully_swept=True, sweep_extreme=None, mss_level=9.0)
+        self.assertEqual(s, 6.0)
+        sb = m2.conditional_stop("BEARISH", 6.0, 13.0, qfvg=(7.0, 8.0),
+                                 fully_swept=True, sweep_extreme=None, mss_level=9.0)
+        self.assertEqual(sb, 13.0)
+
 
 class ManagedExit(unittest.TestCase):
     def test_tp1_then_runner_hits_tp2(self):
@@ -260,6 +268,20 @@ class BuildSignals(unittest.TestCase):
             self.assertIn(s["entry_model"], ("market", "limit"))
             for f in ("bar_idx", "dir", "cmd", "entry", "sl", "tp1", "tp2", "risk"):
                 self.assertIn(f, s)
+
+    def test_real_data_both_modes_no_crash_and_monotonic(self):
+        path = "data/history/XAUUSD_M5.csv"
+        if not os.path.exists(path):
+            self.skipTest("no history on disk")
+        df = pd.read_csv(path).head(8000)
+        _, ff = m2.build_signals(df)                                    # filtered/default
+        _, fb = m2.build_signals(df, require_sweep=False, require_confluence=False)
+        order = ["bias", "leg", "armed", "sweep", "mss", "pressure", "confluence", "emitted"]
+        for fn in (ff, fb):
+            vals = [fn[k] for k in order]
+            self.assertEqual(vals, sorted(vals, reverse=True))          # non-increasing funnel
+        for k in order:
+            self.assertGreaterEqual(fb[k], ff[k])                       # baseline >= filtered
 
 
 if __name__ == "__main__":

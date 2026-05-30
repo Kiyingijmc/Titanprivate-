@@ -300,5 +300,21 @@ class RunSymbol(unittest.TestCase):
         self.assertIsInstance(out["market_fixed"], list)
 
 
+class EndToEndSmoke(unittest.TestCase):
+    def test_run_symbol_on_real_csv_if_present(self):
+        path = "data/history/XAUUSD_M5.csv"
+        if not os.path.exists(path):
+            self.skipTest("no history on disk")
+        df = pd.read_csv(path).head(8000)
+        out = m2.run_symbol(df)
+        # pipeline completes and produces list outputs + a populated funnel
+        for k in ("market_fixed", "market_managed", "limit_fixed", "limit_managed"):
+            self.assertIsInstance(out[k], list)
+        self.assertGreaterEqual(out["funnel"]["bias"], 0)
+        # net_with_slippage must run cleanly on the resolved trades
+        costed = m2.net_with_slippage(out["market_managed"], "XAUUSD")
+        self.assertIsInstance(costed, list)
+
+
 if __name__ == "__main__":
     unittest.main()

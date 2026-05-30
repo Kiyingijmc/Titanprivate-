@@ -487,7 +487,10 @@ def net_with_slippage(trades, sym, slip_frac=0.05, comm_rt=14.0):
     top of the 2x spread + commission. slip_frac already expressed as a fraction of 1R."""
     import json
     sp = tp.SPREAD.get(sym, 0.0002)
-    specs = json.load(open("data/specs.json")) if os.path.exists("data/specs.json") else {}
+    specs = {}
+    if os.path.exists("data/specs.json"):
+        with open("data/specs.json") as _f:
+            specs = json.load(_f)
     spec = specs.get(sym, {"tick_size": 1e-5, "tick_value": 1.0})
     for t in trades:
         base = tp.net_r_after_costs(t["r"], t["entry"], t["sl"], sp,

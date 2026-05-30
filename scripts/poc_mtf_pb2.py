@@ -6,6 +6,7 @@
 # strategy. Spec: docs/superpowers/specs/2026-05-30-mtf-trend-pullback-v2-design.md
 import bisect
 import os
+import random as _random
 import sys
 
 import pandas as pd
@@ -310,4 +311,51 @@ def simulate_managed(sigs, bars, partial_frac=0.33):
         trades.append({**sig, "r": r_total, "entry_idx": b0, "exit_idx": exit_idx,
                        "outcome": "TP" if r_total > 0 else "SL"})
         busy_until = exit_idx
+    return trades
+
+
+def mae_mfe(sig, bars):
+    """Max adverse / favorable excursion in R over the trade's life [entry_idx..exit_idx]."""
+    is_long = sig["dir"] == "BUY"
+    E, risk = sig["entry"], sig["risk"]
+    seg = bars[sig["entry_idx"]:sig["exit_idx"] + 1]
+    if not seg or risk <= 0:
+        return (0.0, 0.0)
+    if is_long:
+        mae = (min(b["low"] for b in seg) - E) / risk
+        mfe = (max(b["high"] for b in seg) - E) / risk
+    else:
+        mae = (E - max(b["high"] for b in seg)) / risk
+        mfe = (E - min(b["low"] for b in seg)) / risk
+    return (mae, mfe)
+
+
+def bootstrap_expectancy_ci(rs, n_boot=2000, alpha=0.05, seed=0):
+    """Percentile bootstrap CI for mean R. Deterministic given seed."""
+    if not rs:
+        return (0.0, 0.0)
+    rng = _random.Random(seed)
+    n = len(rs)
+    means = []
+    for _ in range(n_boot):
+        s = sum(rs[rng.randrange(n)] for _ in range(n))
+        means.append(s / n)
+    means.sort()
+    lo = means[int((alpha / 2) * n_boot)]
+    hi = means[min(n_boot - 1, int((1 - alpha / 2) * n_boot))]
+    return (lo, hi)
+
+
+def net_with_slippage(trades, sym, slip_frac=0.05, comm_rt=14.0):
+    """Like poc_trend_h4._net but adds a slippage charge (slip_frac of the stop, in R) on
+    top of the 2x spread + commission. slip_frac already expressed as a fraction of 1R."""
+    import json
+    sp = tp.SPREAD.get(sym, 0.0002)
+    specs = json.load(open("data/specs.json")) if os.path.exists("data/specs.json") else {}
+    spec = specs.get(sym, {"tick_size": 1e-5, "tick_value": 1.0})
+    for t in trades:
+        base = tp.net_r_after_costs(t["r"], t["entry"], t["sl"], sp,
+                                    spec["tick_size"], spec["tick_value"], comm_rt)
+        t["r"] = base - slip_frac      # slippage already expressed as a fraction of 1R
+        t["outcome"] = "TP" if t["r"] > 0 else "SL"
     return trades

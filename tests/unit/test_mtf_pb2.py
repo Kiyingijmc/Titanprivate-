@@ -218,5 +218,28 @@ class ManagedExit(unittest.TestCase):
         self.assertEqual(trades[0]["outcome"], "SL")
 
 
+class Diagnostics(unittest.TestCase):
+    def test_mae_mfe_long(self):
+        sig = {"dir": "BUY", "entry": 100.0, "risk": 5.0, "entry_idx": 0, "exit_idx": 2}
+        bars = [{"open": 100, "high": 101, "low": 98, "close": 100},   # MAE -2 -> -0.4R
+                {"open": 100, "high": 110, "low": 99, "close": 108},   # MFE +10 -> +2.0R
+                {"open": 108, "high": 109, "low": 107, "close": 108}]
+        mae, mfe = m2.mae_mfe(sig, bars)
+        self.assertAlmostEqual(mae, -0.4, places=6)
+        self.assertAlmostEqual(mfe, 2.0, places=6)
+
+    def test_bootstrap_ci_is_ordered_and_brackets_mean(self):
+        rs = [1.0, -1.0, 1.0, -1.0, 2.0, -1.0, 1.0, -1.0, 1.0, -1.0]
+        lo, hi = m2.bootstrap_expectancy_ci(rs, n_boot=500, seed=1)
+        self.assertLess(lo, hi)
+        mean = sum(rs) / len(rs)
+        self.assertTrue(lo <= mean <= hi)
+
+    def test_net_with_slippage_charges_more_than_zero(self):
+        t = {"r": 2.0, "entry": 100.0, "sl": 95.0, "outcome": "TP"}
+        out = m2.net_with_slippage([dict(t)], "XAUUSD", slip_frac=0.05)
+        self.assertLess(out[0]["r"], 2.0)        # cost + slippage reduce R
+
+
 if __name__ == "__main__":
     unittest.main()

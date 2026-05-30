@@ -15,13 +15,13 @@ Design **our own** multi-timeframe, trend-aligned, pullback-entry system (NOT se
 **4H bias → 1H confirmation → 15m trend → 5m OTE/Fib-retracement setup → 1-2m precise entry; only trade WITH the 4H bias + trend; structural (15m/1H/ATR) stops.**
 Sequence the user wants AFTER the strategy: **order management → risk management → account management → compounding → bookkeeping → accounting/auditing → ML (LAST).**
 
-## In-flight when the session ended
-A **deep-research workflow** on the above design was running (runId `wf_41f11ca5-d2f`) — it does NOT survive a new session (workflow resume is same-session-only). **It must be RE-LAUNCHED fresh.** Re-run via the `deep-research` skill with the question saved in `docs/research/RESEARCH_QUESTION_mtf.md`. The research brief: evidence-vs-folklore for the MTF trend+OTE-pullback design — multi-TF confluence, pullback-vs-breakout entries, robust trend definition, intraday cost-vs-edge, stop/target management, and ICT-OTE specifically.
+## Research status
+The formal deep-research workflow on this design **FAILED** (intermittent model outages broke the synthesis after 105 agents). An **interim evidence synthesis** was written instead: `docs/research/2026-05-30-mtf-synthesis-interim.md` (confidence-labeled). Optional: re-run the formal cited workflow (`deep-research` skill, brief in `docs/research/RESEARCH_QUESTION_mtf.md`) when the model is stable, to replace the interim doc.
 
 ## NEXT ACTION (do this first)
-1. Re-launch the deep research (skill `deep-research`, args in `docs/research/RESEARCH_QUESTION_mtf.md`). ~30–50 min, background.
-2. When it returns: present evidence-vs-folklore findings → run `brainstorming` to design the strategy → spec → plan → build a **cost-validated PoC** on the harness (reuse `scripts/poc_trend_h4.py` patterns + `tests/backtest/backtest_engine.py` pure functions: `resolve_trade`, `aggregate_metrics`, `simulate_signals`, `split_trades`, `win_rate_ci`, `trades_in_window`).
-3. Then work the management layers in the user's order; ML last.
+1. Read `docs/research/2026-05-30-mtf-synthesis-interim.md` (the evidence + design recommendation). Optionally re-run the formal research if the model is stable.
+2. Run `brainstorming` to design the strategy from that synthesis → spec → plan → build a **cost-validated PoC** on the harness (reuse `scripts/poc_trend_h4.py` patterns + `tests/backtest/backtest_engine.py` pure functions: `resolve_trade`, `aggregate_metrics`, `simulate_signals`, `split_trades`, `win_rate_ci`, `trades_in_window`). Build the SIMPLEST version: HTF-trend filter + pullback entry + structural stop + trail.
+3. Then work the management layers in the user's order (order → risk → account → compounding → bookkeeping → accounting/auditing); ML last.
 
 ## Hard rules (do not repeat past mistakes)
 - **Structural stops only** (≥ ~confirmation-TF swing / a few ATR). Never sub-pip/tight stops — they die on spread.

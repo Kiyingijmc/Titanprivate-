@@ -32,5 +32,17 @@ class Resample(unittest.TestCase):
         self.assertEqual(h4.iloc[1]["open"], 4)   # open of bar 4
 
 
+class MaBias(unittest.TestCase):
+    def test_ma_bias_bull_bear_and_warmup(self):
+        # 60 rising closes -> bullish once past warmup; flip to falling -> bearish.
+        closes = list(range(1, 61)) + list(range(60, 30, -1))
+        df = pd.DataFrame({"close": closes})
+        bias = mp.ma_bias(df, ma_len=50)
+        self.assertEqual(len(bias), len(closes))
+        self.assertEqual(bias[10], "NEUTRAL")        # within warmup (< ma_len)
+        self.assertEqual(bias[59], "BULLISH")        # rising, past warmup
+        self.assertEqual(bias[-1], "BEARISH")        # falling tail, price below EMA
+
+
 if __name__ == "__main__":
     unittest.main()

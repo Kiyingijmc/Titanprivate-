@@ -28,3 +28,21 @@ def resample_tf(m5_df, rule):
     r = df.resample(rule).agg({"open": "first", "high": "max",
                                "low": "min", "close": "last"}).dropna()
     return r.reset_index()
+
+
+def ma_bias(htf_df, ma_len=50):
+    """Per-closed-bar trend by price vs a single EMA. BULLISH if close>EMA, BEARISH if
+    close<EMA, NEUTRAL within the warmup (< ma_len bars) or on an exact touch."""
+    closes = htf_df["close"].reset_index(drop=True)
+    e = closes.ewm(span=ma_len, adjust=False).mean()
+    out = []
+    for i in range(len(closes)):
+        if i < ma_len:
+            out.append("NEUTRAL")
+        elif closes[i] > e[i]:
+            out.append("BULLISH")
+        elif closes[i] < e[i]:
+            out.append("BEARISH")
+        else:
+            out.append("NEUTRAL")
+    return out

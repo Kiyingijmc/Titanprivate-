@@ -82,3 +82,12 @@ def combined_bias(m5_df, h4, h1, ma_len=50):
     idx4 = last_closed_indexer(m5t, list(pd.to_datetime(h4["time"])), 4)
     idx1 = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
     return combine_bias_lists(ma_bias(h4, ma_len), ma_bias(h1, ma_len), idx4, idx1)
+
+
+def attach_atr1h(m5_df, h1, period=14):
+    """ATR(1H) value of the last CLOSED H1 bar, aligned to each 5m bar (0.0 if none yet).
+    Reuses poc_trend_h4.atr_series for the ATR computation."""
+    atr = tp.atr_series(h1, period).fillna(0.0).values
+    m5t = list(pd.to_datetime(m5_df["time" if "time" in m5_df.columns else "datetime"]))
+    idx = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
+    return [float(atr[j]) if j >= 0 else 0.0 for j in idx]

@@ -78,5 +78,28 @@ class CombinedBias(unittest.TestCase):
         self.assertEqual(out, ["NEUTRAL"])
 
 
+class AttachAtr(unittest.TestCase):
+    def test_atr_uses_last_closed_h1(self):
+        ts = pd.to_datetime
+        # 20 H1 bars, constant 1.0 range -> ATR ~1.0 after warmup.
+        h1 = pd.DataFrame({
+            "time": [ts("2026-01-01 00:00:00") + pd.Timedelta(hours=i) for i in range(20)],
+            "open": [10.0]*20, "high": [10.5]*20, "low": [9.5]*20, "close": [10.0]*20,
+        })
+        m5 = pd.DataFrame({"time": [ts("2026-01-02 00:00:00")],  # well after all H1 closed
+                           "open": [10], "high": [10], "low": [10], "close": [10]})
+        atr = mp.attach_atr1h(m5, h1, period=14)
+        self.assertEqual(len(atr), 1)
+        self.assertAlmostEqual(atr[0], 1.0, places=6)
+
+    def test_atr_zero_before_any_closed_bar(self):
+        ts = pd.to_datetime
+        h1 = pd.DataFrame({"time": [ts("2026-01-01 05:00:00")], "open": [1.0],
+                           "high": [2.0], "low": [0.0], "close": [1.0]})
+        m5 = pd.DataFrame({"time": [ts("2026-01-01 04:00:00")],  # before H1 bar closes
+                           "open": [1], "high": [1], "low": [1], "close": [1]})
+        self.assertEqual(mp.attach_atr1h(m5, h1), [0.0])
+
+
 if __name__ == "__main__":
     unittest.main()

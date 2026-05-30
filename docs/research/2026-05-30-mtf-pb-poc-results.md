@@ -86,3 +86,34 @@ Honest bottom line: the design's spine is the most promising thing we've tested,
 the project's first cost- and OOS-surviving signal — but on this 3-month sample it is **one
 instrument**, not yet a validated edge. Verdict: **inconclusive-but-promising; need more
 commodity history before any live or management work.**
+
+## Known limitations of this screening PoC (read the numbers with these in mind)
+
+These are inherited from the shared backtest framework (`poc_trend_h4.py` carries them too).
+They are documented, not fixed — appropriate for a screening tool, and none overturns the
+verdict; two of them actually *narrow* the result toward the metals lead.
+
+1. **Fixed-model entry-bar skip.** `bt.simulate_signals` resolves from `bars[bar_idx+1:]`, so
+   the entry bar's own range can't stop out the FIXED-2.5R model, whereas `simulate_partial_trail`
+   resolves from the entry bar (`j=b0`). The fixed model can therefore *understate* losses and
+   *overstate* edge slightly. **Mitigation:** metals is positive under the PARTIAL model too,
+   which does **not** skip the entry bar — i.e. the metals lead survives the more conservative
+   exit treatment, so it is not an artifact of this skew.
+
+2. **Non-chronological OOS split when pooling multiple symbols.** `split_trades` sorts by
+   per-symbol `bar_idx`; pooling several symbols (FX-majors = 5, FX-crosses = 2) intermixes
+   calendar periods, so those two classes' TEST columns are **not** clean chronological holdouts.
+   **Mitigation:** metals, energy, index, crypto are each a **single instrument**, so their
+   `bar_idx` is monotonic in time and their TEST split **is** a valid chronological OOS estimate
+   — including the metals result the verdict rests on. The only classes with the pooling defect
+   (FX) were uniformly negative under both models, so the "FX loses" conclusion is unaffected.
+
+3. **Cost charged once per trade on the partial model.** A partial trade has two exits (the 1R
+   book + the trail), but `net_r_after_costs` deducts one round-turn. Costs are therefore mildly
+   *understated* for the partial model (more so on indices/crypto than FX). This makes the
+   partial-model edges a touch optimistic — another reason to treat the metals/energy partial
+   results as a lead requiring confirmation on a larger sample, not a settled edge.
+
+Net effect on the verdict: the FX losses and the negative basket are robust; the metals lead is
+real and survives the most conservative reading available here, but is one instrument on a thin
+sample. Conclusion stands: **gather more commodity history and re-test before any build.**

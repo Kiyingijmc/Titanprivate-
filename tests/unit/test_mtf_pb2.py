@@ -57,5 +57,27 @@ class CombinedBias(unittest.TestCase):
         self.assertNotEqual(bias[-1], "BEARISH")
 
 
+class ImpulseLegAndOTE(unittest.TestCase):
+    def setUp(self):
+        self.highs = [5, 7, 4, 9, 6, 11, 8, 13, 10]
+        self.lows = [3, 5, 2, 6, 4, 8, 6, 10, 8]
+
+    def test_bull_leg_is_most_recent_bos_up(self):
+        leg = m2.impulse_leg(self.highs, self.lows, upto=8, lk=1, bias="BULLISH")
+        self.assertIsNotNone(leg)
+        leg_low, leg_high, lo_idx, hi_idx = leg
+        self.assertEqual(leg_high, 13)   # BOS up high
+        self.assertEqual(leg_low, 6)     # most recent confirmed swing low before it (idx 6)
+        self.assertEqual((lo_idx, hi_idx), (6, 7))
+
+    def test_no_leg_when_bias_neutral(self):
+        self.assertIsNone(m2.impulse_leg(self.highs, self.lows, 8, 1, "NEUTRAL"))
+
+    def test_ote_zone_bull(self):
+        z_lo, z_hi = m2.ote_zone(6, 13, "BULLISH")  # rng=7
+        self.assertAlmostEqual(z_hi, 13 - 0.62 * 7, places=6)
+        self.assertAlmostEqual(z_lo, 13 - 0.79 * 7, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

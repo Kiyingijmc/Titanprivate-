@@ -64,3 +64,40 @@ def combined_structure_bias(m5_df, h4, h1, lk=3):
     idx4 = last_closed_indexer(m5t, list(pd.to_datetime(h4["time"])), 4)
     idx1 = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
     return combine_bias_lists(structure_bias(h4, lk), structure_bias(h1, lk), idx4, idx1)
+
+
+def impulse_leg(highs, lows, upto, lk, bias):
+    """Most recent leg in bias dir that BROKE the prior swing, using bars [0..upto].
+    BULL: a confirmed swing high exceeding the previous confirmed swing high (BOS up);
+    origin = most recent confirmed swing low before it. Returns
+    (leg_low, leg_high, lo_idx, hi_idx) or None."""
+    if bias not in ("BULLISH", "BEARISH"):
+        return None
+    h = highs[:upto + 1]
+    l = lows[:upto + 1]
+    his, los = confirmed_swing_seq(h, l, lk)
+    if bias == "BULLISH":
+        for k in range(len(his) - 1, 0, -1):
+            if highs[his[k]] > highs[his[k - 1]]:                 # BOS up
+                hi = his[k]
+                befs = [j for j in los if j < hi]
+                if befs:
+                    lo = befs[-1]
+                    return (lows[lo], highs[hi], lo, hi)
+        return None
+    for k in range(len(los) - 1, 0, -1):
+        if lows[los[k]] < lows[los[k - 1]]:                       # BOS down
+            lo = los[k]
+            befs = [j for j in his if j < lo]
+            if befs:
+                hi = befs[-1]
+                return (lows[lo], highs[hi], lo, hi)
+    return None
+
+
+def ote_zone(leg_low, leg_high, bias, lo=0.62, hi=0.79):
+    """Golden-zone price band (z_lo, z_hi). BULL: measured down from the high."""
+    rng = leg_high - leg_low
+    if bias == "BULLISH":
+        return (leg_high - hi * rng, leg_high - lo * rng)
+    return (leg_low + lo * rng, leg_low + hi * rng)

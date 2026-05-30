@@ -242,3 +242,15 @@ def htf_poi_overlap(zone, h1, h4, t, bias, lk=3):
             if _overlap(z_lo, z_hi, lo, hi) > 0:
                 return True
     return False
+
+
+def conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_extreme, mss_level):
+    """The M5-structure stop level per the spec's decision table:
+      - qualifying FVG present, NOT fully swept -> OTE leg origin
+      - qualifying FVG present, fully swept     -> swept extreme
+      - no qualifying FVG                       -> M5 MSS swing level"""
+    if qfvg is not None and not fully_swept:
+        return leg_low if bias == "BULLISH" else leg_high
+    if qfvg is not None and fully_swept:
+        return sweep_extreme
+    return mss_level

@@ -171,5 +171,22 @@ class Confluence(unittest.TestCase):
         self.assertFalse(m2.htf_poi_overlap((100.0, 101.0), h1, h4, t, "BULLISH", lk=1))
 
 
+class ConditionalStop(unittest.TestCase):
+    def test_fvg_present_not_swept_uses_leg_origin(self):
+        s = m2.conditional_stop("BULLISH", leg_low=6.0, leg_high=13.0, qfvg=(7.0, 8.0),
+                                fully_swept=False, sweep_extreme=None, mss_level=9.0)
+        self.assertEqual(s, 6.0)
+
+    def test_fvg_present_swept_uses_sweep_extreme(self):
+        s = m2.conditional_stop("BULLISH", 6.0, 13.0, qfvg=(7.0, 8.0),
+                                fully_swept=True, sweep_extreme=6.7, mss_level=9.0)
+        self.assertEqual(s, 6.7)
+
+    def test_no_fvg_uses_mss_level(self):
+        s = m2.conditional_stop("BULLISH", 6.0, 13.0, qfvg=None,
+                                fully_swept=False, sweep_extreme=None, mss_level=9.0)
+        self.assertEqual(s, 9.0)
+
+
 if __name__ == "__main__":
     unittest.main()

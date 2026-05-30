@@ -180,3 +180,33 @@ def mss_confirm(highs, lows, closes, i, bias, lk=2):
         after = [j for j in his if j > sl and j + lk < i]
         return (True, highs[after[-1]] if after else highs[sl])
     return (False, None)
+
+
+def median_range(bars, end, window=20):
+    """Median high-low range over the `window` bars before index `end`."""
+    seg = bars[max(0, end - window):end]
+    rngs = sorted(b["high"] - b["low"] for b in seg)
+    if not rngs:
+        return 0.0
+    mid = len(rngs) // 2
+    return rngs[mid] if len(rngs) % 2 else (rngs[mid - 1] + rngs[mid]) / 2.0
+
+
+def is_displacement(bar, med_range, bias, body_frac=0.60, range_mult=1.0):
+    """Strong momentum candle: body >= body_frac of range AND range >= range_mult*median,
+    closing in the trend direction."""
+    rng = bar["high"] - bar["low"]
+    if rng <= 0 or abs(bar["close"] - bar["open"]) < body_frac * rng:
+        return False
+    if rng < range_mult * med_range:
+        return False
+    return bar["close"] > bar["open"] if bias == "BULLISH" else bar["close"] < bar["open"]
+
+
+def pressure_ok(bars, highs, lows, closes, i, bias, lk=2, window=20):
+    """(A) a displacement FVG left by the resumption impulse ending at/just before i, OR
+    (B) a micro-BOS (M5 CHoCH) accompanied by a displacement candle at i."""
+    if find_fvg(bars, i, bias) or (i >= 3 and find_fvg(bars, i - 1, bias)):
+        return True
+    bos, _ = mss_confirm(highs, lows, closes, i, bias, lk)
+    return bool(bos) and is_displacement(bars[i], median_range(bars, i, window), bias)

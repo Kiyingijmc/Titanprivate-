@@ -131,5 +131,23 @@ class SweepAndMSS(unittest.TestCase):
         self.assertIsInstance(lvl, (int, float))
 
 
+class Pressure(unittest.TestCase):
+    def test_displacement_candle(self):
+        med = 1.0
+        strong = {"open": 10, "high": 12, "low": 9.8, "close": 11.9}  # body 1.9 of range 2.2
+        weak = {"open": 10, "high": 12, "low": 9.8, "close": 10.2}    # tiny body
+        self.assertTrue(m2.is_displacement(strong, med, "BULLISH"))
+        self.assertFalse(m2.is_displacement(weak, med, "BULLISH"))
+
+    def test_pressure_true_on_displacement_fvg(self):
+        # bar i leaves a bullish FVG (c1.high < c3.low) -> pressure ok regardless of body.
+        bars = [{"open": 1, "high": 2, "low": 1, "close": 2},
+                {"open": 2, "high": 5, "low": 2, "close": 5},
+                {"open": 4, "high": 6, "low": 3, "close": 5}]
+        highs = [b["high"] for b in bars]; lows = [b["low"] for b in bars]
+        closes = [b["close"] for b in bars]
+        self.assertTrue(m2.pressure_ok(bars, highs, lows, closes, 2, "BULLISH", lk=1))
+
+
 if __name__ == "__main__":
     unittest.main()

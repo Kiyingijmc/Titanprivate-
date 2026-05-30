@@ -284,5 +284,21 @@ class BuildSignals(unittest.TestCase):
             self.assertGreaterEqual(fb[k], ff[k])                       # baseline >= filtered
 
 
+class RunSymbol(unittest.TestCase):
+    def test_run_symbol_returns_both_models_and_funnel(self):
+        rows = []
+        price = 100.0
+        for k in range(900):
+            price += 0.05 if (k % 20) < 15 else -0.03
+            ts = pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * k)
+            rows.append({"datetime": str(ts), "open": price, "high": price + 0.1,
+                         "low": price - 0.1, "close": price})
+        out = m2.run_symbol(pd.DataFrame(rows))
+        for key in ("market_fixed", "market_managed", "limit_fixed", "limit_managed",
+                    "funnel", "baseline_funnel"):
+            self.assertIn(key, out)
+        self.assertIsInstance(out["market_fixed"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

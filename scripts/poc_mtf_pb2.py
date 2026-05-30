@@ -495,3 +495,99 @@ def net_with_slippage(trades, sym, slip_frac=0.05, comm_rt=14.0):
         t["r"] = base - slip_frac      # slippage already expressed as a fraction of 1R
         t["outcome"] = "TP" if t["r"] > 0 else "SL"
     return trades
+
+
+ASSET_CLASSES = {
+    "FX-majors": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
+    "FX-crosses": ["GBPCAD", "GBPJPY"],
+    "metals": ["XAUUSD"],
+    "index": ["US30"],
+    "crypto": ["BTCUSD"],
+    "energy": ["XBRUSD"],
+}
+SYMS = [s for syms in ASSET_CLASSES.values() for s in syms]
+
+
+def asset_class_of(sym):
+    for cls, syms in ASSET_CLASSES.items():
+        if sym in syms:
+            return cls
+    return "other"
+
+
+def _split_by_model(sigs):
+    return ([s for s in sigs if s["entry_model"] == "market"],
+            [s for s in sigs if s["entry_model"] == "limit"])
+
+
+def run_symbol(m5_df):
+    """Full v2 pipeline for one symbol's M5 frame. Returns resolved (pre-cost) trades for
+    the 2x2 entry/exit matrix, plus the filtered + baseline funnels."""
+    bars = m5_df[["open", "high", "low", "close"]].to_dict("records")
+    sigs, funnel = build_signals(m5_df, require_sweep=True, require_confluence=True)
+    _, base_funnel = build_signals(m5_df, require_sweep=False, require_confluence=False)
+    mkt, lim = _split_by_model(sigs)
+    return {
+        "market_fixed": bt.simulate_signals(mkt, bars),
+        "market_managed": simulate_managed(mkt, bars),
+        "limit_fixed": bt.simulate_signals(lim, bars),
+        "limit_managed": simulate_managed(lim, bars),
+        "funnel": funnel,
+        "baseline_funnel": base_funnel,
+    }
+
+
+def _report(title, by_class):
+    """Per-class + pooled net-of-cost metrics, Wilson CI, bootstrap CI, OOS expectancy."""
+    print(f"\n===== {title} (NET OF COSTS + SLIPPAGE) =====")
+    pooled = []
+    for cls in list(ASSET_CLASSES) + ["POOLED-ALL"]:
+        trades = pooled if cls == "POOLED-ALL" else by_class.get(cls, [])
+        if cls != "POOLED-ALL":
+            pooled += trades
+        m = bt.aggregate_metrics(trades)
+        p, lo, hi = bt.win_rate_ci(m["wins"], m["trades"])
+        norm = [{**t, "bar_idx": t.get("bar_idx", t.get("entry_idx", 0))} for t in trades]
+        train, test = bt.split_trades(norm, 0.7)
+        mtr, mte = bt.aggregate_metrics(train), bt.aggregate_metrics(test)
+        rs = [t["r"] for t in trades if t["outcome"] in ("TP", "SL")]
+        blo, bhi = bootstrap_expectancy_ci(rs, seed=1)
+        flag = "  [INSUFFICIENT n<30]" if m["trades"] < 30 else ""
+        print(f"  {cls:12} n={m['trades']:4d} win={p*100:4.1f}% CI[{lo*100:.0f}-{hi*100:.0f}] "
+              f"netExpR={m['expectancy']:+.3f} bootCI[{blo:+.2f},{bhi:+.2f}] PF={m['profit_factor']:.2f} "
+              f"DD={m['max_drawdown_r']:.0f}R | TRAIN exp={mtr['expectancy']:+.3f} "
+              f"TEST n={mte['trades']} exp={mte['expectancy']:+.3f}{flag}")
+
+
+def _funnel_report(title, funnels):
+    print(f"\n----- {title} (setup funnel, summed) -----")
+    keys = ["bias", "leg", "armed", "sweep", "mss", "pressure", "confluence", "emitted"]
+    agg = {k: sum(f.get(k, 0) for f in funnels) for k in keys}
+    print("  " + "  ".join(f"{k}={agg[k]}" for k in keys))
+
+
+def main():
+    classes = {k: {} for k in ("market_fixed", "market_managed", "limit_fixed", "limit_managed")}
+    funnels, base_funnels = [], []
+    for sym in SYMS:
+        path = f"data/history/{sym}_M5.csv"
+        if not os.path.exists(path):
+            continue
+        res = run_symbol(pd.read_csv(path))
+        cls = asset_class_of(sym)
+        for model in classes:
+            costed = net_with_slippage(res[model], sym)
+            classes[model].setdefault(cls, []).extend(costed)
+        funnels.append(res["funnel"])
+        base_funnels.append(res["baseline_funnel"])
+    print("MTF-PB v2 -- H4+H1 BOS bias, M15 OTE pullback, sweep, M5 MSS, pressure, HTF-POI")
+    _funnel_report("FILTERED", funnels)
+    _funnel_report("UNFILTERED BASELINE", base_funnels)
+    _report("MARKET entry / FIXED-2.5R", classes["market_fixed"])
+    _report("MARKET entry / MANAGED", classes["market_managed"])
+    _report("LIMIT entry / FIXED-2.5R (uplift, not gated)", classes["limit_fixed"])
+    _report("LIMIT entry / MANAGED (uplift, not gated)", classes["limit_managed"])
+
+
+if __name__ == "__main__":
+    main()

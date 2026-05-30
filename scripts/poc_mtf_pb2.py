@@ -210,3 +210,35 @@ def pressure_ok(bars, highs, lows, closes, i, bias, lk=2, window=20):
         return True
     bos, _ = mss_confirm(highs, lows, closes, i, bias, lk)
     return bool(bos) and is_displacement(bars[i], median_range(bars, i, window), bias)
+
+
+def htf_pois(htf, upto_idx, bias, lk=3):
+    """POI price bands visible by upto_idx: trend-dir FVG gaps + confirmed swing-candle
+    ranges. Returns a list of (lo, hi)."""
+    bars = htf[["open", "high", "low", "close"]].to_dict("records")[:upto_idx + 1]
+    highs = [b["high"] for b in bars]
+    lows = [b["low"] for b in bars]
+    pois = []
+    for j in range(2, len(bars)):
+        g = find_fvg(bars, j, bias)
+        if g:
+            pois.append(g)
+    his, los = confirmed_swing_seq(highs, lows, lk)
+    for j in his + los:
+        pois.append((bars[j]["low"], bars[j]["high"]))
+    return pois
+
+
+def htf_poi_overlap(zone, h1, h4, t, bias, lk=3):
+    """True if the OTE zone intersects any H1/H4 POI band (closed bars only at time t)."""
+    z_lo, z_hi = zone
+    for htf, hours in ((h1, 1), (h4, 4)):
+        times = list(pd.to_datetime(htf["time"]))
+        close_times = [tt + pd.Timedelta(hours=hours) for tt in times]
+        idx = bisect.bisect_right(close_times, t) - 1
+        if idx < 0:
+            continue
+        for lo, hi in htf_pois(htf, idx, bias, lk):
+            if _overlap(z_lo, z_hi, lo, hi) > 0:
+                return True
+    return False

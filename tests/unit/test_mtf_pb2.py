@@ -149,5 +149,27 @@ class Pressure(unittest.TestCase):
         self.assertTrue(m2.pressure_ok(bars, highs, lows, closes, 2, "BULLISH", lk=1))
 
 
+class Confluence(unittest.TestCase):
+    def _htf(self, fvg=True):
+        # 3 H1 bars leaving a bullish FVG gap (high0=2 < low2=3) when fvg=True.
+        low2 = 3 if fvg else 1
+        rows = [{"time": "2026-01-01 00:00:00", "open": 1, "high": 2, "low": 1, "close": 2},
+                {"time": "2026-01-01 01:00:00", "open": 2, "high": 5, "low": 2, "close": 5},
+                {"time": "2026-01-01 02:00:00", "open": 4, "high": 6, "low": low2, "close": 5}]
+        return pd.DataFrame(rows)
+
+    def test_overlap_true_when_zone_hits_h1_fvg(self):
+        h1 = self._htf(fvg=True)
+        h4 = self._htf(fvg=True)
+        t = pd.Timestamp("2026-01-01 05:00:00")     # after the H1 bars closed
+        self.assertTrue(m2.htf_poi_overlap((2.4, 2.9), h1, h4, t, "BULLISH", lk=1))
+
+    def test_overlap_false_when_zone_misses(self):
+        h1 = self._htf(fvg=True)
+        h4 = self._htf(fvg=True)
+        t = pd.Timestamp("2026-01-01 05:00:00")
+        self.assertFalse(m2.htf_poi_overlap((100.0, 101.0), h1, h4, t, "BULLISH", lk=1))
+
+
 if __name__ == "__main__":
     unittest.main()

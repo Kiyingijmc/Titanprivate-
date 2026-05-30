@@ -56,5 +56,27 @@ class ClosedIndexer(unittest.TestCase):
         self.assertEqual(idx, [-1, 0, 0, 1])
 
 
+class CombinedBias(unittest.TestCase):
+    def test_agreement_required(self):
+        ts = pd.to_datetime
+        # one closed 4h bar (BULLISH) and one closed 1h bar (BEARISH) -> NEUTRAL (disagree)
+        h4 = pd.DataFrame({"time": [ts("2026-01-01 00:00:00")], "close": [10.0]})
+        h1 = pd.DataFrame({"time": [ts("2026-01-01 00:00:00")], "close": [10.0]})
+        m5 = pd.DataFrame({"time": [ts("2026-01-01 09:00:00")], "open": [1], "high": [1],
+                           "low": [1], "close": [1]})
+        out = mp.combine_bias_lists(["BULLISH"], ["BEARISH"],
+                                    mp.last_closed_indexer(list(m5["time"]), list(h4["time"]), 4),
+                                    mp.last_closed_indexer(list(m5["time"]), list(h1["time"]), 1))
+        self.assertEqual(out, ["NEUTRAL"])
+
+    def test_both_bullish(self):
+        out = mp.combine_bias_lists(["BULLISH"], ["BULLISH"], [0], [0])
+        self.assertEqual(out, ["BULLISH"])
+
+    def test_warmup_neutral_when_no_closed_bar(self):
+        out = mp.combine_bias_lists(["BULLISH"], ["BULLISH"], [-1], [0])
+        self.assertEqual(out, ["NEUTRAL"])
+
+
 if __name__ == "__main__":
     unittest.main()

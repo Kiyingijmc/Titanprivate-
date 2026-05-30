@@ -57,3 +57,28 @@ def last_closed_indexer(m5_times, htf_times, tf_hours):
     for t in m5_times:
         out.append(bisect.bisect_right(close_times, t) - 1)
     return out
+
+
+def combine_bias_lists(bias4, bias1, idx4, idx1):
+    """Combine per-bar 4H/1H bias for each 5m bar given the closed-bar indices.
+    BULLISH only if both agree bullish, BEARISH only if both agree bearish, else NEUTRAL.
+    A negative index (no closed HTF bar yet) -> NEUTRAL."""
+    out = []
+    for k in range(len(idx4)):
+        a = bias4[idx4[k]] if idx4[k] >= 0 else "NEUTRAL"
+        b = bias1[idx1[k]] if idx1[k] >= 0 else "NEUTRAL"
+        if a == "BULLISH" and b == "BULLISH":
+            out.append("BULLISH")
+        elif a == "BEARISH" and b == "BEARISH":
+            out.append("BEARISH")
+        else:
+            out.append("NEUTRAL")
+    return out
+
+
+def combined_bias(m5_df, h4, h1, ma_len=50):
+    """Per-5m-bar combined 4H+1H bias, using only closed HTF bars (no look-ahead)."""
+    m5t = list(pd.to_datetime(m5_df["time" if "time" in m5_df.columns else "datetime"]))
+    idx4 = last_closed_indexer(m5t, list(pd.to_datetime(h4["time"])), 4)
+    idx1 = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
+    return combine_bias_lists(ma_bias(h4, ma_len), ma_bias(h1, ma_len), idx4, idx1)

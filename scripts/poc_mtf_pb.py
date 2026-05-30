@@ -243,3 +243,75 @@ def simulate_partial_trail(sigs, bars, trail_mult=2.0):
                        "outcome": "TP" if r_total > 0 else "SL"})
         busy_until = exit_idx
     return trades
+
+
+ASSET_CLASSES = {
+    "FX-majors": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD"],
+    "FX-crosses": ["GBPCAD", "GBPJPY"],
+    "metals": ["XAUUSD"],
+    "index": ["US30"],
+    "crypto": ["BTCUSD"],
+    "energy": ["XBRUSD"],
+}
+SYMS = [s for syms in ASSET_CLASSES.values() for s in syms]
+
+
+def asset_class_of(sym):
+    for cls, syms in ASSET_CLASSES.items():
+        if sym in syms:
+            return cls
+    return "other"
+
+
+def run_symbol(m5_df, ma_len=50, lk=5, rr=2.5, trail_mult=2.0):
+    """Run the full MTF-PB pipeline on one symbol's M5 frame. Returns
+    {'fixed': [...], 'partial': [...]} of resolved (pre-cost) trade dicts."""
+    h4 = resample_tf(m5_df, "4h")
+    h1 = resample_tf(m5_df, "1h")
+    bias = combined_bias(m5_df, h4, h1, ma_len)
+    atr1h = attach_atr1h(m5_df, h1)
+    sigs = build_signals(m5_df, bias, atr1h, lk=lk, rr=rr)
+    bars = m5_df[["open", "high", "low", "close"]].to_dict("records")
+    fixed = bt.simulate_signals(sigs, bars)
+    partial = simulate_partial_trail(sigs, bars, trail_mult=trail_mult)
+    return {"fixed": fixed, "partial": partial}
+
+
+def _report(model_name, by_class):
+    """Print pooled net-of-cost metrics per asset class + overall, with Wilson CI, an
+    out-of-sample (70/30) expectancy, and an n<30 significance flag."""
+    print(f"\n===== {model_name} (NET OF COSTS) =====")
+    pooled = []
+    for cls in list(ASSET_CLASSES) + ["POOLED-ALL"]:
+        trades = pooled if cls == "POOLED-ALL" else by_class.get(cls, [])
+        if cls != "POOLED-ALL":
+            pooled += trades
+        m = bt.aggregate_metrics(trades)
+        p, lo, hi = bt.win_rate_ci(m["wins"], m["trades"])
+        norm = [{**t, "bar_idx": t.get("bar_idx", t.get("entry_idx", 0))} for t in trades]
+        _, test = bt.split_trades(norm, 0.7)
+        mt = bt.aggregate_metrics(test)
+        flag = "  [INSUFFICIENT n<30]" if m["trades"] < 30 else ""
+        print(f"  {cls:12} n={m['trades']:4d} win={p*100:4.1f}% CI[{lo*100:.0f}-{hi*100:.0f}] "
+              f"netExpR={m['expectancy']:+.3f} totR={m['total_r']:+.1f} PF={m['profit_factor']:.2f} "
+              f"DD={m['max_drawdown_r']:.0f}R | TEST n={mt['trades']} exp={mt['expectancy']:+.3f}{flag}")
+
+
+def main():
+    fixed_by_class, partial_by_class = {}, {}
+    for sym in SYMS:
+        path = f"data/history/{sym}_M5.csv"
+        if not os.path.exists(path):
+            continue
+        m5 = pd.read_csv(path)
+        res = run_symbol(m5)
+        cls = asset_class_of(sym)
+        fixed_by_class.setdefault(cls, []).extend(tp._net(res["fixed"], sym))
+        partial_by_class.setdefault(cls, []).extend(tp._net(res["partial"], sym))
+    print("MTF-PB PoC -- 4H+1H 50-EMA bias, 5m fib(0.5-0.705) pullback, 1.0xATR(1H) stop")
+    _report("FIXED-2.5R", fixed_by_class)
+    _report("PARTIAL-1R+ATR-TRAIL", partial_by_class)
+
+
+if __name__ == "__main__":
+    main()

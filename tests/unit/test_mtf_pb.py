@@ -250,5 +250,28 @@ class PartialTrail(unittest.TestCase):
         self.assertEqual(len(trades), 1)
 
 
+class Pipeline(unittest.TestCase):
+    def test_asset_class_of(self):
+        self.assertEqual(mp.asset_class_of("EURUSD"), "FX-majors")
+        self.assertEqual(mp.asset_class_of("GBPJPY"), "FX-crosses")
+        self.assertEqual(mp.asset_class_of("XAUUSD"), "metals")
+        self.assertEqual(mp.asset_class_of("US30"), "index")
+        self.assertEqual(mp.asset_class_of("BTCUSD"), "crypto")
+        self.assertEqual(mp.asset_class_of("XBRUSD"), "energy")
+
+    def test_run_symbol_returns_two_models(self):
+        ts = pd.date_range("2026-01-01", periods=4000, freq="5min")
+        base = pd.Series(range(4000)).astype(float) * 0.01 + 100.0
+        noise = pd.Series([(-1)**i for i in range(4000)]).astype(float) * 0.05
+        close = base + noise
+        m5 = pd.DataFrame({"datetime": ts, "open": close.shift(1).fillna(close[0]),
+                           "high": close + 0.1, "low": close - 0.1, "close": close})
+        out = mp.run_symbol(m5)
+        self.assertIn("fixed", out)
+        self.assertIn("partial", out)
+        self.assertIsInstance(out["fixed"], list)
+        self.assertIsInstance(out["partial"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

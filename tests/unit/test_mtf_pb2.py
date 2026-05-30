@@ -248,6 +248,14 @@ class Diagnostics(unittest.TestCase):
         out = m2.net_with_slippage([dict(t)], "XAUUSD", slip_frac=0.05)
         self.assertLess(out[0]["r"], 2.0)        # cost + slippage reduce R
 
+    def test_net_with_slippage_skips_unresolved(self):
+        rows = [{"r": 0.0, "entry": 100.0, "sl": 95.0, "outcome": "EXPIRED"},
+                {"r": 0.0, "entry": 100.0, "sl": 95.0, "outcome": "OPEN_AT_END"}]
+        out = m2.net_with_slippage([dict(r) for r in rows], "XAUUSD")
+        self.assertEqual(out[0]["outcome"], "EXPIRED")   # not reclassified
+        self.assertEqual(out[1]["outcome"], "OPEN_AT_END")
+        self.assertEqual(out[0]["r"], 0.0)               # not charged
+
 
 class BuildSignals(unittest.TestCase):
     def test_returns_signals_and_funnel_keys(self):

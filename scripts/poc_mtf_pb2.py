@@ -363,7 +363,8 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
                   require_confluence=True):
     """Compose the full v2 pipeline over M5 bars. Returns (signals, funnel_counts).
     Emits two signals per qualifying bar (entry_model 'market' and 'limit'). Set
-    require_sweep / require_confluence False for the unfiltered core-thesis baseline."""
+    require_sweep / require_confluence False for the unfiltered core-thesis baseline.
+    Funnel counts are bar-passes per stage (a single leg can pass a stage on multiple bars), not distinct setups."""
     tcol = "time" if "time" in m5_df.columns else "datetime"
     m5t = list(pd.to_datetime(m5_df[tcol]))
     h4 = resample_tf(m5_df, "4h")
@@ -493,6 +494,8 @@ def net_with_slippage(trades, sym, slip_frac=0.05, comm_rt=14.0):
             specs = json.load(_f)
     spec = specs.get(sym, {"tick_size": 1e-5, "tick_value": 1.0})
     for t in trades:
+        if t.get("outcome") not in ("TP", "SL"):
+            continue
         base = tp.net_r_after_costs(t["r"], t["entry"], t["sl"], sp,
                                     spec["tick_size"], spec["tick_value"], comm_rt)
         t["r"] = base - slip_frac      # slippage already expressed as a fraction of 1R
@@ -563,7 +566,7 @@ def _report(title, by_class):
 
 
 def _funnel_report(title, funnels):
-    print(f"\n----- {title} (setup funnel, summed) -----")
+    print(f"\n----- {title} (funnel, bar-passes summed; a leg may pass a stage on many bars) -----")
     keys = ["bias", "leg", "armed", "sweep", "mss", "pressure", "confluence", "emitted"]
     agg = {k: sum(f.get(k, 0) for f in funnels) for k in keys}
     print("  " + "  ".join(f"{k}={agg[k]}" for k in keys))

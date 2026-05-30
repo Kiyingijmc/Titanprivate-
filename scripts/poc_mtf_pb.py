@@ -195,3 +195,51 @@ def build_signals(m5_df, bias_list, atr1h, lk=5, rr=2.5):
         sigs.append({"bar_idx": i + 1, "dir": d, "cmd": "MARKET", "entry": entry,
                      "sl": sl, "tp": tp, "risk": risk, "atr": a, "ttl_bars": 1})
     return sigs
+
+
+def simulate_partial_trail(sigs, bars, trail_mult=2.0):
+    """Exit model (b): book HALF at +1R and move the stop to break-even, then TRAIL the
+    remaining half by trail_mult*ATR(1H) off the running extreme; exit when the stop is hit.
+    One open position per symbol (later signals during a live trade are skipped). Same-bar
+    stop+target -> stop wins (conservative). Returns trade dicts with blended R + outcome."""
+    trades = []
+    busy_until = -1
+    n = len(bars)
+    for sig in sigs:
+        b0 = sig["bar_idx"]
+        if b0 <= busy_until or b0 >= n:
+            continue
+        is_long = sig["dir"] == "BUY"
+        E, S, risk = sig["entry"], sig["sl"], sig["risk"]
+        trail_dist = trail_mult * sig["atr"]
+        one_r = E + risk if is_long else E - risk
+        partialed = False
+        stop = S
+        extreme = bars[b0]["high"] if is_long else bars[b0]["low"]
+        r_total, exit_idx = None, b0
+        for j in range(b0, n):
+            bar = bars[j]
+            extreme = max(extreme, bar["high"]) if is_long else min(extreme, bar["low"])
+            hit = (bar["low"] <= stop) if is_long else (bar["high"] >= stop)
+            if hit:
+                exit_r = (stop - E) / risk if is_long else (E - stop) / risk
+                r_total = (0.5 * 1.0 + 0.5 * exit_r) if partialed else exit_r
+                exit_idx = j
+                break
+            if not partialed:
+                reached = (bar["high"] >= one_r) if is_long else (bar["low"] <= one_r)
+                if reached:
+                    partialed = True
+                    stop = E  # break-even on the remainder
+            if partialed:
+                t_stop = (extreme - trail_dist) if is_long else (extreme + trail_dist)
+                stop = max(stop, t_stop) if is_long else min(stop, t_stop)
+        if r_total is None:  # never resolved -> mark out at last close
+            px = bars[n - 1]["close"]
+            exit_r = (px - E) / risk if is_long else (E - px) / risk
+            r_total = (0.5 * 1.0 + 0.5 * exit_r) if partialed else exit_r
+            exit_idx = n - 1
+        trades.append({**sig, "r": r_total, "entry_idx": b0, "exit_idx": exit_idx,
+                       "outcome": "TP" if r_total > 0 else "SL"})
+        busy_until = exit_idx
+    return trades

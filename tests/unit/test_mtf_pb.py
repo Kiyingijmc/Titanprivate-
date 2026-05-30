@@ -210,5 +210,36 @@ class BuildSignals(unittest.TestCase):
         self.assertAlmostEqual(s["tp"], 1.0 - 2.5*0.5)    # entry - rr*risk
 
 
+class PartialTrail(unittest.TestCase):
+    def _bars(self, seq):
+        return [{"open": o, "high": h, "low": l, "close": c} for o, h, l, c in seq]
+
+    def test_full_stop_before_1r(self):
+        # entry 10, risk 1 (sl 9), price drops straight to 9 -> full -1R.
+        sig = {"bar_idx": 0, "dir": "BUY", "entry": 10.0, "sl": 9.0, "risk": 1.0, "atr": 1.0}
+        bars = self._bars([(10, 10, 8.9, 9)])
+        trades = mp.simulate_partial_trail([sig], bars, trail_mult=2.0)
+        self.assertAlmostEqual(trades[0]["r"], -1.0)
+        self.assertEqual(trades[0]["outcome"], "SL")
+
+    def test_partial_then_breakeven_gives_half_r(self):
+        # reaches +1R (11) -> book half (+0.5R), stop to BE(10); then dips to 10 -> remainder 0.
+        sig = {"bar_idx": 0, "dir": "BUY", "entry": 10.0, "sl": 9.0, "risk": 1.0, "atr": 0.1}
+        bars = self._bars([(10, 11.0, 10.0, 10.8),   # hits 1R, partial+BE; trail=11-0.2=10.8
+                           (10.8, 10.8, 10.0, 10.4)])  # low 10.0 <= trailed/BE stop -> exit
+        trades = mp.simulate_partial_trail([sig], bars, trail_mult=2.0)
+        # half at +1.0R*0.5=0.5 ; remainder exits at ~BE/just above -> total >= +0.5R
+        self.assertGreaterEqual(trades[0]["r"], 0.5)
+        self.assertEqual(trades[0]["outcome"], "TP")
+
+    def test_one_open_per_symbol(self):
+        # two signals, second inside the first's lifetime -> skipped.
+        s1 = {"bar_idx": 0, "dir": "BUY", "entry": 10.0, "sl": 9.0, "risk": 1.0, "atr": 1.0}
+        s2 = {"bar_idx": 1, "dir": "BUY", "entry": 10.0, "sl": 9.0, "risk": 1.0, "atr": 1.0}
+        bars = self._bars([(10, 10, 10, 10), (10, 10, 8.9, 9), (9, 9, 9, 9)])
+        trades = mp.simulate_partial_trail([s1, s2], bars, trail_mult=2.0)
+        self.assertEqual(len(trades), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -136,6 +136,21 @@ class ConfirmedEntry(unittest.TestCase):
         bar = {"open": 4.5, "high": 4.6, "low": 3.0, "close": 3.2}  # tagged but bearish close
         self.assertFalse(mp.confirmed_entry(bar, leg, "BULLISH"))
 
+    # leg_low=0, leg_high=10 -> bearish premium zone:
+    #   z_lo = 0 + 0.5*10 = 5.0  (shallow edge, lower price)
+    #   z_hi = 0 + 0.705*10 = 7.05 (deep edge, higher price)
+    def test_bearish_confirmation(self):
+        # high 6.8 >= z_lo 5.0 (tagged), close 5.8 <= z_hi 7.05 (held), close 5.8 < open 6.5 (resume)
+        leg = (0.0, 10.0)
+        bar = {"open": 6.5, "high": 6.8, "low": 5.5, "close": 5.8}
+        self.assertTrue(mp.confirmed_entry(bar, leg, "BEARISH"))
+
+    def test_bearish_no_entry_when_resuming_up(self):
+        # tagged and held but close > open -> no bearish resumption
+        leg = (0.0, 10.0)
+        bar = {"open": 5.8, "high": 6.8, "low": 5.5, "close": 6.5}
+        self.assertFalse(mp.confirmed_entry(bar, leg, "BEARISH"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,12 +16,17 @@ Design **our own** multi-timeframe, trend-aligned, pullback-entry system (NOT se
 Sequence the user wants AFTER the strategy: **order management → risk management → account management → compounding → bookkeeping → accounting/auditing → ML (LAST).**
 
 ## Research status
-The formal deep-research workflow on this design **FAILED** (intermittent model outages broke the synthesis after 105 agents). An **interim evidence synthesis** was written instead: `docs/research/2026-05-30-mtf-synthesis-interim.md` (confidence-labeled). Optional: re-run the formal cited workflow (`deep-research` skill, brief in `docs/research/RESEARCH_QUESTION_mtf.md`) when the model is stable, to replace the interim doc.
+The formal deep-research workflow on this design **FAILED** (intermittent model outages broke the synthesis after 105 agents). An **interim evidence synthesis** was written instead: `docs/research/2026-05-30-mtf-synthesis-interim.md` (confidence-labeled) — and it proved sufficient; the formal workflow was **not** re-run. Optional: re-run the formal cited workflow (`deep-research` skill, brief in `docs/research/RESEARCH_QUESTION_mtf.md`) if desired.
+
+## ✅ DONE this session: the MTF-PB PoC is built + validated
+- **Spec:** `docs/superpowers/specs/2026-05-30-mtf-trend-pullback-poc-design.md`; **Plan:** `docs/superpowers/plans/2026-05-30-mtf-trend-pullback-poc.md`; **Code:** `scripts/poc_mtf_pb.py` + `tests/unit/test_mtf_pb.py` (**69 tests green**). Run: `.venv/bin/python scripts/poc_mtf_pb.py`.
+- **Design as built:** 4H+1H 50-EMA bias (must agree) → 5m fib(0.5–0.705) pullback + confirmation-**close** entry (never a passive limit) → **1.0×ATR(1H) structural stop** → two exit models (fixed-2.5R + partial-1R/BE/2.0×ATR-trail). Validated net-of-cost, OOS (70/30), Wilson CI, pooled by asset class. (2-TF gate not 3, to curb overfitting + keep n; 1–2m entry deferred — no M1 data.)
+- **Result (`docs/research/2026-05-30-mtf-pb-poc-results.md`): NOT a GO, but the first cost- + OOS-surviving signal all project.** Basket loses (~−0.22R both models); FX strongly negative (as predicted); index/crypto negative. **Only metals (XAUUSD) clears the gate** (positive net-of-cost in BOTH train+test under BOTH exit models, n_test ~35). Energy (XBRUSD) positive under the trailing exit only. Metals = one instrument on ~3 months → multiple-comparisons + thin-sample caution → **inconclusive-but-promising, not validated.** Known caveats documented in the results doc.
 
 ## NEXT ACTION (do this first)
-1. Read `docs/research/2026-05-30-mtf-synthesis-interim.md` (the evidence + design recommendation). Optionally re-run the formal research if the model is stable.
-2. Run `brainstorming` to design the strategy from that synthesis → spec → plan → build a **cost-validated PoC** on the harness (reuse `scripts/poc_trend_h4.py` patterns + `tests/backtest/backtest_engine.py` pure functions: `resolve_trade`, `aggregate_metrics`, `simulate_signals`, `split_trades`, `win_rate_ci`, `trades_in_window`). Build the SIMPLEST version: HTF-trend filter + pullback entry + structural stop + trail.
-3. Then work the management layers in the user's order (order → risk → account → compounding → bookkeeping → accounting/auditing); ML last.
+1. **Do NOT build the management layers yet.** Gather more **commodity** history (multi-year XAUUSD + more commodities: XAGUSD, WTI/XTIUSD, copper, natgas if FBS offers them — EA D1/H4 export is cheap; recreate the warm-up+retry export pass, see Operational notes) to get a real sample.
+2. Re-run `scripts/poc_mtf_pb.py` (**same a-priori params, no sweeping**) on the larger commodity set; check whether metals' positive net-of-cost OOS edge holds at **n≥100+** under **both** exit models.
+3. If it holds → THEN work the management layers in the user's order (order → risk → account → compounding → bookkeeping → accounting/auditing); **ML last**. If it dissolves at scale → small-sample luck (the VALIDATED_REPORT.md lesson) → shelve or iterate the few a-priori rules.
 
 ## Hard rules (do not repeat past mistakes)
 - **Structural stops only** (≥ ~confirmation-TF swing / a few ATR). Never sub-pip/tight stops — they die on spread.

@@ -228,8 +228,17 @@ class PartialTrail(unittest.TestCase):
         bars = self._bars([(10, 11.0, 10.0, 10.8),   # hits 1R, partial+BE; trail=11-0.2=10.8
                            (10.8, 10.8, 10.0, 10.4)])  # low 10.0 <= trailed/BE stop -> exit
         trades = mp.simulate_partial_trail([sig], bars, trail_mult=2.0)
-        # half at +1.0R*0.5=0.5 ; remainder exits at ~BE/just above -> total >= +0.5R
-        self.assertGreaterEqual(trades[0]["r"], 0.5)
+        # half at +1.0R*0.5=0.5 ; remainder trails to 10.8 -> exit_r=0.8; blended=0.9
+        self.assertAlmostEqual(trades[0]["r"], 0.9)
+        self.assertEqual(trades[0]["outcome"], "TP")
+
+    def test_sell_partial_then_trail(self):
+        # SHORT mirror: entry 10, sl 11 (risk 1), atr 0.1, trail_dist 0.2, one_r=9.
+        sig = {"bar_idx": 0, "dir": "SELL", "entry": 10.0, "sl": 11.0, "risk": 1.0, "atr": 0.1}
+        bars = self._bars([(10, 10.0, 9.0, 9.2),    # low 9.0 hits 1R -> partial+BE(10); trail=9.0+0.2=9.2
+                           (9.2, 10.0, 9.2, 9.6)])   # high 10.0 >= trailed stop 9.2 -> exit
+        trades = mp.simulate_partial_trail([sig], bars, trail_mult=2.0)
+        self.assertAlmostEqual(trades[0]["r"], 0.9)   # 0.5 booked + 0.5*((10-9.2)/1)=0.4
         self.assertEqual(trades[0]["outcome"], "TP")
 
     def test_one_open_per_symbol(self):

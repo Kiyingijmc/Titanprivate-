@@ -187,6 +187,11 @@ class ConditionalStop(unittest.TestCase):
                                 fully_swept=False, sweep_extreme=None, mss_level=9.0)
         self.assertEqual(s, 9.0)
 
+    def test_fvg_present_not_swept_bear_uses_leg_high(self):
+        s = m2.conditional_stop("BEARISH", leg_low=6.0, leg_high=13.0, qfvg=(9.0, 10.0),
+                                fully_swept=False, sweep_extreme=None, mss_level=9.0)
+        self.assertEqual(s, 13.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -251,6 +251,6 @@ def conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_extreme, 
       - no qualifying FVG                       -> M5 MSS swing level"""
     if qfvg is not None and not fully_swept:
         return leg_low if bias == "BULLISH" else leg_high
-    if qfvg is not None and fully_swept:
+    elif qfvg is not None:
         return sweep_extreme
     return mss_level

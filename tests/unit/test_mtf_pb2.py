@@ -241,5 +241,26 @@ class Diagnostics(unittest.TestCase):
         self.assertLess(out[0]["r"], 2.0)        # cost + slippage reduce R
 
 
+class BuildSignals(unittest.TestCase):
+    def test_returns_signals_and_funnel_keys(self):
+        # Minimal monotonic uptrend frame; we assert structure of outputs, not trade count.
+        rows = []
+        price = 100.0
+        for k in range(800):
+            price += 0.05 if (k % 20) < 15 else -0.03   # drifts up with pullbacks
+            ts = pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * k)
+            rows.append({"datetime": str(ts), "open": price, "high": price + 0.1,
+                         "low": price - 0.1, "close": price})
+        m5 = pd.DataFrame(rows)
+        sigs, funnel = m2.build_signals(m5, require_sweep=False, require_confluence=False)
+        self.assertIsInstance(sigs, list)
+        for key in ("bias", "leg", "armed", "sweep", "mss", "pressure", "confluence", "emitted"):
+            self.assertIn(key, funnel)
+        for s in sigs:
+            self.assertIn(s["entry_model"], ("market", "limit"))
+            for f in ("bar_idx", "dir", "cmd", "entry", "sl", "tp1", "tp2", "risk"):
+                self.assertIn(f, s)
+
+
 if __name__ == "__main__":
     unittest.main()

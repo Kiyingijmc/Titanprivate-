@@ -346,6 +346,138 @@ def bootstrap_expectancy_ci(rs, n_boot=2000, alpha=0.05, seed=0):
     return (lo, hi)
 
 
+def _nearest_internal(highs, lows, entry_bar, bias, leg_high, leg_low, lk=2):
+    """TP1 = nearest opposing minor swing beyond entry (bull: nearest confirmed swing high
+    above entry, below leg_high). Falls back to the leg extreme if none."""
+    his, los = confirmed_swing_seq(highs[:entry_bar], lows[:entry_bar], lk)
+    if bias == "BULLISH":
+        cands = sorted(highs[j] for j in his if highs[j] > highs[entry_bar - 1])
+        return next((p for p in cands if p < leg_high), leg_high)
+    cands = sorted((lows[j] for j in los if lows[j] < lows[entry_bar - 1]), reverse=True)
+    return next((p for p in cands if p > leg_low), leg_low)
+
+
+def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
+                  require_confluence=True):
+    """Compose the full v2 pipeline over M5 bars. Returns (signals, funnel_counts).
+    Emits two signals per qualifying bar (entry_model 'market' and 'limit'). Set
+    require_sweep / require_confluence False for the unfiltered core-thesis baseline."""
+    tcol = "time" if "time" in m5_df.columns else "datetime"
+    m5t = list(pd.to_datetime(m5_df[tcol]))
+    h4 = resample_tf(m5_df, "4h")
+    h1 = resample_tf(m5_df, "1h")
+    m15 = resample_tf(m5_df, "15min")
+    bias_list = combined_structure_bias(m5_df, h4, h1, lk_htf)
+
+    bars = m5_df[["open", "high", "low", "close"]].to_dict("records")
+    highs = [b["high"] for b in bars]
+    lows = [b["low"] for b in bars]
+    closes = [b["close"] for b in bars]
+    n = len(bars)
+
+    # Map each M5 bar to the most recent CLOSED M15 bar.
+    idx15 = last_closed_indexer(m5t, list(pd.to_datetime(m15["time"])), 0.25)
+    m15h = list(m15["high"].values)
+    m15l = list(m15["low"].values)
+    m15_recs = m15[["open", "high", "low", "close"]].to_dict("records")
+    m15_close_times = [t + pd.Timedelta(minutes=15) for t in pd.to_datetime(m15["time"])]
+
+    funnel = dict(bias=0, leg=0, armed=0, sweep=0, mss=0, pressure=0, confluence=0, emitted=0)
+    sigs = []
+    cur_leg_key = None
+    armed = False
+    pullback_low = pullback_high = None
+    pb_start = 0
+
+    for i in range(lk_m5 + 2, n - 1):
+        bias = bias_list[i]
+        if bias == "NEUTRAL":
+            continue
+        funnel["bias"] += 1
+        j15 = idx15[i]
+        if j15 < lk_m15 + 1:
+            continue
+        leg = impulse_leg(m15h, m15l, j15, lk_m15, bias)
+        if leg is None:
+            continue
+        funnel["leg"] += 1
+        leg_low, leg_high, lo15, hi15 = leg
+        zone = ote_zone(leg_low, leg_high, bias)
+        z_lo, z_hi = zone
+
+        key = (bias, hi15, lo15)
+        if key != cur_leg_key:                       # new leg -> reset arming state
+            cur_leg_key = key
+            armed = False
+            pullback_low, pullback_high = lows[i], highs[i]
+            # pullback window starts at the M5 bar nearest the M15 leg extreme close
+            ext_t = m15_close_times[hi15] if bias == "BULLISH" else m15_close_times[lo15]
+            pb_start = max(0, bisect.bisect_left(m5t, ext_t))
+        pullback_low = min(pullback_low, lows[i])
+        pullback_high = max(pullback_high, highs[i])
+
+        # invalidation: close beyond the leg origin
+        if (bias == "BULLISH" and closes[i] < leg_low) or \
+           (bias == "BEARISH" and closes[i] > leg_high):
+            armed = False
+            continue
+        tagged = (lows[i] <= z_hi) if bias == "BULLISH" else (highs[i] >= z_lo)
+        if tagged:
+            armed = True
+        if not armed:
+            continue
+        funnel["armed"] += 1
+
+        swept, sweep_ext = swept_liquidity(lows, highs, pb_start, i, bias, lk_m5)
+        if require_sweep and not swept:
+            continue
+        funnel["sweep"] += 1
+
+        mss, mss_level = mss_confirm(highs, lows, closes, i, bias, lk_m5)
+        if not mss:
+            continue
+        funnel["mss"] += 1
+
+        if not pressure_ok(bars, highs, lows, closes, i, bias, lk_m5):
+            continue
+        funnel["pressure"] += 1
+
+        if require_confluence and not htf_poi_overlap(zone, h1, h4, m5t[i], bias, lk_htf):
+            continue
+        funnel["confluence"] += 1
+
+        # qualifying OTE-leg FVG (stop logic) on the M15 leg bars [lo15..hi15] inclusive
+        leg_bars = m15_recs[min(lo15, hi15):max(lo15, hi15) + 1]
+        qfvg = qualifying_fvg(leg_bars, zone, bias)
+        fully_swept = False
+        if qfvg is not None:
+            fully_swept = (pullback_low < qfvg[0]) if bias == "BULLISH" else (pullback_high > qfvg[1])
+        stop = conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_ext, mss_level)
+
+        entry = bars[i + 1]["open"]
+        risk = abs(entry - stop)
+        if not (risk > 0):
+            continue
+        tp2 = leg_high if bias == "BULLISH" else leg_low          # external liquidity
+        tp1 = _nearest_internal(highs, lows, i + 1, bias, leg_high, leg_low, lk_m5)
+        d = "BUY" if bias == "BULLISH" else "SELL"
+        funnel["emitted"] += 1
+
+        # entry model A: market at next-bar open
+        sigs.append({"bar_idx": i + 1, "entry_model": "market", "dir": d, "cmd": "MARKET",
+                     "entry": entry, "sl": stop, "tp1": tp1, "tp2": tp2, "risk": risk,
+                     "tp": tp2, "ttl_bars": 1})
+        # entry model B: limit at the displacement-FVG midpoint (fallback: the 0.705 level)
+        dfvg = find_fvg(bars, i, bias) or find_fvg(bars, i - 1, bias)
+        limit_px = ((dfvg[0] + dfvg[1]) / 2.0) if dfvg else (z_lo + z_hi) / 2.0
+        lrisk = abs(limit_px - stop)
+        if lrisk > 0:
+            sigs.append({"bar_idx": i + 1, "entry_model": "limit", "dir": d, "cmd": "LIMIT",
+                         "entry": limit_px, "sl": stop, "tp1": tp1, "tp2": tp2, "risk": lrisk,
+                         "tp": tp2, "ttl_bars": 6})
+    return sigs, funnel
+
+
 def net_with_slippage(trades, sym, slip_frac=0.05, comm_rt=14.0):
     """Like poc_trend_h4._net but adds a slippage charge (slip_frac of the stop, in R) on
     top of the 2x spread + commission. slip_frac already expressed as a fraction of 1R."""

@@ -91,3 +91,46 @@ def attach_atr1h(m5_df, h1, period=14):
     m5t = list(pd.to_datetime(m5_df["time" if "time" in m5_df.columns else "datetime"]))
     idx = last_closed_indexer(m5t, list(pd.to_datetime(h1["time"])), 1)
     return [float(atr[j]) if j >= 0 else 0.0 for j in idx]
+
+
+def _is_swing_high(highs, j, lk):
+    """True when highs[j] is strictly greater than all lk neighbours on each side."""
+    window = highs[j - lk:j + lk + 1]
+    return highs[j] > max(window[:lk] + window[lk + 1:])
+
+
+def _is_swing_low(lows, j, lk):
+    """True when lows[j] is strictly less than all lk neighbours on each side."""
+    window = lows[j - lk:j + lk + 1]
+    return lows[j] < min(window[:lk] + window[lk + 1:])
+
+
+def recent_swing(highs, lows, i, lk):
+    """Indices of the most recent CONFIRMED swing high and swing low strictly before bar i.
+    A swing at j needs lk bars either side; confirmation requires j+lk < i (no look-ahead).
+    Returns (lo_idx, hi_idx), either may be None."""
+    hi_idx = lo_idx = None
+    j = i - lk - 1
+    while j >= lk:
+        if hi_idx is None and _is_swing_high(highs, j, lk):
+            hi_idx = j
+        if lo_idx is None and _is_swing_low(lows, j, lk):
+            lo_idx = j
+        if hi_idx is not None and lo_idx is not None:
+            break
+        j -= 1
+    return lo_idx, hi_idx
+
+
+def impulse_leg(highs, lows, i, lk, bias):
+    """The most recent impulse leg matching the bias: an up-leg (swing low BEFORE swing
+    high) for BULLISH, a down-leg (swing high before swing low) for BEARISH. Returns
+    (leg_low, leg_high) prices, or None if no leg in the trend direction is found."""
+    lo_idx, hi_idx = recent_swing(highs, lows, i, lk)
+    if lo_idx is None or hi_idx is None:
+        return None
+    if bias == "BULLISH" and hi_idx > lo_idx:
+        return (lows[lo_idx], highs[hi_idx])
+    if bias == "BEARISH" and lo_idx > hi_idx:
+        return (lows[lo_idx], highs[hi_idx])
+    return None

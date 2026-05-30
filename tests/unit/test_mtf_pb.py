@@ -101,5 +101,23 @@ class AttachAtr(unittest.TestCase):
         self.assertEqual(mp.attach_atr1h(m5, h1), [0.0])
 
 
+class ImpulseLeg(unittest.TestCase):
+    def test_bullish_up_leg(self):
+        # V-shape: swing low at idx 5, swing high at idx 11; decision at idx 18.
+        highs = [10,10,10,10,10, 9,  10,11,12,13,14,15,  14,14,14,14,14,14,14]
+        lows  = [ 9, 9, 9, 9, 9, 8,  9,10,11,12,13,14,   13,13,13,13,13,13,13]
+        leg = mp.impulse_leg(highs, lows, 18, lk=2, bias="BULLISH")
+        self.assertIsNotNone(leg)
+        leg_low, leg_high = leg
+        self.assertEqual(leg_low, 8)    # lows[5]
+        self.assertEqual(leg_high, 15)  # highs[11]
+
+    def test_none_when_leg_wrong_direction_for_bias(self):
+        highs = [10,10,10,10,10, 9, 10,11,12,13,14,15, 14,14,14,14,14,14,14]
+        lows  = [ 9, 9, 9, 9, 9, 8,  9,10,11,12,13,14, 13,13,13,13,13,13,13]
+        # up-leg present (low before high) but bias bearish -> reject
+        self.assertIsNone(mp.impulse_leg(highs, lows, 18, lk=2, bias="BEARISH"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -254,3 +254,60 @@ def conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_extreme, 
     elif qfvg is not None:
         return sweep_extreme
     return mss_level
+
+
+def simulate_managed(sigs, bars, partial_frac=0.33):
+    """Exit model: TP1 -> book partial_frac + stop to break-even, then trail the runner to
+    each new M5 higher-low (bull)/lower-high (bear) (active AFTER TP1), final target TP2.
+    Runner closes at trail-stop or TP2, whichever first. One open position per symbol.
+    Same-bar stop+target -> stop wins. Returns trade dicts with blended R + outcome."""
+    trades = []
+    busy_until = -1
+    n = len(bars)
+    for sig in sigs:
+        b0 = sig["bar_idx"]
+        if b0 <= busy_until or b0 >= n:
+            continue
+        is_long = sig["dir"] == "BUY"
+        E, S, risk = sig["entry"], sig["sl"], sig["risk"]
+        tp1, tp2 = sig["tp1"], sig["tp2"]
+        partialed = False
+        stop = S
+        last_extreme_swing = None          # running higher-low (bull) / lower-high (bear)
+        prev_low, prev_high = bars[b0]["low"], bars[b0]["high"]
+        r_total, exit_idx = None, b0
+        for j in range(b0, n):
+            bar = bars[j]
+            stop_hit = (bar["low"] <= stop) if is_long else (bar["high"] >= stop)
+            if stop_hit:
+                ex = (stop - E) / risk if is_long else (E - stop) / risk
+                r_total = (partial_frac * 1.0 + (1 - partial_frac) * ex) if partialed else ex
+                exit_idx = j
+                break
+            if not partialed:
+                if (bar["high"] >= tp1) if is_long else (bar["low"] <= tp1):
+                    partialed = True
+                    stop = E                # break-even on the runner
+            else:
+                tp2_hit = (bar["high"] >= tp2) if is_long else (bar["low"] <= tp2)
+                if tp2_hit:
+                    ex = (tp2 - E) / risk if is_long else (E - tp2) / risk
+                    r_total = partial_frac * 1.0 + (1 - partial_frac) * ex
+                    exit_idx = j
+                    break
+                # structural trail: ratchet to the latest confirmed M5 swing extreme
+                if is_long and bar["low"] > prev_low and last_extreme_swing is not None:
+                    stop = max(stop, last_extreme_swing)
+                if (not is_long) and bar["high"] < prev_high and last_extreme_swing is not None:
+                    stop = min(stop, last_extreme_swing)
+                last_extreme_swing = prev_low if is_long else prev_high
+            prev_low, prev_high = bar["low"], bar["high"]
+        if r_total is None:                 # open at end -> mark out at last close
+            px = bars[n - 1]["close"]
+            ex = (px - E) / risk if is_long else (E - px) / risk
+            r_total = (partial_frac * 1.0 + (1 - partial_frac) * ex) if partialed else ex
+            exit_idx = n - 1
+        trades.append({**sig, "r": r_total, "entry_idx": b0, "exit_idx": exit_idx,
+                       "outcome": "TP" if r_total > 0 else "SL"})
+        busy_until = exit_idx
+    return trades

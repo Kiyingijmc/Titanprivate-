@@ -193,5 +193,30 @@ class ConditionalStop(unittest.TestCase):
         self.assertEqual(s, 13.0)
 
 
+class ManagedExit(unittest.TestCase):
+    def test_tp1_then_runner_hits_tp2(self):
+        # long: entry 100, stop 95 (risk 5), TP1 105 (=+1R internal), TP2 115 (+3R external).
+        sig = {"bar_idx": 0, "dir": "BUY", "entry": 100.0, "sl": 95.0, "risk": 5.0,
+               "tp1": 105.0, "tp2": 115.0}
+        bars = [{"open": 100, "high": 100, "low": 100, "close": 100},
+                {"open": 101, "high": 106, "low": 100, "close": 105},   # TP1 hit
+                {"open": 106, "high": 112, "low": 104, "close": 111},   # higher-low forms
+                {"open": 112, "high": 116, "low": 110, "close": 115}]   # TP2 hit
+        trades = m2.simulate_managed([sig], bars)
+        self.assertEqual(len(trades), 1)
+        # 0.33*(1.0) + 0.67*((115-100)/5 = 3.0) = 0.33 + 2.01 = 2.34
+        self.assertAlmostEqual(trades[0]["r"], 0.33 * 1.0 + 0.67 * 3.0, places=6)
+        self.assertEqual(trades[0]["outcome"], "TP")
+
+    def test_full_stop_before_tp1(self):
+        sig = {"bar_idx": 0, "dir": "BUY", "entry": 100.0, "sl": 95.0, "risk": 5.0,
+               "tp1": 105.0, "tp2": 115.0}
+        bars = [{"open": 100, "high": 100, "low": 100, "close": 100},
+                {"open": 99, "high": 100, "low": 94, "close": 95}]      # stop hit, no partial
+        trades = m2.simulate_managed([sig], bars)
+        self.assertAlmostEqual(trades[0]["r"], -1.0, places=6)
+        self.assertEqual(trades[0]["outcome"], "SL")
+
+
 if __name__ == "__main__":
     unittest.main()

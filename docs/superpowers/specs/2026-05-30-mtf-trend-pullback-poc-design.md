@@ -48,7 +48,7 @@ All timeframes resampled from M5. All HTF reads use **closed bars only**.
 | **5m pullback zone** | price retraces into **0.5–0.705** of the most recent 5m impulse leg | pivot lookback = **5 bars**; fib band fixed **[0.5, 0.705]** |
 | **5m entry trigger** | a 5m candle **closes back in the trend direction** after tagging the zone → **MARKET** at next-bar open. *Never a resting limit* (limits get wicked / expire — the OTE failure mode). | — |
 | **Structural stop** | entry − **1.0 × ATR(1H)** (long); entry + 1.0×ATR(1H) (short) | k_stop = **1.0** |
-| **Exit (two models, reported side-by-side)** | (a) fixed **2R** target; (b) **half at 1R → stop to break-even → trail remainder by 2.0×ATR(1H)** | trail k = **2.0** |
+| **Exit (two models, reported side-by-side)** | (a) fixed **2.5R** target; (b) **half at 1R → stop to break-even → trail remainder by 2.0×ATR(1H)** | trail k = **2.0** |
 
 Trade only longs when 4H & 1H both bullish; only shorts when both bearish; else stand aside.
 **Not session/time-bound.** One open position per symbol at a time.

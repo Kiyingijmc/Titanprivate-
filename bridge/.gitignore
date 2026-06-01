@@ -1,0 +1,4 @@
+config/.env
+logs/*.log
+logs/*.zip
+__pycache__/

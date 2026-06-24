@@ -104,7 +104,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="MOS MT5 Bridge",
+    title="Titan MT5 Bridge",
     version=BRIDGE_VERSION,
     lifespan=lifespan,
 )

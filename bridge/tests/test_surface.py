@@ -1,5 +1,5 @@
 # bridge/tests/test_surface.py
-import os, sys, types, unittest
+import os, sys, unittest
 from unittest.mock import MagicMock
 
 # The bridge imports `MetaTrader5` (Windows-only). Inject a mock BEFORE importing the app

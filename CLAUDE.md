@@ -51,3 +51,17 @@ There is no linter/build step configured.
 ## Working style for this repo
 
 Use TDD for fixes (a failing `tests/unit` case first, then the minimal change), keep changes small and anchored to existing patterns, and verify by running the unit suite before claiming done. Ask before adding new dependencies, layers, or frameworks. Work on a feature branch (`main` holds the inherited baseline).
+
+## HTTP bridge (Phase 1 — data + execution-in-isolation; live loop still on ZMQ)
+
+Titan has a Windows-side FastAPI MT5 bridge in `bridge/` (copied from MOS, port 8766) and a
+Linux-side `Broker` client in `src/execution/broker/`. To pull data / use the broker:
+
+1. Windows: MT5 running + logged into FBS-Demo.
+2. Windows PowerShell, in the bridge dir (via `\\wsl.localhost\...\bridge` PSDrive): `py -3.11 run_bridge.py` (binds :8766).
+3. WSL: set `TITAN_BRIDGE_TOKEN` (match `bridge/config/.env`'s `BRIDGE_AUTH_TOKEN`). URL auto-resolves (mirrored→127.0.0.1, NAT→gateway); override with `TITAN_BRIDGE_URL`.
+4. Verify: `.venv/bin/python scripts/check_bridge_http.py` → "✅ Bridge is UP".
+5. Pull data: `scripts/export_history.py --symbol XAUUSD --tf M5 --out data/history/XAUUSD_M5.csv`; `scripts/cache_specs.py`.
+
+The ZMQ bridge + EA remain the live execution path until Phases 2–3. Don't run live writes from
+the Titan bridge and the MOS bridge against the same terminal simultaneously.

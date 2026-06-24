@@ -56,5 +56,52 @@ class Reads(unittest.IsolatedAsyncioTestCase):
                 await b.get_account()
 
 
+class Writes(unittest.IsolatedAsyncioTestCase):
+    async def test_market_order_request_shape(self):
+        seen = {}
+        def h(req):
+            seen["path"] = req.url.path
+            seen["body"] = json.loads(req.content)
+            return httpx.Response(200, json={"success": True, "ticket": 7, "price_filled": 1.1,
+                                             "volume_filled": 0.01})
+        async with _broker(h) as b:
+            r = await b.place_market_order(T.MarketOrderRequest(
+                symbol="EURUSD", volume=0.01, side=T.OrderSide.BUY, sl=1.0, tp=1.2, magic=88000))
+        self.assertEqual(seen["path"], "/order/market")
+        self.assertEqual(seen["body"]["side"], "buy")
+        self.assertEqual(seen["body"]["deviation"], 20)   # broker deviation_points -> bridge deviation
+        self.assertTrue(r.success); self.assertEqual(r.ticket, 7)
+
+    async def test_pending_stop_order_allowed(self):
+        def h(req):
+            body = json.loads(req.content)
+            self.assertEqual(body["type"], "buy_stop")
+            return httpx.Response(200, json={"success": True, "ticket": 9})
+        async with _broker(h) as b:
+            r = await b.place_pending_order(T.PendingOrderRequest(
+                symbol="XAUUSD", volume=0.01, type=T.PendingOrderType.BUY_STOP, price=5000.0))
+        self.assertTrue(r.success)
+
+    async def test_partial_close_uses_partial_endpoint(self):
+        def h(req):
+            self.assertTrue(req.url.path.endswith("/partial"))
+            self.assertEqual(json.loads(req.content)["volume"], 0.01)
+            return httpx.Response(200, json={"success": True})
+        async with _broker(h) as b:
+            r = await b.close_position(5, volume=0.01)
+        self.assertTrue(r.success)
+
+    async def test_write_does_not_retry_on_connection_error(self):
+        calls = {"n": 0}
+        def h(req):
+            calls["n"] += 1
+            raise httpx.ConnectError("down")
+        async with _broker(h) as b:
+            with self.assertRaises(E.BrokerConnectionError):
+                await b.place_market_order(T.MarketOrderRequest(
+                    symbol="EURUSD", volume=0.01, side=T.OrderSide.BUY))
+        self.assertEqual(calls["n"], 1)   # never retried
+
+
 if __name__ == "__main__":
     unittest.main()

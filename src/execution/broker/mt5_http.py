@@ -211,3 +211,36 @@ class MT5HttpBroker:
 
     async def get_pending_orders(self) -> list[Order]:
         return [self._order(o) for o in await self._request("GET", "/orders", retry=True)]
+
+    # --- writes (never auto-retry: an order may have landed even if the response didn't) ---
+    def _result(self, d: dict) -> OrderResult:
+        return OrderResult(success=bool(d["success"]), ticket=d.get("ticket"),
+                           price_filled=d.get("price_filled"), volume_filled=d.get("volume_filled"),
+                           error_code=d.get("error_code"), error_message=d.get("error_message"))
+
+    async def place_market_order(self, request: MarketOrderRequest) -> OrderResult:
+        body = request.model_dump(mode="json")
+        body["deviation"] = body.pop("deviation_points")   # broker name -> bridge name
+        return self._result(await self._request("POST", "/order/market", retry=False, json_body=body))
+
+    async def place_pending_order(self, request: PendingOrderRequest) -> OrderResult:
+        body = request.model_dump(mode="json")
+        return self._result(await self._request("POST", "/order/pending", retry=False, json_body=body))
+
+    async def modify_position(self, ticket: int, sl: float | None = None,
+                              tp: float | None = None) -> OrderResult:
+        return self._result(await self._request("PUT", f"/position/{ticket}", retry=False,
+                                                json_body={"sl": sl, "tp": tp}))
+
+    async def close_position(self, ticket: int, volume: float | None = None) -> OrderResult:
+        if volume is None:
+            d = await self._request("POST", f"/position/{ticket}/close", retry=False)
+        else:
+            if volume <= 0:
+                raise ValueError(f"close_position volume must be > 0, got {volume}")
+            d = await self._request("POST", f"/position/{ticket}/partial", retry=False,
+                                    json_body={"volume": volume})
+        return self._result(d)
+
+    async def cancel_order(self, ticket: int) -> OrderResult:
+        return self._result(await self._request("DELETE", f"/order/{ticket}", retry=False))

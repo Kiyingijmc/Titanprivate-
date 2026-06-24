@@ -1,85 +1,71 @@
 #!/usr/bin/env python3
-# ==============================================================================
-# FILE: scripts/export_history.py
-# Pull historical bars from MT5 (via the existing ZMQ bridge) into a CSV that
-# tests/backtest/backtest_engine.py can read.
-#
-# Requires: the Titan_Gateway EA running in MT5 and connected to this machine
-# (see docs). Run this only when the main bot is NOT running -- both bind the
-# same ZMQ ports, so they cannot run at the same time.
-#
-#   .venv/bin/python scripts/export_history.py --symbol BTCUSD --tf M5 \
-#       --count 5000 --out data/history/BTCUSD_M5.csv
-# ==============================================================================
-
+# scripts/export_history.py
+# Export MT5 history to backtest CSVs via the Titan HTTP bridge (chunked copy_rates_range).
+# Pulls whatever the broker actually retains (empty window = history floor). No EA / no ZMQ.
+#   .venv/bin/python scripts/export_history.py --symbol XAUUSD --tf M5 --out data/history/XAUUSD_M5.csv
 import argparse
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.execution.bridge_zmq import ZMQBridge
-
+from src.execution.broker.mt5_http import MT5HttpBroker   # noqa: E402
+from src.execution.broker import types as T               # noqa: E402
 
 CSV_HEADER = "datetime,open,high,low,close"
+TF = {"M1": T.Timeframe.M1, "M5": T.Timeframe.M5, "M15": T.Timeframe.M15,
+      "H1": T.Timeframe.H1, "H4": T.Timeframe.H4, "D1": T.Timeframe.D1}
 
 
-def bars_to_csv(bars):
-    """Convert MT5 HISTORY bars [{"t","o","h","l","c"}, ...] to CSV text.
+async def pull_history(broker, symbol, timeframe, *, now, max_lookback, chunk):
+    """Walk backward in `chunk`-sized windows until an empty window (history floor) or
+    max_lookback. Returns candles ascending, de-duplicated by time."""
+    floor = now - max_lookback
+    cursor = now
+    by_time: dict[datetime, T.Candle] = {}
+    while cursor > floor:
+        frm = max(cursor - chunk, floor)
+        window = await broker.get_candles_range(symbol, timeframe, frm, cursor)
+        if not window:
+            break
+        for c in window:
+            by_time[c.time] = c
+        cursor = frm
+    return [by_time[t] for t in sorted(by_time)]
 
-    The timestamp is the broker's server time (seconds). It is rendered with a
-    fixed UTC offset so the output is deterministic regardless of the host
-    timezone; backtest_engine.py applies any session shift itself.
-    """
+
+def candles_to_csv(candles) -> str:
     rows = [CSV_HEADER]
-    for b in sorted(bars, key=lambda x: x["t"]):
-        dt = datetime.fromtimestamp(b["t"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        rows.append(f"{dt},{b['o']},{b['h']},{b['l']},{b['c']}")
+    for c in candles:
+        ts = c.time.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        rows.append(f"{ts},{c.open},{c.high},{c.low},{c.close}")
     return "\n".join(rows) + "\n"
 
 
-async def fetch_history(bridge, symbol, tf, count, timeout=20.0):
-    """Send GET_HISTORY and wait for the matching HISTORY reply (or timeout)."""
-    # Confirm the EA is actually connected before asking for data.
-    if not await bridge.ping():
-        raise RuntimeError("No PONG from MT5 EA -- is the Gateway attached and connected?")
-
-    await bridge.send_command("GET_HISTORY", {"symbol": symbol, "tf": tf, "count": count})
-
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        for msg in await bridge.poll_data():
-            if msg.get("type") == "HISTORY" and msg.get("symbol") == symbol and msg.get("tf") == tf:
-                return msg.get("data", [])
-        await asyncio.sleep(0.1)
-    raise TimeoutError(f"No HISTORY for {symbol} {tf} within {timeout}s")
-
-
 async def _run(args):
-    bridge = ZMQBridge(push_port=args.push_port, pull_port=args.pull_port, req_port=args.req_port)
-    print(f"[EXPORT] Requesting {args.count} {args.tf} bars of {args.symbol}...")
-    bars = await fetch_history(bridge, args.symbol, args.tf, args.count)
-    print(f"[EXPORT] Received {len(bars)} bars.")
-
+    broker = MT5HttpBroker()   # URL/token from env / auto-resolve
+    async with broker:
+        bars = await pull_history(
+            broker, args.symbol, TF[args.tf], now=datetime.now(tz=timezone.utc),
+            max_lookback=timedelta(days=args.max_days), chunk=timedelta(days=args.chunk_days))
+    if not bars:
+        print(f"[EXPORT] {args.symbol}: no history returned"); return
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
-        f.write(bars_to_csv(bars))
-    print(f"[EXPORT] Wrote {args.out}")
+        f.write(candles_to_csv(bars))
+    print(f"[EXPORT] {args.symbol}: wrote {len(bars)} bars "
+          f"({bars[0].time.date()} -> {bars[-1].time.date()}) to {args.out}")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Export MT5 history to a backtest CSV via the ZMQ bridge.")
-    p.add_argument("--symbol", required=True, help="e.g. BTCUSD, EURUSD")
-    p.add_argument("--tf", default="M5", choices=["M5", "H1"], help="timeframe the EA supports")
-    p.add_argument("--count", type=int, default=5000, help="number of bars")
-    p.add_argument("--out", required=True, help="output CSV path")
-    p.add_argument("--push-port", type=int, default=32768)
-    p.add_argument("--pull-port", type=int, default=32769)
-    p.add_argument("--req-port", type=int, default=32770)
-    args = p.parse_args()
-    asyncio.run(_run(args))
+    p = argparse.ArgumentParser(description="Export MT5 history via the Titan HTTP bridge.")
+    p.add_argument("--symbol", required=True)
+    p.add_argument("--tf", default="M5", choices=list(TF))
+    p.add_argument("--out", required=True)
+    p.add_argument("--max-days", dest="max_days", type=int, default=1095, help="lookback cap (~3y)")
+    p.add_argument("--chunk-days", dest="chunk_days", type=int, default=30)
+    asyncio.run(_run(p.parse_args()))
 
 
 if __name__ == "__main__":

@@ -17,8 +17,10 @@ DEFAULT_SYMS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "GBPCAD",
 
 
 async def build_specs(broker, symbols):
-    """Return {symbol: {tick_value, tick_size, vol_min, vol_step}} — the shape risk_manager
-    consumes. Per-symbol failures are skipped (logged) so one bad symbol never aborts the run."""
+    """Return {symbol: {tick_value, tick_size, vol_min, vol_step}} — the shape data/specs.json
+    uses (read by the offline backtester / PoC scripts; risk_manager receives the same values at
+    runtime via update_symbol_specs). Per-symbol failures are skipped (logged) so one bad symbol
+    never aborts the run."""
     out = {}
     for s in symbols:
         try:
@@ -35,6 +37,11 @@ async def _run(args):
     broker = MT5HttpBroker()
     async with broker:
         specs = await build_specs(broker, args.symbols)
+    if not specs:
+        print(f"[SPECS] ERROR: no specs fetched for any of {len(args.symbols)} symbols; "
+              f"leaving {args.out} untouched")
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(specs, f, indent=2)
     print(f"[SPECS] wrote {len(specs)} symbols -> {args.out}")

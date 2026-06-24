@@ -139,3 +139,75 @@ class MT5HttpBroker:
         if code in (503, 504):
             raise BrokerConnectionError(f"bridge {code}: {detail}")
         raise BrokerError(f"bridge HTTP {code} at {method} {path}: {detail}")
+
+    # --- translators ---
+    def _account(self, d: dict) -> Account:
+        return Account(login=int(d["login"]), server=str(d["server"]), currency=str(d["currency"]),
+                       leverage=int(d["leverage"]), balance=float(d["balance"]), equity=float(d["equity"]),
+                       margin=float(d["margin"]), margin_free=float(d["margin_free"]),
+                       margin_level=float(d["margin_level"]), profit=float(d["profit"]))
+
+    def _symbol(self, d: dict) -> SymbolInfo:
+        return SymbolInfo(name=str(d["name"]), digits=int(d["digits"]), point=float(d["point"]),
+                          spread_points=int(d["spread"]), contract_size=float(d["contract_size"]),
+                          volume_min=float(d["volume_min"]), volume_max=float(d["volume_max"]),
+                          volume_step=float(d["volume_step"]), tick_value=float(d["tick_value"]),
+                          tick_size=float(d["tick_size"]))
+
+    def _candle(self, d: dict) -> Candle:
+        return Candle(time=_parse_utc(d["time"]), open=float(d["open"]), high=float(d["high"]),
+                      low=float(d["low"]), close=float(d["close"]), tick_volume=int(d["tick_volume"]),
+                      spread_points=int(d["spread"]))
+
+    def _tick(self, symbol: str, d: dict) -> Tick:
+        return Tick(symbol=symbol, time=_parse_utc(d["time"]), bid=float(d["bid"]),
+                    ask=float(d["ask"]), spread=float(d.get("spread", float(d["ask"]) - float(d["bid"]))))
+
+    def _position(self, d: dict) -> Position:
+        return Position(ticket=int(d["ticket"]), symbol=str(d["symbol"]),
+                        side=_POSITION_SIDE[int(d["type"])], volume=float(d["volume"]),
+                        price_open=float(d["price_open"]), sl=_norm_price(d.get("sl")),
+                        tp=_norm_price(d.get("tp")), price_current=float(d["price_current"]),
+                        profit=float(d["profit"]), swap=float(d["swap"]),
+                        commission=float(d.get("commission", 0.0)), time_open=_parse_utc(d["time"]),
+                        comment=str(d.get("comment", "")), magic=int(d.get("magic", 0)))
+
+    def _order(self, d: dict) -> Order:
+        return Order(ticket=int(d["ticket"]), symbol=str(d["symbol"]),
+                     type=_PENDING_TYPE[int(d["type"])], volume=float(d["volume_current"]),
+                     price_open=float(d["price_open"]), sl=_norm_price(d.get("sl")),
+                     tp=_norm_price(d.get("tp")), time_setup=_parse_utc(d["time_setup"]),
+                     comment=str(d.get("comment", "")), magic=int(d.get("magic", 0)))
+
+    # --- reads ---
+    async def health_check(self) -> HealthStatus:
+        d = await self._request("GET", "/health", retry=True)
+        return HealthStatus(status=str(d["status"]), broker_connected=bool(d["mt5_connected"]),
+                            uptime_seconds=int(d["uptime_seconds"]))
+
+    async def get_account(self) -> Account:
+        return self._account(await self._request("GET", "/account", retry=True))
+
+    async def get_symbol_info(self, symbol: str) -> SymbolInfo:
+        return self._symbol(await self._request("GET", f"/symbol/{symbol}", retry=True))
+
+    async def get_candles(self, symbol: str, timeframe: Timeframe, count: int) -> list[Candle]:
+        tf = _TF_TO_BRIDGE[timeframe]
+        d = await self._request("GET", f"/candles/{symbol}/{tf}", retry=True, params={"count": count})
+        return [self._candle(c) for c in d]
+
+    async def get_candles_range(self, symbol: str, timeframe: Timeframe,
+                                from_dt: datetime, to_dt: datetime) -> list[Candle]:
+        tf = _TF_TO_BRIDGE[timeframe]
+        d = await self._request("GET", f"/candles/{symbol}/{tf}/range", retry=True,
+                                params={"from": from_dt.isoformat(), "to": to_dt.isoformat()})
+        return [self._candle(c) for c in d]
+
+    async def get_current_tick(self, symbol: str) -> Tick:
+        return self._tick(symbol, await self._request("GET", f"/tick/{symbol}", retry=True))
+
+    async def get_open_positions(self) -> list[Position]:
+        return [self._position(p) for p in await self._request("GET", "/positions", retry=True)]
+
+    async def get_pending_orders(self) -> list[Order]:
+        return [self._order(o) for o in await self._request("GET", "/orders", retry=True)]

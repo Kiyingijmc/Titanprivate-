@@ -1,56 +1,50 @@
 #!/usr/bin/env python3
-# ==============================================================================
-# FILE: scripts/cache_specs.py
-# Pull per-instrument tick specs from MT5 via the ZMQ bridge into data/specs.json,
-# so the offline backtester can compute realistic dollar PnL + costs.
-#
-# Run only when the main bot is NOT running (shared ZMQ ports) and the EA is
-# connected (see CLAUDE.md). Example:
-#   .venv/bin/python scripts/cache_specs.py EURUSD GBPUSD XAUUSD US30 BTCUSD
-# ==============================================================================
-
+# scripts/cache_specs.py
+# Cache broker symbol specs to data/specs.json via the Titan HTTP bridge.
+#   .venv/bin/python scripts/cache_specs.py --symbols XAUUSD EURUSD ... --out data/specs.json
+import argparse
 import asyncio
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.execution.broker.mt5_http import MT5HttpBroker   # noqa: E402
+from src.execution.broker.errors import BrokerError       # noqa: E402
 
-from src.execution.bridge_zmq import ZMQBridge
-
-DEFAULT = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "GBPCAD",
-           "GBPJPY", "XAUUSD", "US30", "BTCUSD", "XBRUSD"]
+DEFAULT_SYMS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "GBPCAD",
+                "GBPJPY", "XAUUSD", "US30", "BTCUSD", "XBRUSD"]
 
 
-async def _run(symbols, out):
-    bridge = ZMQBridge()
-    if not await asyncio.wait_for(bridge.ping(), 6):
-        print("bridge down — attach the EA (InpIP = WSL IP) and retry")
-        return 1
-    specs = {}
+async def build_specs(broker, symbols):
+    """Return {symbol: {tick_value, tick_size, vol_min, vol_step}} — the shape risk_manager
+    consumes. Per-symbol failures are skipped (logged) so one bad symbol never aborts the run."""
+    out = {}
     for s in symbols:
-        await bridge.send_command("GET_HISTORY", {"symbol": s, "tf": "M5", "count": 5})
-        deadline = asyncio.get_event_loop().time() + 10
-        while asyncio.get_event_loop().time() < deadline:
-            for m in await bridge.poll_data():
-                if m.get("type") == "HISTORY" and m.get("symbol") == s:
-                    specs[s] = {"tick_value": m.get("tv"), "tick_size": m.get("ts"),
-                                "vol_min": m.get("vm"), "vol_step": m.get("vs")}
-                    break
-            if s in specs:
-                break
-            await asyncio.sleep(0.1)
-        print(f"  {s}: {specs.get(s, 'NO DATA')}")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "w") as f:
+        try:
+            info = await broker.get_symbol_info(s)
+        except BrokerError as e:
+            print(f"[SPECS] {s}: skipped ({type(e).__name__}: {e})")
+            continue
+        out[s] = {"tick_value": info.tick_value, "tick_size": info.tick_size,
+                  "vol_min": info.volume_min, "vol_step": info.volume_step}
+    return out
+
+
+async def _run(args):
+    broker = MT5HttpBroker()
+    async with broker:
+        specs = await build_specs(broker, args.symbols)
+    with open(args.out, "w") as f:
         json.dump(specs, f, indent=2)
-    print(f"wrote {len(specs)} specs -> {out}")
-    return 0
+    print(f"[SPECS] wrote {len(specs)} symbols -> {args.out}")
 
 
 def main():
-    symbols = sys.argv[1:] or DEFAULT
-    raise SystemExit(asyncio.run(_run(symbols, "data/specs.json")))
+    p = argparse.ArgumentParser(description="Cache MT5 symbol specs via the Titan HTTP bridge.")
+    p.add_argument("--symbols", nargs="+", default=DEFAULT_SYMS)
+    p.add_argument("--out", default="data/specs.json")
+    asyncio.run(_run(p.parse_args()))
 
 
 if __name__ == "__main__":

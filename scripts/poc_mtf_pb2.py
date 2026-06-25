@@ -88,31 +88,60 @@ def combined_structure_bias(m5_df, h4, h1, lk=3):
     return combine_bias_lists(structure_bias(h4, lk), structure_bias(h1, lk), idx4, idx1)
 
 
-def impulse_leg(highs, lows, upto, lk, bias):
+def impulse_leg(highs, lows, upto, lk, bias, SWH=None, SWL=None):
     """Most recent leg in bias dir that BROKE the prior swing, using bars [0..upto].
     BULL: a confirmed swing high exceeding the previous confirmed swing high (BOS up);
     origin = most recent confirmed swing low before it. Returns
-    (leg_low, leg_high, lo_idx, hi_idx) or None."""
+    (leg_low, leg_high, lo_idx, hi_idx) or None.
+
+    Pass precomputed full-series confirmed swing-index lists SWH/SWL (from
+    confirmed_swing_seq on the whole frame) for O(log n) lookup instead of rebuilding
+    swings on the [0..upto] prefix every call. Omit them for the original prefix-scan
+    (kept identical for the unit tests). The two paths are behavior-equivalent: usable
+    swings are exactly those with index <= upto-lk, whose neighbor windows lie within
+    [0:upto+1], so full-array and slice detection agree."""
     if bias not in ("BULLISH", "BEARISH"):
         return None
-    h = highs[:upto + 1]
-    l = lows[:upto + 1]
-    his, los = confirmed_swing_seq(h, l, lk)
-    if bias == "BULLISH":
-        for k in range(len(his) - 1, 0, -1):
-            if highs[his[k]] > highs[his[k - 1]]:                 # BOS up
-                hi = his[k]
-                befs = [j for j in los if j < hi]
+    if SWH is None or SWL is None:
+        h = highs[:upto + 1]
+        l = lows[:upto + 1]
+        his, los = confirmed_swing_seq(h, l, lk)
+        if bias == "BULLISH":
+            for k in range(len(his) - 1, 0, -1):
+                if highs[his[k]] > highs[his[k - 1]]:             # BOS up
+                    hi = his[k]
+                    befs = [j for j in los if j < hi]
+                    if befs:
+                        lo = befs[-1]
+                        return (lows[lo], highs[hi], lo, hi)
+            return None
+        for k in range(len(los) - 1, 0, -1):
+            if lows[los[k]] < lows[los[k - 1]]:                   # BOS down
+                lo = los[k]
+                befs = [j for j in his if j < lo]
                 if befs:
-                    lo = befs[-1]
+                    hi = befs[-1]
                     return (lows[lo], highs[hi], lo, hi)
         return None
-    for k in range(len(los) - 1, 0, -1):
-        if lows[los[k]] < lows[los[k - 1]]:                       # BOS down
-            lo = los[k]
-            befs = [j for j in his if j < lo]
-            if befs:
-                hi = befs[-1]
+    # fast path: SWH[:nh]/SWL[:nl] are the swings usable at `upto` (index <= upto-lk)
+    cutoff = upto - lk
+    nh = bisect.bisect_right(SWH, cutoff)
+    nl = bisect.bisect_right(SWL, cutoff)
+    if bias == "BULLISH":
+        for k in range(nh - 1, 0, -1):
+            if highs[SWH[k]] > highs[SWH[k - 1]]:                 # BOS up
+                hi = SWH[k]
+                p = bisect.bisect_left(SWL, hi, 0, nl) - 1        # most recent low < hi
+                if p >= 0:
+                    lo = SWL[p]
+                    return (lows[lo], highs[hi], lo, hi)
+        return None
+    for k in range(nl - 1, 0, -1):
+        if lows[SWL[k]] < lows[SWL[k - 1]]:                       # BOS down
+            lo = SWL[k]
+            p = bisect.bisect_left(SWH, lo, 0, nh) - 1            # most recent high < lo
+            if p >= 0:
+                hi = SWH[p]
                 return (lows[lo], highs[hi], lo, hi)
     return None
 
@@ -423,6 +452,7 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
     idx15 = last_closed_indexer(m5t, list(pd.to_datetime(m15["time"])), 0.25)
     m15h = list(m15["high"].values)
     m15l = list(m15["low"].values)
+    m15_SWH, m15_SWL = confirmed_swing_seq(m15h, m15l, lk_m15)   # precompute once (O(n))
     m15_recs = m15[["open", "high", "low", "close"]].to_dict("records")
     m15_close_times = [t + pd.Timedelta(minutes=15) for t in pd.to_datetime(m15["time"])]
 
@@ -441,7 +471,7 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
         j15 = idx15[i]
         if j15 < lk_m15 + 1:
             continue
-        leg = impulse_leg(m15h, m15l, j15, lk_m15, bias)
+        leg = impulse_leg(m15h, m15l, j15, lk_m15, bias, m15_SWH, m15_SWL)
         if leg is None:
             continue
         funnel["leg"] += 1

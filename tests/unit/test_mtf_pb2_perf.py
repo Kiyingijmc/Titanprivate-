@@ -30,5 +30,17 @@ class MssFastEquivalence(unittest.TestCase):
                 self.assertEqual(slow, fast, f"mismatch bias={bias} i={i}: {slow} != {fast}")
 
 
+class ImpulseLegFastEquivalence(unittest.TestCase):
+    def test_fast_leg_matches_slow_for_every_upto(self):
+        highs, lows, _ = _series()
+        lk = 2
+        SWH, SWL = m2.confirmed_swing_seq(highs, lows, lk)
+        for bias in ("BULLISH", "BEARISH"):
+            for upto in range(lk + 1, len(highs)):
+                slow = m2.impulse_leg(highs, lows, upto, lk, bias)
+                fast = m2.impulse_leg(highs, lows, upto, lk, bias, SWH, SWL)
+                self.assertEqual(slow, fast, f"mismatch bias={bias} upto={upto}: {slow} != {fast}")
+
+
 if __name__ == "__main__":
     unittest.main()

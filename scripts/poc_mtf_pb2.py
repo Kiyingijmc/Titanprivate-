@@ -29,6 +29,27 @@ def confirmed_swing_seq(highs, lows, lk):
     return his, los
 
 
+def precompute_last_swings(highs, lows, lk):
+    """For each bar i, the index of the most recent CONFIRMED swing high / swing low usable
+    at i (a swing at j is confirmed once j+lk < i). Returns (last_swh, last_swl) int arrays
+    of length n, -1 where none. O(n) — replaces per-bar confirmed_swing_seq(prefix) scans."""
+    n = len(highs)
+    SWH, SWL = confirmed_swing_seq(highs, lows, lk)
+    last_swh = [-1] * n
+    last_swl = [-1] * n
+    p = cur = 0; cur = -1
+    for i in range(n):
+        while p < len(SWH) and SWH[p] + lk < i:
+            cur = SWH[p]; p += 1
+        last_swh[i] = cur
+    p = 0; cur = -1
+    for i in range(n):
+        while p < len(SWL) and SWL[p] + lk < i:
+            cur = SWL[p]; p += 1
+        last_swl[i] = cur
+    return last_swh, last_swl
+
+
 def structure_bias(df, lk=3):
     """Per-bar BOS bias. BULLISH when the last two confirmed swing highs are higher-high
     AND the last two confirmed swing lows are higher-low; BEARISH on the mirror; else
@@ -159,10 +180,27 @@ def swept_liquidity(lows, highs, start, end, bias, lk=2):
     return (False, None)
 
 
-def mss_confirm(highs, lows, closes, i, bias, lk=2):
-    """M5 CHoCH at bar i in the trend direction. BULL: close[i] > the most recent confirmed
-    swing high before i. Returns (confirmed, mss_level) where mss_level is the swing low
-    (bull) / swing high (bear) the shift breaks away from -- used by the no-FVG stop."""
+def mss_confirm(highs, lows, closes, i, bias, lk=2, last_swh=None, last_swl=None):
+    """M5 CHoCH at bar i in the trend direction. Returns (confirmed, mss_level) where
+    mss_level is the swing low (bull)/high (bear) the shift breaks away from. Pass the
+    precomputed last_swh/last_swl (from precompute_last_swings) for O(1) lookup; omit them
+    for the original O(i) prefix-scan (kept for the unit tests)."""
+    if last_swh is not None and last_swl is not None:
+        if bias == "BULLISH":
+            sh = last_swh[i]
+            if sh < 0:
+                return (False, None)
+            if closes[i] > highs[sh]:
+                sl_after = last_swl[i]
+                return (True, lows[sl_after] if sl_after > sh else lows[sh])
+            return (False, None)
+        sl = last_swl[i]
+        if sl < 0:
+            return (False, None)
+        if closes[i] < lows[sl]:
+            sh_after = last_swh[i]
+            return (True, highs[sh_after] if sh_after > sl else highs[sl])
+        return (False, None)
     his, los = confirmed_swing_seq(highs[:i], lows[:i], lk)
     if bias == "BULLISH":
         cand = [j for j in his if j + lk < i]
@@ -204,12 +242,14 @@ def is_displacement(bar, med_range, bias, body_frac=0.60, range_mult=1.0):
     return bar["close"] > bar["open"] if bias == "BULLISH" else bar["close"] < bar["open"]
 
 
-def pressure_ok(bars, highs, lows, closes, i, bias, lk=2, window=20):
+def pressure_ok(bars, highs, lows, closes, i, bias, lk=2, window=20,
+                last_swh=None, last_swl=None):
     """(A) a displacement FVG left by the resumption impulse ending at/just before i, OR
     (B) a micro-BOS (M5 CHoCH) accompanied by a displacement candle at i."""
     if find_fvg(bars, i, bias) or (i >= 3 and find_fvg(bars, i - 1, bias)):
         return True
-    bos, _ = mss_confirm(highs, lows, closes, i, bias, lk)
+    bos, _ = mss_confirm(highs, lows, closes, i, bias, lk,
+                         last_swh=last_swh, last_swl=last_swl)
     return bool(bos) and is_displacement(bars[i], median_range(bars, i, window), bias)
 
 
@@ -377,6 +417,7 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
     lows = [b["low"] for b in bars]
     closes = [b["close"] for b in bars]
     n = len(bars)
+    last_swh, last_swl = precompute_last_swings(highs, lows, lk_m5)
 
     # Map each M5 bar to the most recent CLOSED M15 bar.
     idx15 = last_closed_indexer(m5t, list(pd.to_datetime(m15["time"])), 0.25)
@@ -436,12 +477,14 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
             continue
         funnel["sweep"] += 1
 
-        mss, mss_level = mss_confirm(highs, lows, closes, i, bias, lk_m5)
+        mss, mss_level = mss_confirm(highs, lows, closes, i, bias, lk_m5,
+                                     last_swh=last_swh, last_swl=last_swl)
         if not mss:
             continue
         funnel["mss"] += 1
 
-        if not pressure_ok(bars, highs, lows, closes, i, bias, lk_m5):
+        if not pressure_ok(bars, highs, lows, closes, i, bias, lk_m5,
+                           last_swh=last_swh, last_swl=last_swl):
             continue
         funnel["pressure"] += 1
 

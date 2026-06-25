@@ -314,6 +314,46 @@ def htf_poi_overlap(zone, h1, h4, t, bias, lk=3):
     return False
 
 
+def precompute_htf_pois(htf, bias, lk, hours):
+    """Precompute (close_times, pois) for one HTF frame + bias ONCE. pois is a list of
+    (form_idx, lo, hi) sorted by form_idx — the htf bar index at which the POI becomes
+    visible (FVG: 3rd-candle index j; swing: j+lk). The visible set at any time t (those
+    with form_idx <= last-closed-idx) equals htf_pois(htf, that_idx, bias, lk); used by
+    htf_poi_overlap_pre to avoid rebuilding the POI list every call."""
+    times = list(pd.to_datetime(htf["time"]))
+    close_times = [tt + pd.Timedelta(hours=hours) for tt in times]
+    bars = htf[["open", "high", "low", "close"]].to_dict("records")
+    highs = [b["high"] for b in bars]
+    lows = [b["low"] for b in bars]
+    pois = []
+    for j in range(2, len(bars)):
+        g = find_fvg(bars, j, bias)
+        if g:
+            pois.append((j, g[0], g[1]))
+    his, los = confirmed_swing_seq(highs, lows, lk)
+    for j in his + los:
+        pois.append((j + lk, bars[j]["low"], bars[j]["high"]))
+    pois.sort(key=lambda p: p[0])
+    return close_times, pois
+
+
+def htf_poi_overlap_pre(zone, t, pre_list):
+    """Fast equivalent of htf_poi_overlap using precomputed (close_times, pois) frames.
+    True if the OTE zone intersects any POI visible at t (form_idx <= last-closed-idx).
+    Boolean-identical to htf_poi_overlap (POI set is the same; order doesn't affect 'any')."""
+    z_lo, z_hi = zone
+    for close_times, pois in pre_list:
+        idx = bisect.bisect_right(close_times, t) - 1
+        if idx < 0:
+            continue
+        for form_idx, lo, hi in pois:
+            if form_idx > idx:
+                break
+            if _overlap(z_lo, z_hi, lo, hi) > 0:
+                return True
+    return False
+
+
 def conditional_stop(bias, leg_low, leg_high, qfvg, fully_swept, sweep_extreme, mss_level):
     """The M5-structure stop level per the spec's decision table:
       - qualifying FVG present, NOT fully swept -> OTE leg origin
@@ -454,6 +494,9 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
     m15l = list(m15["low"].values)
     m15_SWH, m15_SWL = confirmed_swing_seq(m15h, m15l, lk_m15)   # precompute once (O(n))
     m15_recs = m15[["open", "high", "low", "close"]].to_dict("records")
+    # Precompute HTF POIs once per (frame, bias) — avoids rebuilding them every armed bar.
+    h1_pre = {b: precompute_htf_pois(h1, b, lk_htf, 1) for b in ("BULLISH", "BEARISH")}
+    h4_pre = {b: precompute_htf_pois(h4, b, lk_htf, 4) for b in ("BULLISH", "BEARISH")}
     m15_close_times = [t + pd.Timedelta(minutes=15) for t in pd.to_datetime(m15["time"])]
 
     funnel = dict(bias=0, leg=0, armed=0, sweep=0, mss=0, pressure=0, confluence=0, emitted=0)
@@ -518,7 +561,7 @@ def build_signals(m5_df, lk_htf=3, lk_m15=2, lk_m5=2, require_sweep=True,
             continue
         funnel["pressure"] += 1
 
-        if require_confluence and not htf_poi_overlap(zone, h1, h4, m5t[i], bias, lk_htf):
+        if require_confluence and not htf_poi_overlap_pre(zone, m5t[i], [h1_pre[bias], h4_pre[bias]]):
             continue
         funnel["confluence"] += 1
 

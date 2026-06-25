@@ -42,5 +42,29 @@ class ImpulseLegFastEquivalence(unittest.TestCase):
                 self.assertEqual(slow, fast, f"mismatch bias={bias} upto={upto}: {slow} != {fast}")
 
 
+class HtfPoiFastEquivalence(unittest.TestCase):
+    def test_pre_matches_original(self):
+        import pandas as pd
+        highs, lows, closes = _series()
+        rows = [{"time": str(pd.Timestamp("2026-01-01") + pd.Timedelta(hours=k)),
+                 "open": closes[k], "high": highs[k], "low": lows[k], "close": closes[k]}
+                for k in range(len(highs))]
+        htf = pd.DataFrame(rows)
+        lk = 3
+        pre = {("BULLISH", 1): m2.precompute_htf_pois(htf, "BULLISH", lk, 1),
+               ("BULLISH", 4): m2.precompute_htf_pois(htf, "BULLISH", lk, 4),
+               ("BEARISH", 1): m2.precompute_htf_pois(htf, "BEARISH", lk, 1),
+               ("BEARISH", 4): m2.precompute_htf_pois(htf, "BEARISH", lk, 4)}
+        times = [pd.Timestamp("2026-01-01") + pd.Timedelta(hours=k) for k in range(0, len(highs), 7)]
+        zones = [(90, 91), (95, 96), (100, 101), (105, 106), (108, 110), (1000, 1001)]
+        for bias in ("BULLISH", "BEARISH"):
+            pre_list = [pre[(bias, 1)], pre[(bias, 4)]]
+            for t in times:
+                for z in zones:
+                    orig = m2.htf_poi_overlap(z, htf, htf, t, bias, lk)
+                    fast = m2.htf_poi_overlap_pre(z, t, pre_list)
+                    self.assertEqual(orig, fast, f"bias={bias} t={t} z={z}: {orig}!={fast}")
+
+
 if __name__ == "__main__":
     unittest.main()

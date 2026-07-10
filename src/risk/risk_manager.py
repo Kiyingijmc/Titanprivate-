@@ -33,7 +33,8 @@ class RiskManager:
         # State Management
         self.starting_balance = 0.0
         self.current_equity = 0.0
-        self.symbol_specs = {} 
+        self.day_start_equity = 0.0  # daily DD anchor; re-set by reset_daily_metrics
+        self.symbol_specs = {}
         
         # V14 Reporting Metrics (For 11:45 PM Uganda Report)
         self.equity_max = 0.0
@@ -41,9 +42,11 @@ class RiskManager:
 
     def update_account_info(self, balance, equity):
         """Standard oper.txt logic: Permanent lock of starting balance on init"""
-        if self.starting_balance == 0 and balance > 0: 
+        if self.starting_balance == 0 and balance > 0:
             self.starting_balance = balance
-        
+        if self.day_start_equity == 0 and equity > 0:
+            self.day_start_equity = equity
+
         self.current_equity = equity
         self.track_equity(equity)
 
@@ -100,12 +103,17 @@ class RiskManager:
         return InstrumentHelper.normalize_price(price, InstrumentHelper.get_pip_size(symbol))
 
     def check_can_trade(self) -> bool:
-        """Daily Drawdown Circuit Breaker (oper.txt Legacy)"""
-        if self.starting_balance == 0: return True
-        # Safety: divide by zero protection
-        if self.starting_balance <= 0: return False
-            
-        pnl_pct = (self.current_equity - self.starting_balance) / self.starting_balance * 100
+        """
+        Daily Drawdown Circuit Breaker.
+        Anchored to TODAY's starting equity (reset by reset_daily_metrics), so
+        the limit stays a true intraday guard as the account compounds, instead
+        of drifting against the boot-time balance.
+        """
+        anchor = self.day_start_equity if self.day_start_equity > 0 else self.starting_balance
+        if anchor == 0: return True
+        if anchor < 0: return False
+
+        pnl_pct = (self.current_equity - anchor) / anchor * 100
         return pnl_pct > -self.max_dd
 
     def get_max_risk_amount(self, bias_multiplier=1.0):
@@ -186,6 +194,8 @@ class RiskManager:
         return round(lots, 2)
 
     def reset_daily_metrics(self):
-        """V14 Report Support: Reset range trackers"""
+        """New trading day: reset range trackers and re-anchor the daily DD."""
         self.equity_max = self.current_equity
         self.equity_min = self.current_equity
+        if self.current_equity > 0:
+            self.day_start_equity = self.current_equity

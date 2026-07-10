@@ -28,6 +28,7 @@ from src.analysis.bias_engine import BiasEngine
 from src.analysis.time_math import TimeNormalizer
 from src.analysis.news_manager import NewsManager
 from src.analysis.smc_analyzer import SMCAnalyzer
+from src.analysis.signal_grader import SignalGrader
 from src.risk.risk_manager import RiskManager
 from src.risk.exposure import ExposureManager
 from src.ops.telemetry import TelegramBot
@@ -88,11 +89,18 @@ class SystemController:
         self.risk_manager = RiskManager(self.config, self.logger)
         self.exposure_manager = ExposureManager(self.config, self.market_data)
         self.news_manager = NewsManager(self.logger)
+        self.signal_grader = SignalGrader(self.config)
+
+        # Signal metadata (grade/SL/TP/lots) keyed by symbol, captured at send
+        # time so EXECUTION:OPENED can journal the full trade record (the EA's
+        # OPENED message carries no prices).
+        self.pending_signal_meta = {}
         
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
         
-        self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager)
+        self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
+                                          config=self.config)
         
         # Reconciliation Sync Config
         self.recon_interval = 60 
@@ -224,15 +232,15 @@ class SystemController:
             self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)")
 
-    async def _execute_signal(self, symbol, decision, name, htf_bias):
+    async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
         p = self.risk_manager.normalize_price(decision['price'], symbol)
         sl = self.risk_manager.normalize_price(decision['sl'], symbol)
         tp = self.risk_manager.normalize_price(decision['tp'], symbol)
-        
+
         cur_bid = self.live_prices.get(symbol, 0.0)
         cmd = decision['type']
         if "LIMIT" in cmd and cur_bid > 0:
-            if abs(p - cur_bid) < (cur_bid * 0.0002): 
+            if abs(p - cur_bid) < (cur_bid * 0.0002):
                 cmd = "MARKET"
                 p = cur_bid
 
@@ -246,19 +254,54 @@ class SystemController:
 
         payload = {
             "action": "TRADE", "symbol": symbol, "cmd": cmd, "side": decision['signal'],
-            "price": float(p), "p": float(p), "entry": float(p), 
+            "price": float(p), "p": float(p), "entry": float(p),
             "sl": float(sl), "tp": float(tp), "volume": float(lot),
-            "magic": self.config['system'].get('magic_number_base', 88000), 
+            "magic": self.config['system'].get('magic_number_base', 88000),
             "comment": name, "strat": name
         }
-        
+
         success = await self.bridge.send_order_reliable(payload)
-        
+
         if success:
+            # Remember what we sent so EXECUTION:OPENED can journal the full
+            # trade record (the EA's OPENED notification carries no prices).
+            self.pending_signal_meta[symbol] = {
+                'strat': name, 'cmd': cmd, 'entry': float(p), 'sl': float(sl),
+                'tp': float(tp), 'lots': float(lot), 'grade': grade
+            }
             await self.telemetry.notify_signal(symbol, name, decision['signal'], lot, p, sl, tp)
-            self.logger.log_event("EXEC", "SENT", f"Order {cmd} {symbol} sent. Handshake OK.")
+            self.logger.log_event("EXEC", "SENT", f"Order {cmd} {symbol} [{grade}] sent. Handshake OK.")
         else:
             self.logger.log_event("ERROR", "EXECUTION", f"Order handshake FAILED for {symbol}")
+
+    async def _dispatch_mgmt_command(self, c):
+        """
+        Routes TradeManager commands onto the protocol the EA understands:
+        - MODIFY goes over the reliable REQ socket as a TRADE/cmd=MODIFY
+          (the fire-and-forget PULL handler has no MODIFY branch).
+        - CLOSE_PARTIAL becomes CLOSE_POS with an explicit volume.
+        - CLOSE_POS passes through.
+        """
+        action = c.get('action')
+        if action == "MODIFY":
+            ok = await self.bridge.send_order_reliable({
+                "action": "TRADE", "cmd": "MODIFY", "symbol": c.get('symbol', ''),
+                "ticket": int(c['ticket']), "sl": float(c.get('sl', 0.0)),
+                "tp": float(c.get('tp', 0.0)), "volume": 0.0, "strat": c.get('comment', 'Mgmt')
+            })
+            level = "MGMT" if ok else "ERROR"
+            self.logger.log_event(level, "TRADE_MGR",
+                                  f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "
+                                  f"({c.get('comment', '')}) -> {'OK' if ok else 'FAILED'}")
+        elif action == "CLOSE_PARTIAL":
+            await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket']),
+                                                         "volume": float(c['volume'])})
+            self.logger.log_event("MGMT", "TRADE_MGR",
+                                  f"PARTIAL #{c['ticket']} vol={c['volume']}")
+        elif action == "CLOSE_POS":
+            await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket'])})
+            self.logger.log_event("MGMT", "TRADE_MGR",
+                                  f"CLOSE #{c['ticket']} ({c.get('comment', '')})")
 
     async def _process_incoming_data(self, msg):
         if not isinstance(msg, dict): 
@@ -279,12 +322,28 @@ class SystemController:
         elif msg_type == 'EXECUTION':
             status = msg.get('status')
             if status == 'OPENED':
-                entry_p = float(msg.get('price', 0))
-                self.state_manager.register_order(
-                    msg['ticket'], msg['s'], msg.get('strat', 'Manual'), msg.get('cmd'), 
-                    status="ACTIVE", entry=entry_p, tp=0.0
-                )
-                await self.telemetry.notify_execution(msg['ticket'], msg['s'], msg.get('cmd'), entry_p, 0, msg.get('strat', 'Auto'))
+                ticket = int(msg.get('ticket', 0))
+                if ticket <= 0:
+                    return  # e.g. SLTP-modify acks carry no order ticket
+                sym = msg.get('s', '?')
+                # Prefer the metadata captured when we sent the order: it has the
+                # real entry/SL/TP/lots/grade (the EA's OPENED carries no prices).
+                meta = self.pending_signal_meta.pop(sym, None)
+                if meta:
+                    reg_status = "PENDING" if meta['cmd'] == "LIMIT" else "ACTIVE"
+                    self.state_manager.register_order(
+                        ticket, sym, meta['strat'], meta['cmd'], status=reg_status,
+                        entry=meta['entry'], tp=meta['tp'], sl=meta['sl'],
+                        lots=meta['lots'], grade=meta['grade']
+                    )
+                    entry_p = meta['entry']
+                else:
+                    entry_p = float(msg.get('price', 0))
+                    self.state_manager.register_order(
+                        ticket, sym, msg.get('strat', 'Manual'), msg.get('cmd'),
+                        status="ACTIVE", entry=entry_p, tp=0.0
+                    )
+                await self.telemetry.notify_execution(ticket, sym, msg.get('cmd'), entry_p, 0, msg.get('strat', 'Auto'))
             
             elif status == 'CLOSED':
                 tid = msg.get('ticket')
@@ -312,8 +371,8 @@ class SystemController:
                 if self.current_open_positions and symbol in self.live_prices:
                     relevant = [p for p in self.current_open_positions if p.get('s') == symbol]
                     cmds = self.trade_manager.sync_positions(relevant, self.live_prices)
-                    for c in cmds: 
-                        await self.bridge.send_command(c['action'], c)
+                    for c in cmds:
+                        await self._dispatch_mgmt_command(c)
                 
                 for tf, df in closed_candles:
                     if tf == "M5": 
@@ -335,8 +394,16 @@ class SystemController:
                     tid = int(tid_raw)
                     if not self.state_manager.exists(tid):
                         self.state_manager.register_order(
-                            tid, p.get('s', '?'), "Adopted", "MARKET", 
-                            status="ACTIVE", entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
+                            tid, p.get('s', '?'), "Adopted", "MARKET",
+                            status="ACTIVE", entry=float(p.get('p', 0)), tp=float(p.get('tp', 0)),
+                            sl=float(p.get('sl', 0)), lots=float(p.get('vol', 0))
+                        )
+                    else:
+                        # Fill any zero entry/TP from live broker state and flip
+                        # PENDING->ACTIVE on limit fills, so the ratchet manager
+                        # can engage (it skips trades with zero entry/TP).
+                        self.state_manager.backfill_position_state(
+                            tid, entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
                         )
 
     async def _cleanup_ghost_orders(self):
@@ -345,7 +412,7 @@ class SystemController:
         for o in pending:
             ttl = 3600 if "Silver" in o.get('strategy','') else 7200
             if now - o['time_placed'] > ttl:
-                await self.bridge.send_command("TRADE", {"action": "CANCEL", "ticket": o['ticket_id']})
+                await self.bridge.send_command("CANCEL", {"ticket": o['ticket_id']})
                 self.state_manager.delete_order(o['ticket_id'])
                 await self.telemetry.send_message(f"♻️ **Auto-Clean:** Expired {o['strategy']} Order `#{o['ticket_id']}`")
 
@@ -420,9 +487,24 @@ class SystemController:
             if decision:
                 if strat.name != "CRT":
                     if (bias_str == "BULLISH" and decision['signal'] == "SELL") or \
-                       (bias_str == "BEARISH" and decision['signal'] == "BUY"): 
-                           continue 
-                await self._execute_signal(symbol, decision, strat.name, bias_str)
+                       (bias_str == "BEARISH" and decision['signal'] == "BUY"):
+                           continue
+
+                # Confluence grading: journal every signal; execute only those
+                # at or above the configured quality floor (signal_grading cfg).
+                g = self.signal_grader.grade(decision, ctx, enriched_df.iloc[-1])
+                self.logger.log_event(
+                    "SIGNAL", strat.name,
+                    f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
+                    payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
+                )
+                if not self.signal_grader.passes(g['grade']):
+                    self.logger.log_event("SIGNAL", strat.name,
+                                          f"{symbol} skipped: {g['grade']} below floor "
+                                          f"{self.signal_grader.min_grade}")
+                    continue
+
+                await self._execute_signal(symbol, decision, strat.name, bias_str, grade=g['grade'])
 
     async def _perform_warmup(self, symbols_list):
         await asyncio.sleep(2)

@@ -54,10 +54,13 @@ class StateManager:
                     ratchet_level INTEGER DEFAULT 0,
                     initial_entry REAL DEFAULT 0.0,
                     initial_tp REAL DEFAULT 0.0,
+                    initial_sl REAL DEFAULT 0.0,
+                    lots REAL DEFAULT 0.0,
+                    grade TEXT DEFAULT '',
                     comment TEXT DEFAULT ''
                 )
             ''')
-            
+
             # Trade History Table
             self.conn.execute('''
                 CREATE TABLE IF NOT EXISTS trade_history (
@@ -66,52 +69,102 @@ class StateManager:
                     strategy TEXT,
                     close_time REAL,
                     pnl REAL,
+                    entry REAL DEFAULT 0.0,
+                    sl REAL DEFAULT 0.0,
+                    tp REAL DEFAULT 0.0,
+                    lots REAL DEFAULT 0.0,
+                    grade TEXT DEFAULT '',
                     comment TEXT
                 )
             ''')
 
             # --- MIGRATION GUARD (Retained) ---
-            # Checks for columns added in newer versions (v14.1/14.2)
+            # Checks for columns added in newer versions (v14.1/14.2/14.4)
             cursor = self.conn.execute("PRAGMA table_info(active_orders)")
             existing_cols = [col[1] for col in cursor.fetchall()]
-            
+
             if 'comment' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN comment TEXT DEFAULT ''")
                 print("[DB] Migration: Added 'comment' column.")
 
             if 'ratchet_level' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN ratchet_level INTEGER DEFAULT 0")
-            
+
             if 'initial_entry' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN initial_entry REAL DEFAULT 0.0")
-                
+
             if 'initial_tp' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN initial_tp REAL DEFAULT 0.0")
-                
+
+            # v14.4 journal columns (full trade record)
+            if 'initial_sl' not in existing_cols:
+                self.conn.execute("ALTER TABLE active_orders ADD COLUMN initial_sl REAL DEFAULT 0.0")
+            if 'lots' not in existing_cols:
+                self.conn.execute("ALTER TABLE active_orders ADD COLUMN lots REAL DEFAULT 0.0")
+            if 'grade' not in existing_cols:
+                self.conn.execute("ALTER TABLE active_orders ADD COLUMN grade TEXT DEFAULT ''")
+
+            cursor = self.conn.execute("PRAGMA table_info(trade_history)")
+            hist_cols = [col[1] for col in cursor.fetchall()]
+            for col, decl in [('entry', 'REAL DEFAULT 0.0'), ('sl', 'REAL DEFAULT 0.0'),
+                              ('tp', 'REAL DEFAULT 0.0'), ('lots', 'REAL DEFAULT 0.0'),
+                              ('grade', "TEXT DEFAULT ''")]:
+                if col not in hist_cols:
+                    self.conn.execute(f"ALTER TABLE trade_history ADD COLUMN {col} {decl}")
+
             self.conn.commit()
             
         except Exception as e:
             print(f"[DB INIT ERROR] {e}")
 
-    def register_order(self, ticket, sym, strat, otype, status="PENDING", entry=0.0, tp=0.0):
+    def register_order(self, ticket, sym, strat, otype, status="PENDING", entry=0.0, tp=0.0,
+                       sl=0.0, lots=0.0, grade=""):
         """
-        RETAINS FULL v14.1 logic: 
-        Uses COALESCE to preserve the specific 'phase' and 'ratchet_level' 
+        RETAINS FULL v14.1 logic:
+        Uses COALESCE to preserve the specific 'phase' and 'ratchet_level'
         if the bot reboots while a trade is active.
         """
         try:
             self.conn.execute("""
-                INSERT OR REPLACE INTO active_orders 
-                (ticket_id, symbol, strategy, order_type, time_placed, status, phase, ratchet_level, initial_entry, initial_tp, comment)
+                INSERT OR REPLACE INTO active_orders
+                (ticket_id, symbol, strategy, order_type, time_placed, status, phase, ratchet_level,
+                 initial_entry, initial_tp, initial_sl, lots, grade, comment)
                 VALUES (?,?,?,?,?,?,
                     COALESCE((SELECT phase FROM active_orders WHERE ticket_id=?),0),
                     COALESCE((SELECT ratchet_level FROM active_orders WHERE ticket_id=?),0),
-                    ?, ?, ?
+                    ?, ?, ?, ?, ?, ?
                 )
-            """, (ticket, sym, strat, otype, time.time(), status, ticket, ticket, entry, tp, strat))
+            """, (ticket, sym, strat, otype, time.time(), status, ticket, ticket,
+                  entry, tp, sl, lots, grade, strat))
             self.conn.commit()
         except Exception as e:
             print(f"[DB ERROR] Register: {e}")
+
+    def get_order(self, ticket):
+        """Returns the full active_orders row as a dict, or None."""
+        try:
+            r = self.conn.execute("SELECT * FROM active_orders WHERE ticket_id=?", (ticket,)).fetchone()
+            return dict(r) if r else None
+        except Exception:
+            return None
+
+    def backfill_position_state(self, ticket, entry=0.0, tp=0.0):
+        """
+        Heartbeat sync: fills initial_entry/initial_tp ONLY where still zero
+        (the EA's OPENED message carries no prices) and marks the ticket ACTIVE
+        so the ratchet manager can engage. Never overwrites known values.
+        """
+        try:
+            self.conn.execute("""
+                UPDATE active_orders SET
+                    initial_entry = CASE WHEN initial_entry = 0 THEN ? ELSE initial_entry END,
+                    initial_tp    = CASE WHEN initial_tp = 0 THEN ? ELSE initial_tp END,
+                    status = 'ACTIVE'
+                WHERE ticket_id = ?
+            """, (entry, tp, ticket))
+            self.conn.commit()
+        except Exception as e:
+            print(f"[DB ERROR] Backfill: {e}")
 
     def reconcile_state(self, mt5_tickets):
         """
@@ -134,9 +187,12 @@ class StateManager:
             trade = self.conn.execute("SELECT * FROM active_orders WHERE ticket_id=?", (ticket,)).fetchone()
             if trade:
                 self.conn.execute("""
-                    INSERT OR IGNORE INTO trade_history (ticket_id, symbol, strategy, close_time, pnl, comment)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (ticket, trade['symbol'], trade['strategy'], time.time(), pnl, trade['comment']))
+                    INSERT OR IGNORE INTO trade_history
+                    (ticket_id, symbol, strategy, close_time, pnl, entry, sl, tp, lots, grade, comment)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ticket, trade['symbol'], trade['strategy'], time.time(), pnl,
+                      trade['initial_entry'], trade['initial_sl'], trade['initial_tp'],
+                      trade['lots'], trade['grade'], trade['comment']))
                 self.conn.execute("DELETE FROM active_orders WHERE ticket_id=?", (ticket,))
                 self.conn.commit()
         except Exception as e:

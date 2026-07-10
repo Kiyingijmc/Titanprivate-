@@ -129,19 +129,30 @@ bool ExecuteTrade(string json) {
       req.type = (side == "BUY") ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT;
       req.price = GetJSONDouble(json, "price");
       req.expiration = 0; // GTC (Good Till Cancelled)
-   } 
+   }
+   else if(cmd == "STOP") {
+      // v14.4: Stop pending orders (breakout entries)
+      req.action = TRADE_ACTION_PENDING;
+      req.type = (side == "BUY") ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+      req.price = GetJSONDouble(json, "price");
+      req.expiration = 0; // GTC (Good Till Cancelled)
+   }
    else if(cmd == "MODIFY") {
       req.action = TRADE_ACTION_SLTP;
       req.position = (ulong)GetJSONLong(json, "ticket");
    }
-   
+
    // Try Send
    if(OrderSend(req, res)) {
       if(res.retcode == TRADE_RETCODE_DONE || res.retcode == TRADE_RETCODE_PLACED) {
-         // Notify Python via PUSH immediately
-         string notify = StringFormat("{\"type\":\"EXECUTION\",\"status\":\"OPENED\",\"ticket\":%I64d,\"s\":\"%s\",\"cmd\":\"%s\",\"strat\":\"%s\"}",
-                                       (long)res.order, sym, side, req.comment);
-         socket_push.Send(notify);
+         // Notify Python via PUSH immediately.
+         // v14.4: Only entry commands produce an OPENED event; an SLTP modify
+         // has no order ticket and must not register a phantom trade.
+         if(cmd != "MODIFY") {
+            string notify = StringFormat("{\"type\":\"EXECUTION\",\"status\":\"OPENED\",\"ticket\":%I64d,\"s\":\"%s\",\"cmd\":\"%s\",\"strat\":\"%s\"}",
+                                          (long)res.order, sym, side, req.comment);
+            socket_push.Send(notify);
+         }
          return true;
       }
       else {
@@ -272,16 +283,20 @@ void HandleCommand(string json) {
       if(!OrderSend(req, res)) Print("TITAN | Cancel Failed: ", res.retcode);
    }
    
-   // CLOSE MARKET
+   // CLOSE MARKET (full, or partial when a smaller "volume" is supplied)
    if(StringFind(json, "CLOSE_POS") >= 0) {
       long t_id = GetJSONLong(json, "ticket");
       if(PositionSelectByTicket((ulong)t_id)) {
          MqlTradeRequest req; ZeroMemory(req); MqlTradeResult res; ZeroMemory(res);
          string sym = PositionGetString(POSITION_SYMBOL);
-         req.action = TRADE_ACTION_DEAL; 
-         req.position = (ulong)t_id; 
+         req.action = TRADE_ACTION_DEAL;
+         req.position = (ulong)t_id;
          req.symbol = sym;
          req.volume = PositionGetDouble(POSITION_VOLUME);
+         // v14.4: Partial close support. Python's Dust Guard guarantees the
+         // remainder stays >= the broker minimum lot.
+         double vol_req = GetJSONDouble(json, "volume");
+         if(vol_req > 0 && vol_req < req.volume) req.volume = vol_req;
          req.type = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
          req.price = (req.type==ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
          req.type_filling = GetFillingMode(sym);

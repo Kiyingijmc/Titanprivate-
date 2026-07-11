@@ -99,8 +99,8 @@ StateManager returning `r_level = 3`:
 - **Short symmetry:** a short runner tightens on an upward give-back, correct HWM
   (`min`) and SL direction.
 - **HWM seeding:** first sight seeds HWM = curr_price, give-back 0, no trigger.
-- **Pruning:** a ticket absent from the position list is dropped from `runner_hwm` and
-  `tightened`.
+- **Per-symbol isolation:** syncing one symbol's positions must not disturb another
+  open ticket's `runner_hwm`/`tightened` state (the live call is per-symbol).
 
 Then: full unit suite green, and — because this is live-trading code — a
 **demo-forward-test** on FBS demo with the flag enabled before go-live (house rule).

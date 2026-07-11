@@ -143,17 +143,17 @@ class TradeManager:
                 if self.runner_enabled and r_level >= 3:
                     base_trail = range_size * (self.L3_FIB - self.L2_FIB)
 
-                    # Track the runner-leg high-water mark (seed on first sight).
-                    prev_hwm = self.runner_hwm.get(ticket, curr_price)
-                    hwm = max(prev_hwm, curr_price) if is_long else min(prev_hwm, curr_price)
-                    self.runner_hwm[ticket] = hwm
-
-                    # Arm C: one-way tighten once a pullback gives back
-                    # >= giveback_frac of the trail distance from the HWM.
-                    if self.tighten_enabled and ticket not in self.tightened:
-                        give_back = (hwm - curr_price) if is_long else (curr_price - hwm)
-                        if give_back >= self.giveback_frac * base_trail:
-                            self.tightened.add(ticket)
+                    # Arm C: track the runner-leg high-water mark and, once a pullback
+                    # gives back >= giveback_frac of the trail distance from it, tighten
+                    # the trail (one-way). Entirely inert when disabled.
+                    if self.tighten_enabled:
+                        prev_hwm = self.runner_hwm.get(ticket, curr_price)
+                        hwm = max(prev_hwm, curr_price) if is_long else min(prev_hwm, curr_price)
+                        self.runner_hwm[ticket] = hwm
+                        if ticket not in self.tightened:
+                            give_back = (hwm - curr_price) if is_long else (curr_price - hwm)
+                            if give_back >= self.giveback_frac * base_trail:
+                                self.tightened.add(ticket)
 
                     trail_dist = (range_size * self.tight_trail_frac
                                   if ticket in self.tightened else base_trail)

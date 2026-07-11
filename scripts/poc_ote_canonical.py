@@ -238,5 +238,184 @@ def scan_symbol(m5df, quick=False, verbose=False):
     return trades, bars, funnel
 
 
+def _grade_mirror(t, grader):
+    """Offline SignalGrader mirror (reported, not gated — spec section 3).
+    candle=None: the displacement factor is unavailable offline; noted in output."""
+    decision = {"signal": t["dir"], "price": t["entry"], "sl": t["sl"],
+                "tp": t["tp"]}
+    ny_hour = (int(t["time"].hour) + NY_SHIFT) % 24
+    ctx = {"bias": t["bias"], "liquidity": {}, "ny_time": f"{ny_hour:02d}:00"}
+    return grader.grade(decision, ctx, candle=None)["grade"]
+
+
+def _gate_class(rows, key_net, label):
+    """70/30 chronological OOS gate for one asset class + one exit model.
+    Returns (train_exp, test_exp, n_test, ci_lo, ci_hi, passed)."""
+    rows = sorted(rows, key=lambda t: t["time"])
+    cut = int(len(rows) * 0.7)
+    tr_rs = [t[key_net] for t in rows[:cut]]
+    te_rs = [t[key_net] for t in rows[cut:]]
+    tr_exp = sum(tr_rs) / len(tr_rs) if tr_rs else 0.0
+    te_exp = sum(te_rs) / len(te_rs) if te_rs else 0.0
+    lo, hi = bootstrap_expectancy_ci(te_rs)
+    wins = sum(1 for r in te_rs if r > 0)
+    _, w_lo, w_hi = wilson(wins, len(te_rs))     # win-rate CI (reported, spec s3)
+    passed = (tr_exp > 0 and te_exp > 0 and len(te_rs) >= 30
+              and (lo > 0 or lo > -0.02))
+    print(f"    {label:10} train={tr_exp:+.3f} test={te_exp:+.3f} "
+          f"(n_te={len(te_rs)}) bootCI[{lo:+.3f},{hi:+.3f}] "
+          f"winCI[{w_lo*100:.0f}-{w_hi*100:.0f}%] "
+          f"{'PASS' if passed else 'fail'}")
+    return passed
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sym", default=None)
+    ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--golden", action="store_true",
+                    help="verbose per-event log for manual verification")
+    ap.add_argument("--start", default=None, help="date filter (golden mode)")
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--out", default="data/history/ote_canonical_trades.csv")
+    a = ap.parse_args()
+    syms = [a.sym] if a.sym else SYMS
+
+    with open("data/specs.json") as f:
+        specs = json.load(f)
+
+    print("### Canonical OTE MTF study — H4+H1 BOS -> H1 leg -> 0.62-0.79 zone "
+          "-> M5 MSS (spec 2026-07-11) ###\n", flush=True)
+
+    all_trades = []
+    funnels = {}
+    for sym in syms:
+        path = f"data/history/{sym}_M5.csv"
+        if not os.path.exists(path):
+            print(f"[SKIP] {sym}: no data file")
+            continue
+        t0 = _t.time()
+        df = pd.read_csv(path).rename(columns={"datetime": "time"})
+        df["time"] = pd.to_datetime(df["time"])
+        if a.start:
+            df = df[df["time"] >= pd.Timestamp(a.start)].reset_index(drop=True)
+        if a.end:
+            df = df[df["time"] <= pd.Timestamp(a.end)].reset_index(drop=True)
+        trades, bars, funnel = scan_symbol(df, quick=a.quick, verbose=a.golden)
+        funnels[sym] = funnel
+        for t in trades:
+            t["sym"] = sym
+            t["r_mgd"] = replay_managed(t, bars, runner=True)   # v14.4 engine
+            for mult, key in ((1.0, "c1"), (1.5, "c15"), (2.0, "c2")):
+                t[key] = cost_r(t, sym, specs, mult)
+        all_trades += trades
+        print(f"[{sym}] funnel={funnel}  ({_t.time()-t0:.0f}s)", flush=True)
+
+    if not all_trades:
+        print("No trades.")
+        return
+    pd.DataFrame(all_trades).to_csv(a.out, index=False)
+    print(f"\n[CSV] {len(all_trades)} trades -> {a.out}\n")
+
+    # net columns: gross r minus cost, per exit model / spread stress
+    for t in all_trades:
+        t["net_fix_1"] = t["r"] - t["c1"]
+        t["net_fix_15"] = t["r"] - t["c15"]
+        t["net_mgd_1"] = t["r_mgd"] - t["c1"]
+        t["net_mgd_15"] = t["r_mgd"] - t["c15"]
+
+    # ---- Section 1: a-priori cost screen (median RT cost at realized stops)
+    print("=" * 88)
+    print(f"1. COST SCREEN — median round-trip cost at realized stops "
+          f"(exclude > {COST_SCREEN_R}R)")
+    print("=" * 88)
+    included = []
+    for sym in sorted({t["sym"] for t in all_trades}):
+        cs = [t["c1"] for t in all_trades if t["sym"] == sym]
+        med = float(np.median(cs))
+        ok = med <= COST_SCREEN_R
+        if ok:
+            included.append(sym)
+        print(f"  {sym:8} median={med:.3f}R n={len(cs):5d} "
+              f"{'INCLUDED' if ok else 'EXCLUDED (economic screen)'}")
+    inc_trades = [t for t in all_trades if t["sym"] in included]
+
+    # ---- Section 2: per-symbol table (net 1x)
+    print("\n" + "=" * 88)
+    print("2. PER-SYMBOL (net 1x costs)")
+    print("=" * 88)
+    for sym in sorted({t["sym"] for t in all_trades}):
+        rows = [t for t in all_trades if t["sym"] == sym]
+        mf = metrics([t["net_fix_1"] for t in rows])
+        mm = metrics([t["net_mgd_1"] for t in rows])
+        print(f"  {sym:8} n={mf['n']:5d} FIXED exp={mf['exp']:+.3f}R "
+              f"PF={mf['pf']:4.2f} | MANAGED exp={mm['exp']:+.3f}R "
+              f"PF={mm['pf']:4.2f}")
+
+    # ---- Section 3: pre-registered gate per asset class
+    print("\n" + "=" * 88)
+    print("3. GATE — per asset class: net>0 train AND test, BOTH exit models, "
+          "n_te>=30, 1.5x sign holds, bootCI (spec section 3)")
+    print("=" * 88)
+    verdicts = {}
+    for cls, cls_syms in ASSET_CLASSES.items():
+        rows = [t for t in inc_trades if t["sym"] in cls_syms]
+        if not rows:
+            print(f"\n  [{cls}] no trades (or all symbols cost-excluded)")
+            verdicts[cls] = False
+            continue
+        print(f"\n  [{cls}] n={len(rows)}")
+        p_fix = _gate_class(rows, "net_fix_1", "FIXED")
+        p_mgd = _gate_class(rows, "net_mgd_1", "MANAGED")
+        s15_f = sum(t["net_fix_15"] for t in rows)
+        s15_m = sum(t["net_mgd_15"] for t in rows)
+        stress = s15_f > 0 and s15_m > 0
+        print(f"    1.5x spread pooled: FIXED {s15_f:+.1f}R "
+              f"MANAGED {s15_m:+.1f}R {'holds' if stress else 'SIGN FLIP'}")
+        verdicts[cls] = p_fix and p_mgd and stress
+        print(f"    VERDICT: {'GO' if verdicts[cls] else 'NO-GO'}")
+
+    # ---- Section 4: pooled portfolio, chronological (correct equity-curve DD)
+    print("\n" + "=" * 88)
+    print("4. POOLED PORTFOLIO — included symbols, chronological")
+    print("=" * 88)
+    pooled = sorted(inc_trades, key=lambda t: t["time"])
+    for key, label in (("net_fix_1", "FIXED net1x"),
+                       ("net_mgd_1", "MANAGED net1x"),
+                       ("net_mgd_15", "MANAGED net1.5x")):
+        m = metrics([t[key] for t in pooled])
+        print(f"  {label:16} n={m['n']:5d} exp={m['exp']:+.3f}R "
+              f"totR={m['totR']:+7.1f} PF={m['pf']:4.2f} DD={m['dd']:.0f}R "
+              f"win={m['winpct']:.1f}%")
+    print("  per-year (MANAGED net1x):")
+    for yr in sorted({t["year"] for t in pooled}):
+        rs = [t["net_mgd_1"] for t in pooled if t["year"] == yr]
+        print(f"    {yr}: n={len(rs):4d} exp={sum(rs)/len(rs):+.3f}R")
+
+    # ---- Section 5: grader mirror (reported, not gated)
+    print("\n" + "=" * 88)
+    print("5. SIGNAL-GRADER MIRROR (candle=None: displacement factor absent — "
+          "approximation, reported only)")
+    print("=" * 88)
+    grader = SignalGrader({"signal_grading": {"enabled": True, "min_grade": "B"}})
+    for t in pooled:
+        t["grade"] = _grade_mirror(t, grader)
+    for g in ("A++", "A+", "A", "B", "C"):
+        rs = [t["net_mgd_1"] for t in pooled if t["grade"] == g]
+        if rs:
+            print(f"  grade {g:3} n={len(rs):5d} exp={sum(rs)/len(rs):+.3f}R")
+    gated = [t["net_mgd_1"] for t in pooled if grader.passes(t["grade"])]
+    if gated:
+        print(f"  >=B floor: n={len(gated)} exp={sum(gated)/len(gated):+.3f}R "
+              f"(vs ungated {sum(t['net_mgd_1'] for t in pooled)/len(pooled):+.3f}R)")
+
+    # ---- Final verdict
+    print("\n" + "=" * 88)
+    gos = [c for c, v in verdicts.items() if v]
+    print(f"FINAL: {'GO for ' + ', '.join(gos) if gos else 'NO-GO everywhere'}"
+          f"  (one-pass rule: no in-place re-tuning — spec section 3)")
+    print("=" * 88)
+
+
 if __name__ == "__main__":
-    print("main() arrives in Task 7; use scan_symbol() via tests until then.")
+    main()

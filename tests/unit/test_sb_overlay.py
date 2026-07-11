@@ -66,16 +66,19 @@ class GiveBackArmA(unittest.TestCase):
         self.assertAlmostEqual(banks[0][2], 107.86, places=2)
 
     def test_no_readd_when_trailed_out_during_pullback(self):
-        # bank fires, then price falls straight into the trail: no new HWM -> no re-add
+        # bank fires on a pullback that does NOT breach the trail, then the next
+        # bar stops out without a new HWM -> the banked tail is never re-added
         bars = _bars([
             (100.5, 99.9), (104.0, 103.0), (106.5, 105.5),
             (109.2, 108.0),   # runner on, hwm 109.2, sl->106.52
-            (108.5, 105.0),   # pullback banks; lo 105.0 < sl 106.52 -> stop same bar
+            (108.5, 107.0),   # give 2.2 >= 1.34 -> BANK; lo 107.0 > sl -> no stop
+            (108.0, 105.0),   # lo 105.0 < sl 106.52 -> stop; no new HWM -> no re-add
         ])
         tr = _long_trade()
         trace = []
         r, extra = sb.replay_overlay(tr, bars, arm="A", signal="giveback",
                                      f=0.5, g=0.5, trace=trace)
+        self.assertEqual(len([t for t in trace if t[0] == "bank"]), 1, trace)  # bank really fired
         self.assertEqual(extra, 0.0, trace)      # nothing re-added
         self.assertFalse([t for t in trace if t[0] == "readd"])
 

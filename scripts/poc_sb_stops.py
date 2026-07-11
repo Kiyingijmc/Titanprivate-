@@ -575,6 +575,56 @@ def main():
             block([t for t in ts if order[t["_grade"]] >= order[floor]], f">= {floor}")
         print()
 
+    # ---- 6. Pullback Monetizer overlay (runner phase) — gate vs Control
+    print("=" * 88)
+    print("6. PULLBACK MONETIZER OVERLAY — model ATR10, runner phase (meaningful at --tf H1)")
+    print("   Gate: DD <= 18R (vs Control 24R) & PF >= 1.26 & netR >= 90% of Control, OOS + 1.5x")
+    print("=" * 88)
+    ov = trades_by["ATR10"]
+
+    def _overlay_net(ts, *, arm, signal, f, g, spread_mult=1.0):
+        out = []
+        for t in ts:
+            r, extra = replay_overlay(t, bars_by_sym[t["sym"]], arm=arm,
+                                      signal=signal, f=f, g=g,
+                                      disp15={"bull": bars_by_sym[t["sym"]].get("disp_bull"),
+                                              "bear": bars_by_sym[t["sym"]].get("disp_bear")}
+                                      if signal == "m15disp" else None)
+            c = cost_r(t, t["sym"], specs, spread_mult)
+            out.append(r - c - extra * c)
+        return out
+
+    ov_sorted = sorted(ov, key=lambda t: t["time"])
+    ctrl = [replay_overlay(t, bars_by_sym[t["sym"]], arm="off")[0]
+            - cost_r(t, t["sym"], specs) for t in ov_sorted]
+    cm = metrics(ctrl)
+    print(f"CONTROL (ratchet+runner): n={cm['n']} exp={cm['exp']:+.3f}R "
+          f"totR={cm['totR']:+.1f} PF={cm['pf']:.2f} DD={cm['dd']:.0f}R\n")
+
+    grid = []
+    for signal in ["giveback", "m15disp"]:
+        for f in [0.5, 1.0]:
+            for g in ([0.5, 0.75] if signal == "giveback" else [0.5]):
+                grid.append((signal, f, g))
+
+    for signal, f, g in grid:
+        gtag = f"g{g}" if signal == "giveback" else "g-"
+        for arm in ["A", "C"]:
+            net = _overlay_net(ov_sorted, arm=arm, signal=signal, f=f, g=g)
+            m = metrics(net)
+            k = int(len(net) * 0.7)
+            oos = metrics(net[k:])
+            stress = metrics(_overlay_net(ov_sorted, arm=arm, signal=signal,
+                                          f=f, g=g, spread_mult=1.5))
+            passed = (m["dd"] <= 18.0 and m["pf"] >= 1.26
+                      and m["totR"] >= 0.90 * cm["totR"]
+                      and oos["exp"] > 0 and stress["exp"] > 0)
+            print(f"[{signal:9} f{f} {gtag} arm{arm}] "
+                  f"exp={m['exp']:+.3f}R totR={m['totR']:+.1f} PF={m['pf']:.2f} "
+                  f"DD={m['dd']:.0f}R | OOS exp={oos['exp']:+.3f} "
+                  f"1.5x exp={stress['exp']:+.3f}  -> {'PASS' if passed else 'fail'}")
+        print()
+
     print("[DONE]")
 
 

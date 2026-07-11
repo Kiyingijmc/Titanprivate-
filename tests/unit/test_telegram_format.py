@@ -41,5 +41,51 @@ class ParseCommandTests(unittest.TestCase):
         self.assertEqual(tf.parse_command("   "), ("", []))
 
 
+class BuilderTests(unittest.TestCase):
+    def test_signal_escapes_and_marks_side(self):
+        out = tf.signal("EUR<USD", "SB_v2", "BUY", 0.02, 1.1, 1.09, 1.12)
+        self.assertIn("🟢", out)
+        self.assertIn("EUR&lt;USD", out)          # symbol escaped
+        self.assertIn("<b>", out)                  # HTML formatting present
+        self.assertNotIn("EUR<USD", out)           # no raw metachar leaks
+
+    def test_signal_sell_icon(self):
+        self.assertIn("🔴", tf.signal("XAUUSD", "OTE", "SELL", 0.01, 1, 2, 3))
+
+    def test_execution_hides_sl_price(self):
+        # Phase 1: execution alert must NOT print SL/price (fed sl=0)
+        out = tf.execution(555, "BTCUSD", "MARKET", 0.0, 0, "Unicorn")
+        self.assertIn("#555", out)
+        self.assertIn("BTCUSD", out)
+        self.assertIn("Unicorn", out)
+        self.assertNotIn("SL", out)
+        self.assertNotIn("0.0", out)
+
+    def test_close_pnl_emoji_thresholds(self):
+        self.assertIn("🚀🔥", tf.close(1, 500.01, "X", "s"))   # > 500
+        self.assertIn("💰", tf.close(1, 0.01, "X", "s"))       # > 0
+        self.assertIn("📉", tf.close(1, -10, "X", "s"))        # 0..-50
+        self.assertIn("🩸", tf.close(1, -50.01, "X", "s"))     # <= -50
+        # boundary: exactly 0 is not > 0 -> not the 💰 branch
+        self.assertIn("📉", tf.close(1, 0.0, "X", "s"))
+
+    def test_close_escapes_symbol(self):
+        self.assertIn("A&amp;B", tf.close(1, 5, "A&B", "s"))
+
+    def test_management_icon_mapping(self):
+        self.assertIn("🔒", tf.management("L1 be", 7))
+        self.assertIn("💸", tf.management("L2 bank", 7))
+        self.assertIn("🥂", tf.management("L3 bank", 7))
+        self.assertIn("👮", tf.management("Risk kill", 7))
+        self.assertIn("⚙️", tf.management("something else", 7))
+
+    def test_help_menu_lists_confirm_and_version(self):
+        out = tf.help_menu()
+        self.assertIn("/confirm", out)
+        self.assertIn("v14.4", out)
+        self.assertIn("/closeall", out)
+        self.assertIn("/panic", out)
+
+
 if __name__ == "__main__":
     unittest.main()

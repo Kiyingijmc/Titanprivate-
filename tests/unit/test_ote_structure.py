@@ -6,6 +6,9 @@ from src.analysis.ote_structure import (
 )
 from src.analysis.ote_structure import impulse_leg, ote_zone, zone_invalidation
 from src.analysis.ote_structure import precompute_last_swings, mss_confirm
+from src.analysis.ote_structure import (
+    stop_anchor, advance_setup, AWAIT_ZONE, IN_ZONE, CONFIRMED, DEAD,
+)
 
 # lk=2 fixture: confirmed swing high at j=2 (7.0), usable from i>=5 (j+lk<i)
 M5H = [5.0, 6.0, 7.0, 6.0, 5.0, 6.0, 7.5]
@@ -150,6 +153,61 @@ class TestMssConfirm(unittest.TestCase):
         swh, swl = precompute_last_swings(h, l, 2)
         self.assertTrue(mss_confirm(h, l, c, 6, "BEARISH", swh, swl))
         self.assertFalse(mss_confirm(h, l, c, 5, "BEARISH", swh, swl))
+
+
+class TestStopAnchor(unittest.TestCase):
+    def test_long_takes_most_protective(self):
+        # floor: 100 - 0.5*2 = 99; pullback 99.5; inval 99.2 -> min = 99.0
+        self.assertAlmostEqual(stop_anchor(100.0, 99.5, 99.2, 2.0, True), 99.0)
+        # deep pullback dominates
+        self.assertAlmostEqual(stop_anchor(100.0, 98.5, 99.2, 2.0, True), 98.5)
+
+    def test_short_mirror(self):
+        self.assertAlmostEqual(stop_anchor(100.0, 100.5, 100.8, 2.0, False), 101.0)
+        self.assertAlmostEqual(stop_anchor(100.0, 101.5, 100.8, 2.0, False), 101.5)
+
+    def test_distance_never_below_floor(self):
+        sl = stop_anchor(100.0, 99.9, 99.95, 2.0, True)
+        self.assertGreaterEqual(100.0 - sl, 0.5 * 2.0)
+
+
+class TestAdvanceSetup(unittest.TestCase):
+    # long setup: zone (8.84, 9.52), leg origin 8.0
+    Z = dict(is_long=True, z_lo=8.84, z_hi=9.52, leg_origin=8.0)
+
+    def _adv(self, state, hi, lo, close, mss=False):
+        return advance_setup(state, self.Z["is_long"], self.Z["z_lo"],
+                             self.Z["z_hi"], self.Z["leg_origin"],
+                             hi, lo, close, mss)
+
+    def test_waits_above_zone(self):
+        self.assertEqual(self._adv(AWAIT_ZONE, 10.0, 9.6, 9.8), AWAIT_ZONE)
+
+    def test_touch_enters_zone(self):
+        self.assertEqual(self._adv(AWAIT_ZONE, 10.0, 9.4, 9.6), IN_ZONE)
+
+    def test_mss_only_counts_in_zone(self):
+        self.assertEqual(self._adv(AWAIT_ZONE, 10.0, 9.6, 9.8, mss=True), AWAIT_ZONE)
+        self.assertEqual(self._adv(IN_ZONE, 10.0, 9.6, 9.8, mss=True), CONFIRMED)
+
+    def test_same_bar_touch_and_mss_confirms(self):
+        # documented accepted edge: touch + MSS on one bar -> CONFIRMED
+        self.assertEqual(self._adv(AWAIT_ZONE, 10.0, 9.4, 9.9, mss=True), CONFIRMED)
+
+    def test_leg_origin_breach_kills(self):
+        self.assertEqual(self._adv(AWAIT_ZONE, 9.0, 7.9, 8.2), DEAD)
+        self.assertEqual(self._adv(IN_ZONE, 9.0, 7.9, 8.2), DEAD)
+
+    def test_terminal_states_stick(self):
+        self.assertEqual(self._adv(DEAD, 10.0, 9.4, 9.6, mss=True), DEAD)
+        self.assertEqual(self._adv(CONFIRMED, 10.0, 9.4, 9.6), CONFIRMED)
+
+    def test_short_mirror_touch_and_kill(self):
+        # short: zone (10.48, 11.16), origin 12.0
+        self.assertEqual(advance_setup(AWAIT_ZONE, False, 10.48, 11.16, 12.0,
+                                       10.6, 10.0, 10.3, False), IN_ZONE)
+        self.assertEqual(advance_setup(IN_ZONE, False, 10.48, 11.16, 12.0,
+                                       12.1, 11.0, 11.5, False), DEAD)
 
 
 if __name__ == "__main__":

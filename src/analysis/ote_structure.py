@@ -134,3 +134,40 @@ def mss_confirm(highs, lows, closes, i, bias, last_swh, last_swl):
         return sh >= 0 and closes[i] > highs[sh]
     sl = last_swl[i]
     return sl >= 0 and closes[i] < lows[sl]
+
+
+# --- setup lifecycle states -------------------------------------------------
+AWAIT_ZONE = "AWAIT_ZONE"   # leg + zone exist; price hasn't traded into the zone
+IN_ZONE = "IN_ZONE"         # price has touched the zone; watching for M5 MSS
+CONFIRMED = "CONFIRMED"     # MSS printed -> enter MARKET at next bar open
+DEAD = "DEAD"               # leg origin breached; setup invalid
+
+
+def stop_anchor(entry, pullback_ext, inval_level, atr, is_long, floor_mult=0.5):
+    """H1-anchored stop: the most protective of (a) beyond the pullback extreme,
+    (b) beyond zone invalidation, (c) >= floor_mult*ATR(H1) from entry. The M5
+    confirmation NEVER tightens the stop (spec section 1)."""
+    if is_long:
+        return min(pullback_ext, inval_level, entry - floor_mult * atr)
+    return max(pullback_ext, inval_level, entry + floor_mult * atr)
+
+
+def advance_setup(state, is_long, z_lo, z_hi, leg_origin,
+                  bar_high, bar_low, bar_close, mss_ok):
+    """One closed-M5-bar transition of the setup state machine.
+    AWAIT_ZONE -> IN_ZONE on zone touch; IN_ZONE -> CONFIRMED on MSS; any live
+    state -> DEAD when the bar trades beyond the leg origin. A single bar that
+    both touches the zone and prints MSS confirms immediately (accepted edge)."""
+    if state in (CONFIRMED, DEAD):
+        return state
+    if (is_long and bar_low <= leg_origin) or \
+       (not is_long and bar_high >= leg_origin):
+        return DEAD
+    if state == AWAIT_ZONE:
+        touched = (bar_low <= z_hi) if is_long else (bar_high >= z_lo)
+        if not touched:
+            return AWAIT_ZONE
+        state = IN_ZONE
+    if state == IN_ZONE and mss_ok:
+        return CONFIRMED
+    return state

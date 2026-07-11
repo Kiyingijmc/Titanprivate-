@@ -161,5 +161,23 @@ class M15CounterDisplacement(unittest.TestCase):
         self.assertFalse(d["bear"].any())
 
 
+class Metrics(unittest.TestCase):
+    def test_metrics_matches_block_definitions(self):
+        net = [1.0, -1.0, 2.0, -0.5, -0.5, 1.0]
+        m = sb.metrics(net)
+        self.assertEqual(m["n"], 6)
+        self.assertAlmostEqual(m["totR"], 2.0, places=6)
+        self.assertAlmostEqual(m["exp"], 2.0 / 6, places=6)
+        # gross win 4.0, gross loss 2.0 -> PF 2.0
+        self.assertAlmostEqual(m["pf"], 2.0, places=6)
+        # equity: 1,0,2,1.5,1.0,2.0 ; peak 2 then 1.0 -> max DD 1.0
+        self.assertAlmostEqual(m["dd"], 1.0, places=6)
+
+    def test_metrics_empty(self):
+        m = sb.metrics([])
+        self.assertEqual(m["n"], 0)
+        self.assertEqual(m["dd"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

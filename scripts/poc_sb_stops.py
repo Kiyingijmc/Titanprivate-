@@ -375,6 +375,23 @@ def wilson(w, n, z=1.96):
     return p, max(0.0, c - m), min(1.0, c + m)
 
 
+def metrics(net_list):
+    """Gate metrics for an ordered list of per-trade net R."""
+    n = len(net_list)
+    if n == 0:
+        return {"n": 0, "exp": 0.0, "totR": 0.0, "pf": 0.0, "dd": 0.0, "winpct": 0.0}
+    tot = sum(net_list)
+    gw = sum(x for x in net_list if x > 0)
+    gl = abs(sum(x for x in net_list if x < 0))
+    pf = gw / gl if gl else float("inf")
+    eq = pk = dd = 0.0
+    for x in net_list:
+        eq += x; pk = max(pk, eq); dd = max(dd, pk - eq)
+    wins = sum(1 for x in net_list if x > 0)
+    return {"n": n, "exp": tot / n, "totR": tot, "pf": pf, "dd": dd,
+            "winpct": 100.0 * wins / n}
+
+
 def cost_r(tr, sym, specs, spread_mult=1.0):
     """Round-trip cost in R for this trade (spread + commission vs risk size)."""
     spec = specs.get(sym, {})

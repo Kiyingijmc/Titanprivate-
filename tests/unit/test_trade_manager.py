@@ -227,14 +227,16 @@ class RunnerTightenArmC(unittest.TestCase):
         self.assertIn(102, tm.tightened)
         self.assertAlmostEqual(cmds[0]["sl"], 1.09450, places=5)
 
-    def test_prune_drops_closed_tickets(self):
+    def test_sync_one_symbol_preserves_other_ticket_state(self):
+        # sync_positions is called PER-SYMBOL live (only that symbol's positions),
+        # so it must NOT touch runner state for tickets it wasn't handed.
         tm = self._tm(CFG_ON)
-        tm.runner_hwm[999] = 1.2000
+        tm.runner_hwm[999] = 1.2000        # a different symbol's open runner
         tm.tightened.add(999)
         tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1090})
-        self.assertNotIn(999, tm.runner_hwm)          # 999 not in the position list
-        self.assertNotIn(999, tm.tightened)
-        self.assertIn(101, tm.runner_hwm)             # 101 is live
+        self.assertIn(999, tm.runner_hwm)   # untouched — one-way tighten preserved
+        self.assertIn(999, tm.tightened)
+        self.assertIn(101, tm.runner_hwm)   # 101 tracked as usual
 
 
 if __name__ == "__main__":

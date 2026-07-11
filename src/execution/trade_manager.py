@@ -56,11 +56,6 @@ class TradeManager:
         commands = []
         now = time.time()
 
-        # Prune per-ticket runner state for tickets no longer open (avoids growth).
-        live_tickets = {int(p.get('t', 0)) for p in position_list_json}
-        self.runner_hwm = {t: v for t, v in self.runner_hwm.items() if t in live_tickets}
-        self.tightened = {t for t in self.tightened if t in live_tickets}
-
         # 1. Emergency Kill Switch: prevents runaway losses during flash crashes
         max_risk = self.risk_manager.get_max_risk_amount()
         max_loss_allowed = max_risk * 1.5 if max_risk > 0 else 99999.0

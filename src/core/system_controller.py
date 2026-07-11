@@ -157,7 +157,8 @@ class SystemController:
         await self.telemetry.send_message(
             f"🚀 **Titan V14.3 Pro Online**\n"
             f"📍 Clock (NY): `{self.time_engine.get_current_ny_string()}`\n"
-            f"📡 Sync Guard: ACTIVE"
+            f"📡 Sync Guard: ACTIVE",
+            parse_mode="Markdown",
         )
 
         try:
@@ -212,7 +213,7 @@ class SystemController:
                 await asyncio.sleep(0.001) 
 
         except Exception as e:
-            await self.telemetry.send_message(f"☠️ **FATAL SYSTEM CRASH**\nError: `{str(e)}`")
+            await self.telemetry.send_message(f"☠️ **FATAL SYSTEM CRASH**\nError: `{str(e)}`", parse_mode="Markdown")
             self.logger.log_event("ERROR", "CORE", f"System Exit: {str(e)}")
             raise e
 
@@ -230,7 +231,7 @@ class SystemController:
         ghosts = self.state_manager.reconcile_state(mt5_tickets)
         for tid in ghosts:
             self.state_manager.archive_trade(tid, 0.0)
-            await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)")
+            await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
         p = self.risk_manager.normalize_price(decision['price'], symbol)
@@ -414,7 +415,7 @@ class SystemController:
             if now - o['time_placed'] > ttl:
                 await self.bridge.send_command("CANCEL", {"ticket": o['ticket_id']})
                 self.state_manager.delete_order(o['ticket_id'])
-                await self.telemetry.send_message(f"♻️ **Auto-Clean:** Expired {o['strategy']} Order `#{o['ticket_id']}`")
+                await self.telemetry.send_message(f"♻️ **Auto-Clean:** Expired {o['strategy']} Order `#{o['ticket_id']}`", parse_mode="Markdown")
 
     async def _send_detailed_performance_report(self):
         now = datetime.now(self.uganda_tz)
@@ -433,7 +434,7 @@ class SystemController:
             f"• Day Low:  `${self.risk_manager.equity_min:,.2f}`\n• Closing:  `${self.risk_manager.current_equity:,.2f}`\n\n"
             f"🧠 **Strategy Performance:**\n{strat_breakdown if strat_breakdown else '_No trade closings recorded today._'}\n\n🛰️ **System Health:** OPTIMAL"
         )
-        await self.telemetry.send_message(report)
+        await self.telemetry.send_message(report, parse_mode="Markdown")
         self.daily_closed_trades = [] 
 
     async def _reboot_terminal(self):
@@ -531,10 +532,10 @@ class SystemController:
         blocked, reason = self.news_manager.check_news_block() 
         if blocked and self.state == BotState.ACTIVE:
             self.state = BotState.PAUSED
-            await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}")
+            await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}", parse_mode="Markdown")
         elif not blocked and self.state == BotState.PAUSED and not self.is_manual_pause:
             self.state = BotState.ACTIVE
-            await self.telemetry.send_message("✅ News Cleared. Resuming.")
+            await self.telemetry.send_message("✅ News Cleared. Resuming.", parse_mode="Markdown")
 
     def get_status_report(self):
         eq = self.risk_manager.current_equity
@@ -613,10 +614,10 @@ class SystemController:
 
     async def trigger_panic(self):
         self.state = BotState.EMERGENCY
-        await self.telemetry.send_message("🚨 **PANIC PROTOCOL ENGAGED** 🚨")
+        await self.telemetry.send_message("🚨 **PANIC PROTOCOL ENGAGED** 🚨", parse_mode="Markdown")
         m_count = await self.close_all_market_orders()
         p_count = await self.cancel_pending_orders('all')
-        await self.telemetry.send_message(f"✅ **Global Flatten:** Closed `{m_count}` | Cancelled `{p_count}`")
+        await self.telemetry.send_message(f"✅ **Global Flatten:** Closed `{m_count}` | Cancelled `{p_count}`", parse_mode="Markdown")
 
     async def close_all_market_orders(self):
         count = 0

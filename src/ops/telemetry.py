@@ -14,6 +14,8 @@ import os
 import time
 from dotenv import load_dotenv
 
+from src.ops import telegram_format
+
 class TelegramBot:
     """
     Titan Institutional Telemetry Interface.
@@ -24,21 +26,6 @@ class TelegramBot:
     - Error logging instead of silent failure.
     """
     
-    # Stylized Institutional Menu
-    HELP_MENU = (
-        "🤖 *TITAN SMC COMMANDER v14.3*\n"
-        "➖➖➖➖➖➖➖➖\n"
-        "📊 `/status`   - Strategy Dashboard\n"
-        "💰 `/balance`  - Account Equity\n"
-        "📋 `/pending`  - **View Pending Orders**\n"
-        "🛑 `/pause`    - **Freeze Execution**\n"
-        "▶️ `/resume`   - **Resume Trading**\n"
-        "🗑️ `/cancel ID`- Cancel Pending Order\n"
-        "✂️ `/close ID` - **Close Active Trade**\n"
-        "☠️ `/closeall` - **CLOSE ALL MARKET POSITIONS**\n"
-        "🚨 `/panic`    - **EMERGENCY FLATTEN**"
-    )
-
     def __init__(self, logger):
         self.logger = logger
         load_dotenv()
@@ -65,102 +52,47 @@ class TelegramBot:
     # --- 1. SIGNAL ALERT (SMC FORMAT) ---
     async def notify_signal(self, symbol, strategy, side, size, price, sl, tp):
         """Called when Python sends the order to MT5"""
-        icon = "🟢" if "BUY" in side else "🔴"
-        
-        msg = (
-            f"📨 *SMC SIGNAL GENERATED*\n"
-            f"➖➖➖➖➖➖➖➖\n"
-            f"🧠 **Model:** `{strategy}`\n"
-            f"{icon} **{symbol}** {side}\n"
-            f"⚖️ **Size:** `{size} Lots`\n"
-            f"📍 **Entry:** `{price}`\n"
-            f"🛡️ **SL:** `{sl}`\n"
-            f"🎯 **TP:** `{tp}`"
-        )
-        await self.send_message(msg)
+        await self.send_message(telegram_format.signal(symbol, strategy, side, size, price, sl, tp))
 
     # --- 2. EXECUTION CONFIRMATION ---
     async def notify_execution(self, ticket, symbol, type, price, sl, strategy):
         """Called when MT5 confirms open"""
-        msg = (
-            f"⚡ *EXECUTION CONFIRMED*\n"
-            f"➖➖➖➖➖➖➖➖\n"
-            f"🎫 **Ticket:** `#{ticket}`\n"
-            f"💱 **Pair:** {symbol}\n"
-            f"🕹️ **Type:** {type}\n"
-            f"⚙️ **Logic:** _{strategy}_"
-        )
-        await self.send_message(msg)
+        await self.send_message(telegram_format.execution(ticket, symbol, type, price, sl, strategy))
 
     # --- 3. CLOSE ALERT (PNL REACTION) ---
     async def notify_close(self, ticket, pnl, symbol="???", strategy="Unknown"):
         """Called when a trade closes. Includes Strategy Name."""
-        pnl = float(pnl)
-        
-        # Dynamic Icons for PnL impact
-        if pnl > 500: icon = "🚀🔥" 
-        elif pnl > 0: icon = "💰"    
-        elif pnl > -50: icon = "📉"  
-        else: icon = "🩸"            
-        
-        msg = (
-            f"{icon} *POSITION CLOSED*\n"
-            f"➖➖➖➖➖➖➖➖\n"
-            f"🎫 `#{ticket}` **{symbol}**\n"
-            f"🧠 Strat: `{strategy}`\n"
-            f"💵 **PnL:** `${pnl:,.2f}`"
-        )
-        await self.send_message(msg)
+        await self.send_message(telegram_format.close(ticket, pnl, symbol, strategy))
 
     # --- 4. RATCHET MANAGEMENT ---
     async def notify_management(self, action_comment, ticket):
-        icon = "⚙️"
-        desc = action_comment
-        
-        if "L1" in action_comment:
-            icon = "🔒"
-            desc = "Ratchet L1 (Break-Even)"
-        elif "L2" in action_comment:
-            icon = "💸"
-            desc = "Ratchet L2 (Bank 30%)"
-        elif "L3" in action_comment:
-            icon = "🥂"
-            desc = "Ratchet L3 (Bank 50%)"
-        elif "Risk" in action_comment:
-            icon = "👮"
-            desc = "**RISK GUARD KILL**"
-        
-        msg = f"{icon} **Auto-Pilot:** {desc}\n🎫 Trade `#{ticket}`"
-        await self.send_message(msg)
+        await self.send_message(telegram_format.management(action_comment, ticket))
 
     # --- CORE NETWORK LAYER ---
-    async def send_message(self, text):
-        if not self.is_active: return
-        # Dispatch to async thread worker
-        asyncio.create_task(self._async_send_retry(text))
+    async def send_message(self, text, parse_mode="HTML"):
+        if not self.is_active:
+            return
+        asyncio.create_task(self._async_send_retry(text, parse_mode=parse_mode))
 
-    async def _async_send_retry(self, text, retries=3):
-        """
-        Sends message with Exponential Backoff Retry.
-        Prevents lost alerts during minor network hiccups.
-        """
-        payload = {"chat_id": self.allowed_chat_id, "text": text, "parse_mode": "Markdown"}
-        
+    def _build_payload(self, text, parse_mode="HTML"):
+        return {"chat_id": self.allowed_chat_id, "text": text, "parse_mode": parse_mode}
+
+    async def _async_send_retry(self, text, retries=3, parse_mode="HTML"):
+        """Sends message with exponential-backoff retry."""
+        payload = self._build_payload(text, parse_mode)
         for attempt in range(retries):
             try:
                 await asyncio.to_thread(
-                    self.session.post, 
-                    f"{self.base_url}/sendMessage", 
-                    json=payload, 
-                    timeout=5
+                    self.session.post,
+                    f"{self.base_url}/sendMessage",
+                    json=payload,
+                    timeout=5,
                 )
-                return # Success
+                return
             except requests.RequestException as e:
                 if attempt == retries - 1:
-                    # Log final failure to system audit
                     self.logger.log_event("ERROR", "TELEMETRY", f"Failed to send: {e}")
                 else:
-                    # Backoff: 0.5s, 1.0s, etc.
                     await asyncio.sleep(0.5 * (2 ** attempt))
 
     async def poll_commands(self):
@@ -257,7 +189,7 @@ class TelegramBot:
                 await self.send_message("🚨 **PANIC PROTOCOL EXECUTED** 🚨")
                 
             else:
-                await self.send_message(self.HELP_MENU)
+                await self.send_message(telegram_format.help_menu())
                 
         except Exception as e:
             self.logger.log_event("ERROR", "TELEMETRY", f"Cmd Process Fail: {e}")

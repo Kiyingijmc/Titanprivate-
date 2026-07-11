@@ -111,5 +111,74 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(c.paused)
 
 
+class _FakeCloseController(_FakeController):
+    def __init__(self):
+        super().__init__()
+        self.current_open_positions = [
+            {"t": 1, "pf": 12.5}, {"t": 2, "pf": -4.0},
+        ]
+        self.close_all_calls = 0
+
+    async def close_all_market_orders(self):
+        self.close_all_calls += 1
+        return len(self.current_open_positions)
+
+
+class ConfirmFsmTests(unittest.IsolatedAsyncioTestCase):
+    async def test_closeall_prompts_without_executing(self):
+        b = _bot()
+        c = _FakeCloseController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/closeall"))
+        self.assertEqual(c.close_all_calls, 0)          # did NOT flatten
+        self.assertIsNotNone(b._pending_confirm)
+        self.assertIn("/confirm", sent[0][0])
+        self.assertIn("2", sent[0][0])                  # position count shown
+
+    async def test_confirm_executes_once_then_slot_empty(self):
+        b = _bot()
+        c = _FakeCloseController()
+        b.register_controller(c)
+        _sent_recorder(b)
+        await b._process(_update("/closeall"))
+        await b._process(_update("/confirm"))
+        self.assertEqual(c.close_all_calls, 1)          # flattened exactly once
+        self.assertIsNone(b._pending_confirm)           # slot cleared
+        await b._process(_update("/confirm"))           # second confirm
+        self.assertEqual(c.close_all_calls, 1)          # NOT executed again
+
+    async def test_confirm_without_pending_is_noop(self):
+        b = _bot()
+        c = _FakeCloseController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/confirm"))
+        self.assertEqual(c.close_all_calls, 0)
+        self.assertIn("Nothing to confirm", sent[0][0])
+
+    async def test_expired_confirm_does_not_execute(self):
+        import time
+        b = _bot()
+        c = _FakeCloseController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        b._pending_confirm = ("closeall", time.time() - 1)   # already expired
+        await b._process(_update("/confirm"))
+        self.assertEqual(c.close_all_calls, 0)
+        self.assertIsNone(b._pending_confirm)
+        self.assertIn("expired", sent[-1][0].lower())
+
+    async def test_closeall_with_no_positions(self):
+        b = _bot()
+        c = _FakeCloseController()
+        c.current_open_positions = []
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/closeall"))
+        self.assertIsNone(b._pending_confirm)           # nothing to arm
+        self.assertIn("No open positions", sent[0][0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,20 +26,23 @@ class TelegramBot:
     - Error logging instead of silent failure.
     """
     
+    CONFIRM_TTL = 30  # seconds a destructive-action confirmation stays valid
+
     def __init__(self, logger):
         self.logger = logger
         load_dotenv()
-        
+
         self.token = os.getenv("TELEGRAM_TOKEN")
         self.allowed_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.base_url = f"https://api.telegram.org/bot{self.token}"
-        
+
         # AUDIT FIX: Persistent Session for Keep-Alive
         self.session = requests.Session()
         self.session.headers.update({"Connection": "keep-alive"})
-        
+
         self.last_update_id = 0
         self.controller_ref = None
+        self._pending_confirm = None  # (action:str, expiry_ts:float) | None
         self.last_poll = 0
         self.is_active = bool(self.token) and self.token != "x"
 
@@ -183,7 +186,33 @@ class TelegramBot:
             self.logger.log_event("ERROR", "TELEMETRY", f"Cmd Process Fail: {e}")
 
     async def _prompt_closeall_confirm(self):
-        await self.send_message("closeall stub", parse_mode="Markdown")
+        c = self.controller_ref
+        positions = getattr(c, "current_open_positions", None) or []
+        n = len(positions)
+        if n == 0:
+            await self.send_message("📭 No open positions to close.", parse_mode="Markdown")
+            return
+        open_pnl = 0.0
+        for p in positions:
+            try:
+                open_pnl += float(p.get("pf", 0.0))
+            except (TypeError, ValueError):
+                pass
+        self._pending_confirm = ("closeall", time.time() + self.CONFIRM_TTL)
+        await self.send_message(
+            f"⚠️ Close *{n}* positions (`${open_pnl:,.2f}` open)?\n"
+            f"Reply `/confirm` within {self.CONFIRM_TTL}s.",
+            parse_mode="Markdown",
+        )
 
     async def _handle_confirm(self):
-        await self.send_message("confirm stub", parse_mode="Markdown")
+        pending = self._pending_confirm
+        self._pending_confirm = None  # capture-and-clear BEFORE await => exactly-once
+        if pending and pending[1] >= time.time():
+            if pending[0] == "closeall":
+                count = await self.controller_ref.close_all_market_orders()
+                await self.send_message(f"☠️ *Flattened* `{count}` positions.", parse_mode="Markdown")
+        elif pending:
+            await self.send_message("⌛ Confirmation expired.", parse_mode="Markdown")
+        else:
+            await self.send_message("Nothing to confirm.", parse_mode="Markdown")

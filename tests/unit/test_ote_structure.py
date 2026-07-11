@@ -5,6 +5,12 @@ from src.analysis.ote_structure import (
     is_swing_high, is_swing_low, confirmed_swings, structure_bias,
 )
 from src.analysis.ote_structure import impulse_leg, ote_zone, zone_invalidation
+from src.analysis.ote_structure import precompute_last_swings, mss_confirm
+
+# lk=2 fixture: confirmed swing high at j=2 (7.0), usable from i>=5 (j+lk<i)
+M5H = [5.0, 6.0, 7.0, 6.0, 5.0, 6.0, 7.5]
+M5L = [4.0, 5.0, 6.0, 5.0, 4.0, 5.0, 6.5]
+M5C = [4.5, 5.5, 6.5, 5.5, 4.5, 5.8, 7.2]
 
 # Shared fixture: lk=1 uptrend with confirmed HH+HL.
 # Swing highs at j=2 (10) and j=6 (12); swing lows at j=4 (8) and j=8 (9).
@@ -120,6 +126,30 @@ class TestZoneInvalidation(unittest.TestCase):
 
     def test_short_above_zone_top(self):
         self.assertAlmostEqual(zone_invalidation(10.48, 11.16, 1.0, False), 11.26)
+
+
+class TestMssConfirm(unittest.TestCase):
+    def test_precompute_last_swings(self):
+        swh, swl = precompute_last_swings(M5H, M5L, 2)
+        self.assertEqual(swh, [-1, -1, -1, -1, -1, 2, 2])
+        self.assertEqual(swl, [-1, -1, -1, -1, -1, -1, -1])
+
+    def test_bull_mss_fires_only_on_break(self):
+        swh, swl = precompute_last_swings(M5H, M5L, 2)
+        self.assertFalse(mss_confirm(M5H, M5L, M5C, 5, "BULLISH", swh, swl))
+        self.assertTrue(mss_confirm(M5H, M5L, M5C, 6, "BULLISH", swh, swl))
+
+    def test_no_swing_yet_no_mss(self):
+        swh, swl = precompute_last_swings(M5H, M5L, 2)
+        self.assertFalse(mss_confirm(M5H, M5L, M5C, 4, "BULLISH", swh, swl))
+
+    def test_bear_mirror(self):
+        h = [-x for x in M5L]   # mirror the geometry
+        l = [-x for x in M5H]
+        c = [-x for x in M5C]
+        swh, swl = precompute_last_swings(h, l, 2)
+        self.assertTrue(mss_confirm(h, l, c, 6, "BEARISH", swh, swl))
+        self.assertFalse(mss_confirm(h, l, c, 5, "BEARISH", swh, swl))
 
 
 if __name__ == "__main__":

@@ -103,3 +103,34 @@ def ote_zone(leg_low, leg_high, bias, lo=0.62, hi=0.79):
 def zone_invalidation(z_lo, z_hi, atr, is_long, buffer_mult=0.1):
     """Level the stop must sit at/beyond: past the 0.79 edge + 0.1*ATR buffer."""
     return (z_lo - buffer_mult * atr) if is_long else (z_hi + buffer_mult * atr)
+
+
+def precompute_last_swings(highs, lows, lk):
+    """For each bar i, the index of the most recent CONFIRMED swing high / low
+    usable at i (a swing at j is confirmed once j+lk < i). O(n). -1 where none."""
+    n = len(highs)
+    swh, swl = confirmed_swings(highs, lows, lk)
+    last_swh = [-1] * n
+    last_swl = [-1] * n
+    p, cur = 0, -1
+    for i in range(n):
+        while p < len(swh) and swh[p] + lk < i:
+            cur = swh[p]; p += 1
+        last_swh[i] = cur
+    p, cur = 0, -1
+    for i in range(n):
+        while p < len(swl) and swl[p] + lk < i:
+            cur = swl[p]; p += 1
+        last_swl[i] = cur
+    return last_swh, last_swl
+
+
+def mss_confirm(highs, lows, closes, i, bias, last_swh, last_swl):
+    """M5 market-structure shift at bar i in the trend direction: the close
+    breaks the last confirmed opposing minor swing. Pure timing signal — the
+    stop is H1-anchored by spec and never derives from M5 structure."""
+    if bias == "BULLISH":
+        sh = last_swh[i]
+        return sh >= 0 and closes[i] > highs[sh]
+    sl = last_swl[i]
+    return sl >= 0 and closes[i] < lows[sl]

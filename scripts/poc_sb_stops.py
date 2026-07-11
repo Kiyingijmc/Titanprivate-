@@ -47,6 +47,7 @@ SPREADS = {                 # indicative FBS spread in ticks (same table as harn
 COMMISSION_USD_PER_LOT = 7.0
 
 STOP_MODELS = ["LIVE", "ATR05", "ATR10", "STRUCT"]
+TIGHT_TRAIL = 0.10          # arm C: trail distance as fraction of range after signal
 
 
 # ---------------------------------------------------------------- collection
@@ -224,6 +225,107 @@ def replay_managed(tr, bars, runner=False):
             if (is_long and cand > sl) or (not is_long and cand < sl):
                 sl = cand
     return realized + vol * 0.0                   # open at end: ignore tail
+
+
+def replay_overlay(tr, bars, *, arm="off", signal="giveback",
+                   f=0.5, g=0.5, max_cycles=2, disp15=None, trace=None):
+    """Runner-phase Pullback Monetizer overlay on top of the v14.4 ratchet.
+
+    arm="off" -> byte-identical to replay_managed(tr, bars, runner=True) (Control).
+    arm="A"   -> bank fraction f of the runner tail on a pullback signal, re-add
+                 the banked volume on the next new high-water mark (resumption);
+                 at most max_cycles bank/re-add cycles.
+    arm="C"   -> same bank signal, but tighten the trail to TIGHT_TRAIL*range once
+                 (no extra trades) instead of banking.
+
+    Returns (realized_r, extra_rt_units). realized_r is volume-weighted R on
+    initial risk (same convention as replay_managed). extra_rt_units is the total
+    tail volume that did an extra bank+re-add round trip; the caller charges it as
+    cost_r(t)*extra_rt_units. Bank signal selects only WHEN to bank; re-add is
+    always the next-new-HWM event (spec: resumption proven).
+    """
+    highs, lows = bars["high"], bars["low"]
+    e, sl0, tp, risk = tr["entry"], tr["sl"], tr["tp"], tr["risk"]
+    is_long = tr["dir"] == "BUY"
+    rng = abs(tp - e)
+    L1, L2, L3 = 0.382, 0.618, 0.886
+    lvl_price = lambda fr: e + fr * rng if is_long else e - fr * rng
+    r_of = lambda px: ((px - e) / risk) if is_long else ((e - px) / risk)
+
+    sl, level, vol, realized = sl0, 0, 1.0, 0.0
+    trail = (L3 - L2) * rng
+    hwm = None
+    ov_state = "ARMED"          # ARMED -> BANKED -> (re-add) ARMED ... / DONE
+    banked_vol = 0.0
+    cycles = 0
+    extra_rt_units = 0.0
+    n = len(highs)
+    for k in range(tr["fill_idx"], n):
+        hi, lo = highs[k], lows[k]
+        if (is_long and lo <= sl) or (not is_long and hi >= sl):
+            return realized + vol * r_of(sl), extra_rt_units
+        reach = (hi - e) / rng if is_long else (e - lo) / rng
+        if level < 1 and reach >= L1:
+            sl, level = e, 1
+        if level < 2 and reach >= L2:
+            realized += 0.30 * vol * r_of(lvl_price(L2))
+            vol *= 0.70
+            sl, level = lvl_price(L1), 2
+        if level < 3 and reach >= L3:
+            realized += 0.50 * vol * r_of(lvl_price(L3))
+            vol *= 0.50
+            sl, level = lvl_price(L2), 3
+            tp = None                       # runner: drop TP
+            hwm = hi if is_long else lo
+        if level >= 3:
+            cur_ext = hi if is_long else lo
+            pull_ext = lo if is_long else hi
+            if arm != "off" and cycles < max_cycles and ov_state == "ARMED":
+                if _overlay_bank_signal(signal, is_long, hwm, pull_ext, g,
+                                        trail, disp15, k):
+                    if arm == "A":
+                        bank_px = (hwm - g * trail) if is_long else (hwm + g * trail)
+                        realized += f * vol * r_of(bank_px)
+                        banked_vol = f * vol
+                        vol *= (1 - f)
+                        ov_state = "BANKED"
+                        if trace is not None:
+                            trace.append(("bank", k, bank_px))
+                    elif arm == "C":
+                        trail = TIGHT_TRAIL * rng
+                        ov_state = "DONE"
+            if arm == "A" and ov_state == "BANKED":
+                new_hwm = (cur_ext > hwm) if is_long else (cur_ext < hwm)
+                if new_hwm:
+                    realized -= banked_vol * r_of(cur_ext)   # re-add basis = cur_ext
+                    vol += banked_vol
+                    extra_rt_units += banked_vol
+                    banked_vol = 0.0
+                    cycles += 1
+                    ov_state = "ARMED"
+                    if trace is not None:
+                        trace.append(("readd", k, cur_ext))
+            hwm = max(hwm, hi) if is_long else min(hwm, lo)
+        if tp is not None and ((is_long and hi >= tp) or (not is_long and lo <= tp)):
+            return realized + vol * r_of(tp), extra_rt_units
+        if level >= 3:
+            cand = (hi - trail) if is_long else (lo + trail)
+            if (is_long and cand > sl) or (not is_long and cand < sl):
+                sl = cand
+    return realized + vol * 0.0, extra_rt_units
+
+
+def _overlay_bank_signal(signal, is_long, hwm, pull_ext, g, trail, disp15, k):
+    """Return True if a bank should fire on bar k. giveback: retrace >= g*trail
+    from HWM. m15disp: an opposing (counter-core) M15 displacement in bar k."""
+    if signal == "giveback":
+        give = (hwm - pull_ext) if is_long else (pull_ext - hwm)
+        return give >= g * trail
+    if signal == "m15disp":
+        if disp15 is None:
+            return False
+        return bool(disp15["bear"][k] if is_long else disp15["bull"][k])
+    return False
 
 
 # ---------------------------------------------------------------- analytics

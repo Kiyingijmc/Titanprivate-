@@ -1,0 +1,54 @@
+import os, sys, unittest
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+import numpy as np
+from scripts import poc_sb_stops as sb
+
+
+def _bars(path):
+    """path: list of (high, low) -> bars dict with numpy arrays."""
+    hi = np.array([p[0] for p in path], dtype=float)
+    lo = np.array([p[1] for p in path], dtype=float)
+    return {"high": hi, "low": lo}
+
+
+def _long_trade(fill_idx=0):
+    # e=100, sl=95 (risk 5), tp=110 (RR2) -> rng=10; L1=103.82 L2=106.18 L3=108.86
+    return {"entry": 100.0, "sl": 95.0, "tp": 110.0, "risk": 5.0,
+            "dir": "BUY", "fill_idx": fill_idx}
+
+
+def _runner_then_pullback():
+    # climb to L3, set a runner high, then pull back and finally stop out on trail
+    return _bars([
+        (100.5, 99.9),    # 0: reach 0.05
+        (104.0, 103.0),   # 1: reach 0.40 -> BE
+        (106.5, 105.5),   # 2: reach 0.65 -> bank30, sl->103.82
+        (109.2, 108.0),   # 3: reach 0.92 -> bank50, runner on, hwm=109.2, trail sl->106.52
+        (108.5, 107.4),   # 4: pullback (give 1.8 from hwm)
+        (110.5, 109.5),   # 5: new hwm 110.5 -> resumption; trail sl->107.82
+        (108.0, 107.0),   # 6: lo 107.0 < sl 107.82 -> stop
+    ])
+
+
+class OverlayControlParity(unittest.TestCase):
+    def test_arm_off_equals_managed_runner(self):
+        bars = _runner_then_pullback()
+        tr = _long_trade()
+        managed = sb.replay_managed(tr, bars, runner=True)
+        r, extra = sb.replay_overlay(tr, bars, arm="off")
+        self.assertAlmostEqual(r, managed, places=9)
+        self.assertEqual(extra, 0.0)
+
+    def test_arm_off_parity_across_several_paths(self):
+        cases = [_bars([(100.2, 99.5), (100.5, 94.9)]),          # immediate stop
+                 _bars([(100.1, 99.9), (111.0, 110.0)]),         # straight to TP
+                 _runner_then_pullback()]                        # runner + pullback
+        for bars in cases:
+            tr = _long_trade()
+            managed = sb.replay_managed(tr, bars, runner=True)
+            r, extra = sb.replay_overlay(tr, bars, arm="off")
+            self.assertAlmostEqual(r, managed, places=9)
+
+
+if __name__ == "__main__":
+    unittest.main()

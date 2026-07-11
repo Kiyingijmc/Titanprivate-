@@ -166,5 +166,76 @@ class RunnerMode(unittest.TestCase):
         self.assertEqual(tm2.sync_positions([pos(sl=1.1062)], {"EURUSD": 1.1150}), [])
 
 
+CFG_ON = {"trade_management": {"runner": {"enabled": True, "tighten_on_giveback": True}}}
+CFG_OFF = {"trade_management": {"runner": {"enabled": True, "tighten_on_giveback": False}}}
+
+
+class RunnerTightenArmC(unittest.TestCase):
+    """Arm C: one-way runner-trail tighten on a give-back from the HWM.
+    Long entry 1.1000 / tp 1.1100 (range 0.0100); r_level=3 (runner phase)."""
+
+    def _tm(self, cfg):
+        tm = make_tm(config=cfg)
+        tm.state_manager.ratchets[101] = (3, 1.1000, 1.1100)  # r_level=3, entry, tp
+        return tm
+
+    def test_disabled_trail_unchanged(self):
+        tm = self._tm(CFG_OFF)
+        cmds = tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1090})
+        self.assertEqual(len(cmds), 1)
+        # normal trail 0.00268 -> 1.1090 - 0.00268 = 1.10632
+        self.assertAlmostEqual(cmds[0]["sl"], 1.10632, places=5)
+        self.assertNotIn(101, tm.tightened)
+
+    def test_hwm_seeds_on_first_sight_no_trigger(self):
+        tm = self._tm(CFG_ON)
+        tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1090})
+        self.assertAlmostEqual(tm.runner_hwm[101], 1.1090, places=5)
+        self.assertNotIn(101, tm.tightened)          # give-back 0 on first sight
+
+    def test_giveback_below_threshold_no_tighten(self):
+        tm = self._tm(CFG_ON)
+        tm.runner_hwm[101] = 1.1090                   # prior high
+        cmds = tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1075})
+        # give-back 0.0015 < 0.00201 -> not tightened, normal trail 0.00268
+        self.assertNotIn(101, tm.tightened)
+        self.assertAlmostEqual(cmds[0]["sl"], 1.10482, places=5)
+
+    def test_giveback_triggers_tighten(self):
+        tm = self._tm(CFG_ON)
+        tm.runner_hwm[101] = 1.1090
+        cmds = tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1065})
+        # give-back 0.0025 >= 0.00201 -> tighten; tight trail 0.00100 -> 1.10550
+        self.assertIn(101, tm.tightened)
+        self.assertAlmostEqual(cmds[0]["sl"], 1.10550, places=5)
+
+    def test_tighten_is_one_way(self):
+        tm = self._tm(CFG_ON)
+        tm.tightened.add(101)
+        tm.runner_hwm[101] = 1.1090
+        cmds = tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1200})
+        # new high, but already tightened -> trail stays tight 0.00100 -> 1.11900
+        self.assertIn(101, tm.tightened)
+        self.assertAlmostEqual(cmds[0]["sl"], 1.11900, places=5)
+
+    def test_short_side_symmetry(self):
+        tm = make_tm(config=CFG_ON)
+        tm.state_manager.ratchets[102] = (3, 1.1000, 1.0900)  # short, range 0.0100
+        tm.runner_hwm[102] = 1.0910                            # prior low (HWM for short)
+        cmds = tm.sync_positions([pos(102, tp=0.0, sl=0.0)], {"EURUSD": 1.0935})
+        # give-back 0.0025 >= 0.00201 -> tighten; short trail adds: 1.0935 + 0.00100 = 1.09450
+        self.assertIn(102, tm.tightened)
+        self.assertAlmostEqual(cmds[0]["sl"], 1.09450, places=5)
+
+    def test_prune_drops_closed_tickets(self):
+        tm = self._tm(CFG_ON)
+        tm.runner_hwm[999] = 1.2000
+        tm.tightened.add(999)
+        tm.sync_positions([pos(101, tp=0.0, sl=0.0)], {"EURUSD": 1.1090})
+        self.assertNotIn(999, tm.runner_hwm)          # 999 not in the position list
+        self.assertNotIn(999, tm.tightened)
+        self.assertIn(101, tm.runner_hwm)             # 101 is live
+
+
 if __name__ == "__main__":
     unittest.main()

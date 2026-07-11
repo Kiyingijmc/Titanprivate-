@@ -59,6 +59,13 @@ signal_grading:
 trade_management:
   runner:
     enabled: true
+    # Arm C (validated 2026-07-11, docs/research/2026-07-11-pullback-monetizer-overlay-results.md):
+    # once a runner pullback gives back >= giveback_frac of the trail distance from its
+    # high-water mark, tighten the trail from 0.268x to tight_trail_frac x range (one-way).
+    # Ships OFF — enable for the FBS demo-forward-test before going live.
+    tighten_on_giveback: false
+    giveback_frac: 0.75
+    tight_trail_frac: 0.10
 
 strategies:
   # 1. Silver Bullet (FVG displacement, H1)

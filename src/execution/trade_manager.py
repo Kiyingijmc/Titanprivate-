@@ -39,7 +39,14 @@ class TradeManager:
         self.L3_FIB = 0.886  # Stage 3: Bank 50%
 
         mgmt = (config or {}).get('trade_management', {})
-        self.runner_enabled = bool(mgmt.get('runner', {}).get('enabled', False))
+        runner_cfg = mgmt.get('runner', {})
+        self.runner_enabled = bool(runner_cfg.get('enabled', False))
+        # Arm C (validated 2026-07-11): one-way runner-trail tighten on a give-back.
+        self.tighten_enabled = bool(runner_cfg.get('tighten_on_giveback', False))
+        self.giveback_frac = float(runner_cfg.get('giveback_frac', 0.75))
+        self.tight_trail_frac = float(runner_cfg.get('tight_trail_frac', 0.10))
+        self.runner_hwm = {}      # ticket -> best price in trade direction (in-memory)
+        self.tightened = set()    # tickets whose trail has been tightened (one-way)
 
     def sync_positions(self, position_list_json, current_prices_dict):
         """
@@ -48,6 +55,11 @@ class TradeManager:
         """
         commands = []
         now = time.time()
+
+        # Prune per-ticket runner state for tickets no longer open (avoids growth).
+        live_tickets = {int(p.get('t', 0)) for p in position_list_json}
+        self.runner_hwm = {t: v for t, v in self.runner_hwm.items() if t in live_tickets}
+        self.tightened = {t for t in self.tightened if t in live_tickets}
 
         # 1. Emergency Kill Switch: prevents runaway losses during flash crashes
         max_risk = self.risk_manager.get_max_risk_amount()
@@ -134,7 +146,23 @@ class TradeManager:
 
                 # --- RUNNER TRAIL (post-L3, runner mode only) ---
                 if self.runner_enabled and r_level >= 3:
-                    trail_dist = range_size * (self.L3_FIB - self.L2_FIB)
+                    base_trail = range_size * (self.L3_FIB - self.L2_FIB)
+
+                    # Track the runner-leg high-water mark (seed on first sight).
+                    prev_hwm = self.runner_hwm.get(ticket, curr_price)
+                    hwm = max(prev_hwm, curr_price) if is_long else min(prev_hwm, curr_price)
+                    self.runner_hwm[ticket] = hwm
+
+                    # Arm C: one-way tighten once a pullback gives back
+                    # >= giveback_frac of the trail distance from the HWM.
+                    if self.tighten_enabled and ticket not in self.tightened:
+                        give_back = (hwm - curr_price) if is_long else (curr_price - hwm)
+                        if give_back >= self.giveback_frac * base_trail:
+                            self.tightened.add(ticket)
+
+                    trail_dist = (range_size * self.tight_trail_frac
+                                  if ticket in self.tightened else base_trail)
+
                     candidate = (curr_price - trail_dist) if is_long else (curr_price + trail_dist)
                     candidate = get_sl(candidate)
                     curr_sl = float(pos.get('sl', 0))

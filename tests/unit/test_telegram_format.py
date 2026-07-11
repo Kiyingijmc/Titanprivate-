@@ -79,6 +79,12 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("👮", tf.management("Risk kill", 7))
         self.assertIn("⚙️", tf.management("something else", 7))
 
+    def test_management_non_string_falls_to_default(self):
+        # a non-string action must not crash; it falls to the default icon
+        out = tf.management(None, 7)
+        self.assertIn("⚙️", out)
+        self.assertIn("#7", out)
+
     def test_help_menu_lists_confirm_and_version(self):
         out = tf.help_menu()
         self.assertIn("/confirm", out)

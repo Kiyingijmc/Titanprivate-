@@ -77,14 +77,15 @@ def close(ticket, pnl, symbol="???", strategy="Unknown") -> str:
 
 
 def management(action_comment, ticket) -> str:
-    icon, desc = "⚙️", str(action_comment)
-    if "L1" in action_comment:
+    comment = str(action_comment)
+    icon, desc = "⚙️", comment
+    if "L1" in comment:
         icon, desc = "🔒", "Ratchet L1 (Break-Even)"
-    elif "L2" in action_comment:
+    elif "L2" in comment:
         icon, desc = "💸", "Ratchet L2 (Bank 30%)"
-    elif "L3" in action_comment:
+    elif "L3" in comment:
         icon, desc = "🥂", "Ratchet L3 (Bank 50%)"
-    elif "Risk" in action_comment:
+    elif "Risk" in comment:
         icon, desc = "👮", "RISK GUARD KILL"
     return f"{icon} <b>Auto-Pilot:</b> {esc(desc)}\n🎫 Trade <code>#{esc(ticket)}</code>"
 

@@ -53,13 +53,15 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("🔴", tf.signal("XAUUSD", "OTE", "SELL", 0.01, 1, 2, 3))
 
     def test_execution_hides_sl_price(self):
-        # Phase 1: execution alert must NOT print SL/price (fed sl=0)
-        out = tf.execution(555, "BTCUSD", "MARKET", 0.0, 0, "Unicorn")
+        # Phase 2: manual-order degraded path (sl=tp=lots=0, grade='') still
+        # renders SL/TP as literal 0 (no live spec to hide it behind) but the
+        # RR/risk-$ legs fall back to the "—" unknown marker, not "$0.00".
+        out = tf.execution(555, "BTCUSD", "MARKET", 0.0, 0, 0, 0.0, "", 0.0, "Unicorn")
         self.assertIn("#555", out)
         self.assertIn("BTCUSD", out)
         self.assertIn("Unicorn", out)
-        self.assertNotIn("SL", out)
-        self.assertNotIn("0.0", out)
+        self.assertIn("—", out)          # RR unknown
+        self.assertNotIn("$0.00", out)   # risk-$ unknown, not zero
 
     def test_close_pnl_emoji_thresholds(self):
         self.assertIn("🚀🔥", tf.close(1, 500.01, "X", "s"))   # > 500

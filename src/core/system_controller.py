@@ -338,13 +338,19 @@ class SystemController:
                         lots=meta['lots'], grade=meta['grade']
                     )
                     entry_p = meta['entry']
+                    sl_v, tp_v, lots_v, grade_v, strat_v = meta['sl'], meta['tp'], meta['lots'], meta['grade'], meta['strat']
                 else:
                     entry_p = float(msg.get('price', 0))
                     self.state_manager.register_order(
                         ticket, sym, msg.get('strat', 'Manual'), msg.get('cmd'),
                         status="ACTIVE", entry=entry_p, tp=0.0
                     )
-                await self.telemetry.notify_execution(ticket, sym, msg.get('cmd'), entry_p, 0, msg.get('strat', 'Auto'))
+                    sl_v, tp_v, lots_v, grade_v, strat_v = 0.0, 0.0, 0.0, '', msg.get('strat', 'Auto')
+
+                risk_money = self.risk_manager.money_for_move(sym, abs(entry_p - sl_v), lots_v)
+                await self.telemetry.notify_execution(
+                    ticket, sym, msg.get('cmd'), entry_p, sl_v, tp_v, lots_v, grade_v, risk_money, strat_v
+                )
             
             elif status == 'CLOSED':
                 tid = msg.get('ticket')

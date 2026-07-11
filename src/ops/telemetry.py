@@ -58,9 +58,11 @@ class TelegramBot:
         await self.send_message(telegram_format.signal(symbol, strategy, side, size, price, sl, tp))
 
     # --- 2. EXECUTION CONFIRMATION ---
-    async def notify_execution(self, ticket, symbol, type, price, sl, strategy):
+    async def notify_execution(self, ticket, symbol, order_type, entry, sl, tp, lots, grade, risk_money, strategy):
         """Called when MT5 confirms open"""
-        await self.send_message(telegram_format.execution(ticket, symbol, type, price, sl, strategy))
+        await self.send_message(
+            telegram_format.execution(ticket, symbol, order_type, entry, sl, tp, lots, grade, risk_money, strategy)
+        )
 
     # --- 3. CLOSE ALERT (PNL REACTION) ---
     async def notify_close(self, ticket, pnl, symbol="???", strategy="Unknown"):

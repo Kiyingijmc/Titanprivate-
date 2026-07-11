@@ -30,6 +30,27 @@ def parse_command(text) -> tuple[str, list[str]]:
 _RULE = "➖➖➖➖➖➖➖➖"
 
 
+def _fmt_rr(entry, sl, tp) -> str:
+    """Reward:risk as '1:2.5'; '—' when any leg is missing/zero."""
+    try:
+        entry, sl, tp = float(entry), float(sl), float(tp)
+        risk, reward = abs(entry - sl), abs(tp - entry)
+        if entry == 0 or sl == 0 or tp == 0 or risk <= 0 or reward <= 0:
+            return "—"
+        return f"1:{reward / risk:.1f}"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "—"
+
+
+def _fmt_money(amount) -> str:
+    """'$1,234.50'; '—' when unknown (0.0 sentinel from money_for_move)."""
+    try:
+        amt = float(amount)
+    except (TypeError, ValueError):
+        return "—"
+    return "—" if amt == 0 else f"${amt:,.2f}"
+
+
 def signal(symbol, strategy, side, size, price, sl, tp) -> str:
     icon = "🟢" if "BUY" in str(side).upper() else "🔴"
     return (
@@ -44,15 +65,16 @@ def signal(symbol, strategy, side, size, price, sl, tp) -> str:
     )
 
 
-def execution(ticket, symbol, order_type, price, sl, strategy) -> str:
-    # Phase 1: mirror the legacy fields exactly -- ticket/pair/type/logic.
-    # price/sl are accepted but NOT rendered (still fed sl=0). SL/TP is Phase 2.
+def execution(ticket, symbol, order_type, entry, sl, tp, lots, grade, risk_money, strategy) -> str:
     return (
         "⚡ <b>EXECUTION CONFIRMED</b>\n"
         f"{_RULE}\n"
         f"🎫 <b>Ticket:</b> <code>#{esc(ticket)}</code>\n"
-        f"💱 <b>Pair:</b> {esc(symbol)}\n"
-        f"🕹️ <b>Type:</b> {esc(order_type)}\n"
+        f"💱 <b>Pair:</b> {esc(symbol)} · {esc(order_type)}\n"
+        f"📍 <b>Entry:</b> <code>{esc(entry)}</code>\n"
+        f"🛡️ <b>SL:</b> <code>{esc(sl)}</code>   🎯 <b>TP:</b> <code>{esc(tp)}</code>\n"
+        f"⚖️ <b>RR:</b> <code>{_fmt_rr(entry, sl, tp)}</code>   📦 <b>Lots:</b> <code>{esc(lots)}</code>\n"
+        f"🏅 <b>Grade:</b> <code>{esc(grade)}</code>   💵 <b>Risk:</b> <code>{_fmt_money(risk_money)}</code>\n"
         f"⚙️ <b>Logic:</b> <i>{esc(strategy)}</i>"
     )
 

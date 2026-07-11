@@ -48,6 +48,7 @@ class FakeTelemetry:
 class FakeRisk:
     def update_account_info(self, b, e): pass
     def track_equity(self, e): pass
+    def money_for_move(self, symbol, price_distance, lots): return 0.0
 
 
 def make_controller():

@@ -129,5 +129,37 @@ class TrailTightenArmC(unittest.TestCase):
         self.assertEqual(extra_c, 0.0)
 
 
+class M15CounterDisplacement(unittest.TestCase):
+    def test_counter_disp_banks_with_trend_does_not(self):
+        bars = _runner_then_pullback()
+        n = len(bars["high"])
+        # opposing displacement (bear, for a long core) on the pullback bar 4
+        disp_bear = np.zeros(n, dtype=bool); disp_bear[4] = True
+        disp_bull = np.zeros(n, dtype=bool)
+        disp15 = {"bull": disp_bull, "bear": disp_bear}
+        tr = _long_trade()
+        trace = []
+        sb.replay_overlay(tr, bars, arm="A", signal="m15disp",
+                          f=0.5, disp15=disp15, trace=trace)
+        self.assertEqual(len([t for t in trace if t[0] == "bank"]), 1, trace)
+
+        # a with-trend (bull) displacement must NOT bank a long core
+        disp15_wt = {"bull": np.ones(n, dtype=bool), "bear": np.zeros(n, dtype=bool)}
+        trace2 = []
+        sb.replay_overlay(tr, bars, arm="A", signal="m15disp",
+                          f=0.5, disp15=disp15_wt, trace=trace2)
+        self.assertEqual([t for t in trace2 if t[0] == "bank"], [], trace2)
+
+    def test_disp15_all_false_when_tf_not_coarser(self):
+        # a tiny M5 frame; at tf="M5" there is no sub-M15 -> all False
+        import pandas as pd
+        rng = pd.date_range("2024-01-01", periods=20, freq="5min")
+        df = pd.DataFrame({"time": rng, "open": 1.0, "high": 1.001,
+                           "low": 0.999, "close": 1.0})
+        d = sb._disp15_by_bar(df, df["time"].values, "M5")
+        self.assertFalse(d["bull"].any())
+        self.assertFalse(d["bear"].any())
+
+
 if __name__ == "__main__":
     unittest.main()

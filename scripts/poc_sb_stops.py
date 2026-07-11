@@ -61,6 +61,7 @@ def collect_signals(sym, quick=False, tf="M5"):
     if quick:
         df = df.tail(30000).reset_index(drop=True)
     df = df.rename(columns={"datetime": "time"})
+    df_m5 = df.copy()
     if tf != "M5":
         rule = {"M15": "15min", "H1": "1h"}[tf]
         df = (df.set_index("time")
@@ -112,8 +113,41 @@ def collect_signals(sym, quick=False, tf="M5"):
             "hour": int(pd.Timestamp(t).hour),
             "year": int(pd.Timestamp(t).year),
         })
-    bars = {"high": highs, "low": lows}
+    disp15 = _disp15_by_bar(df_m5, times, tf)
+    bars = {"high": highs, "low": lows,
+            "disp_bull": disp15["bull"], "disp_bear": disp15["bear"]}
     return signals, bars
+
+
+def _disp15_by_bar(df, tf_times, tf):
+    """For each trade-TF bar, True if any M15 sub-bar of that bar is an FVG
+    displacement (bull/bear). Returns {'bull': bool[], 'bear': bool[]} aligned
+    to tf_times. All-False when tf is M5/M15 (no coarser sub-M15 grouping)."""
+    n = len(tf_times)
+    empty = {"bull": np.zeros(n, dtype=bool), "bear": np.zeros(n, dtype=bool)}
+    if tf not in ("H1",):
+        return empty
+    m15 = (df.set_index("time")
+             .resample("15min").agg({"open": "first", "high": "max",
+                                     "low": "min", "close": "last"})
+             .dropna().reset_index())
+    if len(m15) < 60:
+        return empty
+    enr15 = SMCAnalyzer(m15.copy()).process()
+    b_bull = enr15["is_fvg_bull"].values
+    b_bear = enr15["is_fvg_bear"].values
+    m15_times = pd.to_datetime(enr15["time"]).values
+    # map each M15 bar to the trade-TF bar it falls in (last tf bar <= m15 time)
+    out = {"bull": np.zeros(n, dtype=bool), "bear": np.zeros(n, dtype=bool)}
+    tf_sorted = np.asarray(tf_times)
+    for j in range(len(m15_times)):
+        idx = int(np.searchsorted(tf_sorted, m15_times[j], side="right")) - 1
+        if 0 <= idx < n:
+            if b_bull[j]:
+                out["bull"][idx] = True
+            if b_bear[j]:
+                out["bear"][idx] = True
+    return out
 
 
 # ---------------------------------------------------------------- resolution

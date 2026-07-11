@@ -43,9 +43,13 @@ On each heartbeat, for a runner-phase position:
 5. The existing candidate / `tighter` / `MODIFY` logic runs unchanged with that
    `trail_dist`.
 
-**Cleanup:** at the top of `sync_positions`, prune `runner_hwm` and `tightened`
-entries for tickets absent from the current position list, so the dicts do not grow
-unbounded.
+**State growth:** `runner_hwm`/`tightened` are not pruned inside `sync_positions`.
+The live controller calls `sync_positions` **per-symbol** (only that symbol's
+positions), so the passed list is never the full open-ticket universe — pruning
+against it would wipe other symbols' runner state every tick and break the one-way
+guarantee. Instead the dicts follow the existing `command_cooldowns` precedent: they
+grow by at most one entry per ticket ever seen (bounded by lifetime trade count,
+harmless since MT5 tickets are never reused) and are cleared on restart.
 
 **Live vs rig detection:** the rig measured give-back from intra-bar highs/lows; live
 detection uses discrete heartbeat `curr_price` snapshots — a slightly coarser but

@@ -1,0 +1,104 @@
+### Canonical OTE MTF study — H4+H1 BOS -> H1 leg -> 0.62-0.79 zone -> M5 MSS (spec 2026-07-11) ###
+
+[EURUSD] funnel={'legs': 3300, 'setups': 1004, 'zone_touch': 251, 'mss': 173, 'entries': 173}  (1s)
+[GBPUSD] funnel={'legs': 2812, 'setups': 875, 'zone_touch': 227, 'mss': 163, 'entries': 163}  (1s)
+[USDJPY] funnel={'legs': 3236, 'setups': 934, 'zone_touch': 233, 'mss': 174, 'entries': 173}  (2s)
+[AUDUSD] funnel={'legs': 2792, 'setups': 954, 'zone_touch': 244, 'mss': 178, 'entries': 178}  (1s)
+[USDCAD] funnel={'legs': 2979, 'setups': 971, 'zone_touch': 248, 'mss': 159, 'entries': 159}  (3s)
+[GBPCAD] funnel={'legs': 3627, 'setups': 1050, 'zone_touch': 249, 'mss': 178, 'entries': 178}  (1s)
+[GBPJPY] funnel={'legs': 3235, 'setups': 1029, 'zone_touch': 251, 'mss': 178, 'entries': 178}  (2s)
+[XAUUSD] funnel={'legs': 3220, 'setups': 952, 'zone_touch': 244, 'mss': 162, 'entries': 162}  (1s)
+[US30] funnel={'legs': 3029, 'setups': 900, 'zone_touch': 219, 'mss': 161, 'entries': 161}  (1s)
+[BTCUSD] funnel={'legs': 4080, 'setups': 1303, 'zone_touch': 346, 'mss': 251, 'entries': 251}  (2s)
+[XBRUSD] funnel={'legs': 3183, 'setups': 1001, 'zone_touch': 207, 'mss': 145, 'entries': 144}  (2s)
+
+[CSV] 1920 trades -> data/history/ote_canonical_trades.csv
+
+========================================================================================
+1. COST SCREEN — median round-trip cost at realized stops (exclude > 0.25R)
+========================================================================================
+  AUDUSD   median=0.142R n=  178 INCLUDED
+  BTCUSD   median=0.035R n=  251 INCLUDED
+  EURUSD   median=0.111R n=  173 INCLUDED
+  GBPCAD   median=0.187R n=  178 INCLUDED
+  GBPJPY   median=0.114R n=  178 INCLUDED
+  GBPUSD   median=0.109R n=  163 INCLUDED
+  US30     median=0.026R n=  161 INCLUDED
+  USDCAD   median=0.163R n=  159 INCLUDED
+  USDJPY   median=0.086R n=  173 INCLUDED
+  XAUUSD   median=0.030R n=  162 INCLUDED
+  XBRUSD   median=0.667R n=  144 EXCLUDED (economic screen)
+
+========================================================================================
+2. PER-SYMBOL (net 1x costs)
+========================================================================================
+  AUDUSD   n=  178 FIXED exp=-0.234R PF=0.72 | MANAGED exp=-0.334R PF=0.51
+  BTCUSD   n=  251 FIXED exp=-0.312R PF=0.62 | MANAGED exp=-0.166R PF=0.73
+  EURUSD   n=  173 FIXED exp=-0.280R PF=0.67 | MANAGED exp=-0.236R PF=0.61
+  GBPCAD   n=  178 FIXED exp=-0.060R PF=0.93 | MANAGED exp=-0.129R PF=0.79
+  GBPJPY   n=  178 FIXED exp=-0.121R PF=0.85 | MANAGED exp=-0.170R PF=0.71
+  GBPUSD   n=  163 FIXED exp=-0.088R PF=0.89 | MANAGED exp=-0.050R PF=0.91
+  US30     n=  161 FIXED exp=-0.164R PF=0.79 | MANAGED exp=-0.161R PF=0.73
+  USDCAD   n=  159 FIXED exp=-0.199R PF=0.77 | MANAGED exp=-0.195R PF=0.69
+  USDJPY   n=  173 FIXED exp=-0.069R PF=0.91 | MANAGED exp=-0.050R PF=0.91
+  XAUUSD   n=  162 FIXED exp=-0.094R PF=0.88 | MANAGED exp=-0.078R PF=0.85
+  XBRUSD   n=  144 FIXED exp=-0.781R PF=0.39 | MANAGED exp=-0.776R PF=0.27
+
+========================================================================================
+3. GATE — per asset class: net>0 train AND test, BOTH exit models, n_te>=30, 1.5x sign holds, bootCI (spec section 3)
+========================================================================================
+
+  [FX-majors] n=846
+    FIXED      train=-0.206 test=-0.103 (n_te=254) bootCI[-0.297,+0.099] winCI[25-36%] fail
+    MANAGED    train=-0.176 test=-0.173 (n_te=254) bootCI[-0.309,-0.033] winCI[25-36%] fail
+    1.5x spread pooled: FIXED -180.6R MANAGED -180.8R SIGN FLIP
+    VERDICT: NO-GO
+
+  [FX-crosses] n=356
+    FIXED      train=-0.010 test=-0.278 (n_te=107) bootCI[-0.561,+0.038] winCI[18-34%] fail
+    MANAGED    train=-0.084 test=-0.301 (n_te=107) bootCI[-0.489,-0.078] winCI[19-35%] fail
+    1.5x spread pooled: FIXED -53.2R MANAGED -74.3R SIGN FLIP
+    VERDICT: NO-GO
+
+  [metals] n=162
+    FIXED      train=-0.190 test=+0.130 (n_te=49) bootCI[-0.300,+0.559] winCI[21-47%] fail
+    MANAGED    train=-0.088 test=-0.054 (n_te=49) bootCI[-0.364,+0.264] winCI[18-42%] fail
+    1.5x spread pooled: FIXED -17.8R MANAGED -15.2R SIGN FLIP
+    VERDICT: NO-GO
+
+  [index] n=161
+    FIXED      train=+0.026 test=-0.598 (n_te=49) bootCI[-0.884,-0.243] winCI[6-24%] fail
+    MANAGED    train=-0.062 test=-0.388 (n_te=49) bootCI[-0.656,-0.093] winCI[11-34%] fail
+    1.5x spread pooled: FIXED -28.4R MANAGED -27.9R SIGN FLIP
+    VERDICT: NO-GO
+
+  [crypto] n=251
+    FIXED      train=-0.379 test=-0.159 (n_te=76) bootCI[-0.486,+0.210] winCI[17-36%] fail
+    MANAGED    train=-0.252 test=+0.032 (n_te=76) bootCI[-0.276,+0.334] winCI[26-47%] fail
+    1.5x spread pooled: FIXED -82.2R MANAGED -45.4R SIGN FLIP
+    VERDICT: NO-GO
+
+  [energy] no trades (or all symbols cost-excluded)
+
+========================================================================================
+4. POOLED PORTFOLIO — included symbols, chronological
+========================================================================================
+  FIXED net1x      n= 1776 exp=-0.169R totR= -300.1 PF=0.79 DD=308R win=27.0%
+  MANAGED net1x    n= 1776 exp=-0.158R totR= -281.5 PF=0.73 DD=288R win=29.9%
+  MANAGED net1.5x  n= 1776 exp=-0.193R totR= -343.6 PF=0.69 DD=349R win=29.9%
+  per-year (MANAGED net1x):
+    2023: n= 306 exp=-0.149R
+    2024: n= 584 exp=-0.079R
+    2025: n= 627 exp=-0.203R
+    2026: n= 259 exp=-0.241R
+
+========================================================================================
+5. SIGNAL-GRADER MIRROR (candle=None: displacement factor absent — approximation, reported only)
+========================================================================================
+  grade B   n=  861 exp=-0.151R
+  grade C   n=  915 exp=-0.165R
+  >=B floor: n=861 exp=-0.151R (vs ungated -0.158R)
+
+========================================================================================
+FINAL: NO-GO everywhere  (one-pass rule: no in-place re-tuning — spec section 3)
+========================================================================================

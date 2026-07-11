@@ -198,6 +198,14 @@ class TestAdvanceSetup(unittest.TestCase):
         self.assertEqual(self._adv(AWAIT_ZONE, 9.0, 7.9, 8.2), DEAD)
         self.assertEqual(self._adv(IN_ZONE, 9.0, 7.9, 8.2), DEAD)
 
+    def test_breach_beats_mss_same_bar(self):
+        # A live state on a bar that BOTH breaches leg origin (low 7.9 <= 8.0)
+        # AND prints MSS must return DEAD, not CONFIRMED: the breach check is
+        # ordered before the MSS check by construction. Pins that ordering so a
+        # refactor moving MSS above the breach cannot silently pass.
+        self.assertEqual(self._adv(IN_ZONE, 9.0, 7.9, 8.2, mss=True), DEAD)
+        self.assertEqual(self._adv(AWAIT_ZONE, 9.0, 7.9, 8.2, mss=True), DEAD)
+
     def test_terminal_states_stick(self):
         self.assertEqual(self._adv(DEAD, 10.0, 9.4, 9.6, mss=True), DEAD)
         self.assertEqual(self._adv(CONFIRMED, 10.0, 9.4, 9.6), CONFIRMED)

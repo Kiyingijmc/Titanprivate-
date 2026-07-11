@@ -63,6 +63,29 @@ class TestImpulseLeg(unittest.TestCase):
         fast = impulse_leg(HIGHS, LOWS, 10, 1, "BULLISH", swh, swl)
         self.assertEqual(slow, fast)
 
+    def test_fast_path_matches_slow_path_across_confirmation_boundary(self):
+        # Guards the cutoff FORMULA (upto - lk), not just fast==slow at the last
+        # index. upto=10 alone is non-discriminating: the slow path's
+        # highs[:upto+1] truncation is a no-op and cutoff=9 >= every swing index,
+        # so a wrong cutoff (e.g. = upto) would still agree.
+        # At upto=6 the swing high at index 6 is NOT yet confirmed (needs bar 7),
+        # so BOTH paths must exclude it and return None. The fast path can only do
+        # so if cutoff = upto - lk (=5) actively drops swh index 6; a wrong cutoff
+        # (= upto = 6) would include it, find a BOS leg, and diverge from None.
+        swh, swl = confirmed_swings(HIGHS, LOWS, 1)
+        for upto in (6, 8, 10):
+            slow = impulse_leg(HIGHS, LOWS, upto, 1, "BULLISH")
+            fast = impulse_leg(HIGHS, LOWS, upto, 1, "BULLISH", swh, swl)
+            self.assertEqual(slow, fast, f"fast/slow diverged at upto={upto}")
+        # Pin the discriminating boundary explicitly: at upto=6 the leg is not yet
+        # confirmed (None); by upto=8 the same leg is found via the cutoff, not
+        # via array truncation (swing low at index 8 is excluded by cutoff=7).
+        self.assertIsNone(impulse_leg(HIGHS, LOWS, 6, 1, "BULLISH", swh, swl))
+        self.assertEqual(
+            impulse_leg(HIGHS, LOWS, 8, 1, "BULLISH", swh, swl),
+            (8.0, 12.0, 4, 6),
+        )
+
     def test_no_leg_when_neutral_or_no_bos(self):
         self.assertIsNone(impulse_leg(HIGHS, LOWS, 10, 1, "NEUTRAL"))
         flat_h = [10.0, 11.0, 10.0, 11.0, 10.0, 11.0, 10.0]

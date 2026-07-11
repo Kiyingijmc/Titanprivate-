@@ -79,7 +79,27 @@ def execution(ticket, symbol, order_type, entry, sl, tp, lots, grade, risk_money
     )
 
 
-def close(ticket, pnl, symbol="???", strategy="Unknown") -> str:
+def format_duration(seconds) -> str:
+    """'2d 5h' / '3h 15m' / '2m' / '45s'. Negative clamps to 0s."""
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if s < 0:
+        s = 0
+    d, rem = divmod(s, 86400)
+    h, rem = divmod(rem, 3600)
+    m, _ = divmod(rem, 60)
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m"
+    return f"{s}s"
+
+
+def close(ticket, pnl, symbol="???", strategy="Unknown", hold_seconds=None, r_multiple=None) -> str:
     pnl = float(pnl)
     if pnl > 500:
         icon = "🚀🔥"
@@ -89,13 +109,18 @@ def close(ticket, pnl, symbol="???", strategy="Unknown") -> str:
         icon = "📉"
     else:
         icon = "🩸"
-    return (
-        f"{icon} <b>POSITION CLOSED</b>\n"
-        f"{_RULE}\n"
-        f"🎫 <code>#{esc(ticket)}</code> <b>{esc(symbol)}</b>\n"
-        f"🧠 Strat: <code>{esc(strategy)}</code>\n"
-        f"💵 <b>PnL:</b> <code>${pnl:,.2f}</code>"
-    )
+    lines = [
+        f"{icon} <b>POSITION CLOSED</b>",
+        _RULE,
+        f"🎫 <code>#{esc(ticket)}</code> <b>{esc(symbol)}</b>",
+        f"🧠 Strat: <code>{esc(strategy)}</code>",
+        f"💵 <b>PnL:</b> <code>${pnl:,.2f}</code>",
+    ]
+    if r_multiple is not None:
+        lines.append(f"📐 <b>R:</b> <code>{r_multiple:+.1f}R</code>")
+    if hold_seconds is not None:
+        lines.append(f"⏱ <b>Hold:</b> <code>{format_duration(hold_seconds)}</code>")
+    return "\n".join(lines)
 
 
 def management(action_comment, ticket) -> str:

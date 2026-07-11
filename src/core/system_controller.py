@@ -354,18 +354,23 @@ class SystemController:
             
             elif status == 'CLOSED':
                 tid = msg.get('ticket')
-                if self.state_manager.exists(tid):
+                row = self.state_manager.get_order(tid)
+                if row:
                     pnl = float(msg.get('pn', 0.0))
-                    strat_name = "Manual"
-                    try:
-                        with self.state_manager._get_conn() as conn:
-                            res = conn.execute("SELECT strategy FROM active_orders WHERE ticket_id=?", (tid,)).fetchone()
-                            if res and res['strategy']: strat_name = res['strategy']
-                    except: pass
-                    
-                    self.daily_closed_trades.append({'ticket': tid, 'sym': msg.get('s'), 'pnl': pnl, 'strat': strat_name})
-                    self.state_manager.archive_trade(tid, pnl) 
-                    await self.telemetry.notify_close(tid, pnl, msg.get('s'), strat_name)
+                    strat_name = row.get('strategy') or "Manual"
+                    sym = msg.get('s') or row.get('symbol')
+
+                    placed = row.get('time_placed') or 0
+                    hold_seconds = (time.time() - placed) if placed else None
+
+                    planned_risk = self.risk_manager.money_for_move(
+                        sym, abs((row.get('initial_entry') or 0) - (row.get('initial_sl') or 0)), row.get('lots') or 0
+                    )
+                    r_mult = (pnl / planned_risk) if planned_risk > 0 else None
+
+                    self.daily_closed_trades.append({'ticket': tid, 'sym': sym, 'pnl': pnl, 'strat': strat_name})
+                    self.state_manager.archive_trade(tid, pnl)
+                    await self.telemetry.notify_close(tid, pnl, sym, strat_name, hold_seconds, r_mult)
 
         elif msg_type == 'TICK':
             symbol = msg.get('s')

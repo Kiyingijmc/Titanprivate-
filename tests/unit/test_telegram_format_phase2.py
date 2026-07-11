@@ -38,5 +38,45 @@ class ExecutionEnrichTests(unittest.TestCase):
         self.assertIn("S&lt;x&gt;", out)
 
 
+class FormatDurationTests(unittest.TestCase):
+    def test_seconds(self):
+        self.assertEqual(tf.format_duration(45), "45s")
+
+    def test_minutes(self):
+        self.assertEqual(tf.format_duration(125), "2m")
+
+    def test_hours(self):
+        self.assertEqual(tf.format_duration(3 * 3600 + 15 * 60), "3h 15m")
+
+    def test_days(self):
+        self.assertEqual(tf.format_duration(2 * 86400 + 5 * 3600), "2d 5h")
+
+    def test_zero_and_negative(self):
+        self.assertEqual(tf.format_duration(0), "0s")
+        self.assertEqual(tf.format_duration(-10), "0s")
+
+
+class CloseEnrichTests(unittest.TestCase):
+    def test_hold_and_r_shown(self):
+        out = tf.close(7, 250.0, "XAUUSD", "OTE", hold_seconds=3 * 3600 + 15 * 60, r_multiple=1.8)
+        self.assertIn("3h 15m", out)
+        self.assertIn("+1.8R", out)
+        self.assertIn("$250.00", out)
+
+    def test_negative_r_sign(self):
+        self.assertIn("-1.0R", tf.close(1, -100.0, "X", "S", hold_seconds=60, r_multiple=-1.0))
+
+    def test_hold_omitted_when_none(self):
+        out = tf.close(1, 5.0, "X", "S", hold_seconds=None, r_multiple=None)
+        self.assertNotIn("Hold", out)
+        self.assertNotIn("R:", out)
+
+    def test_backward_compatible_defaults(self):
+        # still callable with the Phase-1 arg list
+        out = tf.close(1, 5.0, "X", "S")
+        self.assertIn("#1", out)
+        self.assertIn("$5.00", out)
+
+
 if __name__ == "__main__":
     unittest.main()

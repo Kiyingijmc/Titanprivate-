@@ -65,9 +65,9 @@ class TelegramBot:
         )
 
     # --- 3. CLOSE ALERT (PNL REACTION) ---
-    async def notify_close(self, ticket, pnl, symbol="???", strategy="Unknown"):
-        """Called when a trade closes. Includes Strategy Name."""
-        await self.send_message(telegram_format.close(ticket, pnl, symbol, strategy))
+    async def notify_close(self, ticket, pnl, symbol="???", strategy="Unknown", hold_seconds=None, r_multiple=None):
+        """Called when a trade closes. Includes Strategy Name, hold-time, and R-multiple."""
+        await self.send_message(telegram_format.close(ticket, pnl, symbol, strategy, hold_seconds, r_multiple))
 
     # --- 4. RATCHET MANAGEMENT ---
     async def notify_management(self, action_comment, ticket):

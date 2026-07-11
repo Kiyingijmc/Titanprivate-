@@ -155,7 +155,7 @@ class SystemController:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] TRANSITION TO ACTIVE MODE.")
         
         await self.telemetry.send_message(
-            f"🚀 **Titan V14.3 Pro Online**\n"
+            f"🚀 **Titan V14.4 Pro Online**\n"
             f"📍 Clock (NY): `{self.time_engine.get_current_ny_string()}`\n"
             f"📡 Sync Guard: ACTIVE",
             parse_mode="Markdown",

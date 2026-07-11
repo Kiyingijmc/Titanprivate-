@@ -72,6 +72,9 @@ class BuilderTests(unittest.TestCase):
     def test_close_escapes_symbol(self):
         self.assertIn("A&amp;B", tf.close(1, 5, "A&B", "s"))
 
+    def test_close_escapes_strategy_field(self):
+        self.assertIn("A&amp;B", tf.close(1, 5, "XAUUSD", "A&B"))
+
     def test_management_icon_mapping(self):
         self.assertIn("🔒", tf.management("L1 be", 7))
         self.assertIn("💸", tf.management("L2 bank", 7))

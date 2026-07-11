@@ -44,7 +44,7 @@ def signal(symbol, strategy, side, size, price, sl, tp) -> str:
     )
 
 
-def execution(ticket, symbol, type, price, sl, strategy) -> str:
+def execution(ticket, symbol, order_type, price, sl, strategy) -> str:
     # Phase 1: mirror the legacy fields exactly -- ticket/pair/type/logic.
     # price/sl are accepted but NOT rendered (still fed sl=0). SL/TP is Phase 2.
     return (
@@ -52,7 +52,7 @@ def execution(ticket, symbol, type, price, sl, strategy) -> str:
         f"{_RULE}\n"
         f"🎫 <b>Ticket:</b> <code>#{esc(ticket)}</code>\n"
         f"💱 <b>Pair:</b> {esc(symbol)}\n"
-        f"🕹️ <b>Type:</b> {esc(type)}\n"
+        f"🕹️ <b>Type:</b> {esc(order_type)}\n"
         f"⚙️ <b>Logic:</b> <i>{esc(strategy)}</i>"
     )
 

@@ -158,9 +158,13 @@ class TelegramBot:
                 if not args:
                     await self.send_message("⚠️ Usage: `/cancel 123456` or `/cancel all`", parse_mode="Markdown")
                 else:
-                    target = args[0] if "all" not in args[0].lower() else None
-                    res = await c.cancel_pending_orders(target)
-                    await self.send_message(f"🗑️ Result: {res}", parse_mode="Markdown")
+                    try:
+                        target = args[0] if "all" not in args[0].lower() else None
+                        res = await c.cancel_pending_orders(target)
+                        await self.send_message(f"🗑️ Result: {res}", parse_mode="Markdown")
+                    except Exception as e:
+                        self.logger.log_event("ERROR", "TELEMETRY", f"cancel failed: {e}")
+                        await self.send_message(f"❌ Error: {telegram_format.esc(e)}")
             elif cmd == "close":
                 if not args:
                     await self.send_message("⚠️ Usage: `/close 123456` (Active Ticket ID)", parse_mode="Markdown")
@@ -170,8 +174,12 @@ class TelegramBot:
                     except ValueError:
                         await self.send_message("⚠️ Ticket must be a number.", parse_mode="Markdown")
                         return
-                    res = await c.close_specific_market_order(target_id)
-                    await self.send_message(res, parse_mode="Markdown")
+                    try:
+                        res = await c.close_specific_market_order(target_id)
+                        await self.send_message(res, parse_mode="Markdown")
+                    except Exception as e:
+                        self.logger.log_event("ERROR", "TELEMETRY", f"close failed: {e}")
+                        await self.send_message(f"❌ Error: {telegram_format.esc(e)}")
             elif cmd == "closeall":
                 await self._prompt_closeall_confirm()
             elif cmd == "confirm":

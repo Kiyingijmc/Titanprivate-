@@ -111,6 +111,38 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(c.paused)
 
 
+class _FakeErrorController(_FakeController):
+    """A controller whose mgmt calls always blow up, to exercise error replies."""
+
+    async def cancel_pending_orders(self, target):
+        raise RuntimeError("boom")
+
+    async def close_specific_market_order(self, target_id):
+        raise RuntimeError("boom")
+
+
+class ErrorReplyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_failure_replies_with_error(self):
+        b = _bot()
+        c = _FakeErrorController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/cancel 123"))
+        self.assertTrue(sent, "expected an operator reply on cancel failure")
+        self.assertIn("❌ Error", sent[-1][0])
+        self.assertIn("boom", sent[-1][0])
+
+    async def test_close_failure_replies_with_error(self):
+        b = _bot()
+        c = _FakeErrorController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/close 123"))
+        self.assertTrue(sent, "expected an operator reply on close failure")
+        self.assertIn("❌ Error", sent[-1][0])
+        self.assertIn("boom", sent[-1][0])
+
+
 class _FakeCloseController(_FakeController):
     def __init__(self):
         super().__init__()

@@ -376,8 +376,7 @@ class SystemController:
                         await self._dispatch_mgmt_command(c)
                 
                 for tf, df in closed_candles:
-                    if tf == "M5": 
-                        await self._run_strategies(symbol, df)
+                    await self._run_strategies(symbol, df, tf)
 
         elif msg_type == 'HEARTBEAT':
             bal = float(msg.get('bal', 0))
@@ -411,7 +410,8 @@ class SystemController:
         pending = self.state_manager.get_pending_orders()
         now = datetime.now().timestamp()
         for o in pending:
-            ttl = 3600 if "Silver" in o.get('strategy','') else 7200
+            # 12 bars of the owning strategy's timeframe (default 2h)
+            ttl = getattr(self, 'strategy_ttls', {}).get(o.get('strategy', ''), 7200)
             if now - o['time_placed'] > ttl:
                 await self.bridge.send_command("CANCEL", {"ticket": o['ticket_id']})
                 self.state_manager.delete_order(o['ticket_id'])
@@ -467,23 +467,37 @@ class SystemController:
             ICT_OTE(s.get('ict_ote',{}), self.logger),
             CandleRangeTheory(s.get('crt',{}), self.logger)
         ]
+        # Pending-limit TTL = 12 bars of each strategy's timeframe (matches the
+        # validation harness; an H1 SilverBullet limit must live 12h, not 1h).
+        tf_minutes = {"M5": 5, "M15": 15, "H1": 60}
+        self.strategy_ttls = {
+            st.name: 12 * tf_minutes.get(getattr(st, 'timeframe', 'M5'), 5) * 60
+            for st in self.strategies
+        }
 
-    async def _run_strategies(self, symbol, m5_df):
-        smc = SMCAnalyzer(m5_df)
+    async def _run_strategies(self, symbol, tf_df, tf="M5"):
+        # Only strategies triggered by this timeframe's close; skip the SMC
+        # enrichment entirely when none match (e.g. H1 closes with an M5-only
+        # strategy set, and vice versa).
+        active = [s for s in self.strategies if getattr(s, 'timeframe', 'M5') == tf]
+        if not active:
+            return
+
+        smc = SMCAnalyzer(tf_df)
         enriched_df = smc.process()
-        
+
         h1 = self.market_data[symbol].get_data("H1")
         bias_str, liq = BiasEngine(h1).get_bias_context()
-        
+
         ctx = {
-            'symbol': symbol, 
-            'bias': bias_str, 
-            'liquidity': liq, 
-            'ny_time': self.time_engine.get_current_ny_string(), 
+            'symbol': symbol,
+            'bias': bias_str,
+            'liquidity': liq,
+            'ny_time': self.time_engine.get_current_ny_string(),
             'smc_df': enriched_df
         }
-        
-        for strat in self.strategies:
+
+        for strat in active:
             decision = await strat.on_new_candle(enriched_df, context=ctx)
             if decision:
                 if strat.name != "CRT":
@@ -514,7 +528,9 @@ class SystemController:
             # FIX: Ensure count is an INTEGER (500) not a string ("500")
             # The MQL5 JSON parser handles 500 but fails on "500" for CopyRates
             await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "M5", "count": 500})
-            await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "H1", "count": 200})
+            # 500 H1 bars: H1 strategies need >=50 enriched bars + ATR warmup,
+            # and BiasEngine reads a 100-bar context window.
+            await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "H1", "count": 500})
         
         print(f"[WARMUP] Syncing {len(symbols_list)} pairs...")
         for _ in range(20): 

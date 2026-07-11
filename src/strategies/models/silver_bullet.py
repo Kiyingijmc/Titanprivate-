@@ -28,6 +28,16 @@ class SilverBullet(BaseStrategy):
         self.windows = self._parse_windows(config)
         self.rr = config.get('risk_reward', 2.0)
 
+        # Stop distance in ATR multiples from the ENTRY. The legacy 0.2 buffer
+        # made every trade spread-fatal (~1 pip risk on M5); 1.0 ATR on H1 is
+        # the validated config — see docs/research/2026-07-11-silverbullet-h1-
+        # stop-study.md. Do not lower without re-running the cost study.
+        self.stop_atr = float(config.get('stop_atr', 1.0))
+
+        # Validated on H1 (v14.4.2 default); M5 remains available via config
+        # for research but is cost-dead live.
+        self.timeframe = str(config.get('timeframe', 'H1'))
+
     def _parse_windows(self, config):
         raw = config.get('windows')
         if raw:
@@ -94,24 +104,26 @@ class SilverBullet(BaseStrategy):
             return None 
 
         # 4. EXECUTION
+        # Stop = stop_atr * ATR from the entry (v14.4.2 validated sizing; the
+        # entry sits at the FVG edge, so the legacy candle-extreme formula and
+        # entry-anchored formula coincide at stop_atr=0.2).
         # SELL Logic
         if current['is_fvg_bear']:
             entry = current['fvg_bottom']
-            # Dynamic Stop: High of the displacement candle + small buffer
-            sl = current['high'] + (atr * 0.2)
+            sl = entry + (atr * self.stop_atr)
             dist = abs(entry - sl)
             tp = entry - (dist * self.rr)
-            
+
             self.log(f"🔫 SILVER BULLET (Sell) @ {entry}")
             return {'signal': 'SELL', 'type': 'LIMIT', 'price': entry, 'sl': sl, 'tp': tp}
 
         # BUY Logic
         if current['is_fvg_bull']:
             entry = current['fvg_top']
-            sl = current['low'] - (atr * 0.2)
+            sl = entry - (atr * self.stop_atr)
             dist = abs(entry - sl)
             tp = entry + (dist * self.rr)
-            
+
             self.log(f"🔫 SILVER BULLET (Buy) @ {entry}")
             return {'signal': 'BUY', 'type': 'LIMIT', 'price': entry, 'sl': sl, 'tp': tp}
 

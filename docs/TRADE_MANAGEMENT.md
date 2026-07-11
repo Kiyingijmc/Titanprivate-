@@ -118,8 +118,10 @@ tail beats the fixed target on your data.
 Four strategies exist for distinct conditions; enable per `config.yaml`
 (`strategies.<name>.enabled` + `pairs`):
 
-- **SilverBullet** — NY-session time/momentum displacement (the only strategy
-  with a demonstrated live edge; timing window per broker study ~05–07/04–08).
+- **SilverBullet** — FVG displacement, **H1, 1.0-ATR stop, runner on, 9-symbol
+  cost-viable universe** (v14.4.2 validated: +0.19R/trade net, PF 1.53, OOS-
+  consistent — `docs/research/2026-07-11-silverbullet-h1-stop-study.md`). The
+  old M5/0.2-ATR configuration nets ≈ −4.3R/trade after costs; never revert.
 - **UnicornModel** — breaker + FVG + liquidity sweep (trending, post-sweep).
 - **ICT_OTE** — 0.705 fib retracement (established trends).
 - **CRT** — previous-day high/low fade (ranging/mean-reversion; exempt from

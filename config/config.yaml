@@ -52,20 +52,30 @@ signal_grading:
 
 # v14.4: In-trade management. The Fibonacci ratchet (BE at 38.2%, bank 30% at
 # 61.8%, bank 50% at 88.6%) is always on. Runner mode additionally REMOVES the
-# TP at the 88.6% stage and trails the remaining tail behind price — leave off
-# until validated in backtest for the live strategy.
+# TP at the 88.6% stage and trails the remaining tail behind price.
+# v14.4.2: runner ON — validated on 3yr H1 study (fixed 2R was net-negative;
+# ratchet+runner is what makes SilverBullet net-positive). See
+# docs/research/2026-07-11-silverbullet-h1-stop-study.md.
 trade_management:
   runner:
-    enabled: false
+    enabled: true
 
 strategies:
-  # 1. Silver Bullet (Time-Based Volatility)
-  # Trades strictly during specific NY Session hours with Momentum
+  # 1. Silver Bullet (FVG displacement, H1)
+  # v14.4.2 VALIDATED CONFIG (3yr, net of costs, OOS-consistent: +0.19R/trade,
+  # PF 1.53, ~12 trades/wk — docs/research/2026-07-11-silverbullet-h1-stop-study.md).
+  # Do NOT move back to M5 or shrink stop_atr without re-running the cost study:
+  # the old M5/0.2-ATR config nets ≈ −4.3R/trade after spreads.
   silver_bullet:
     enabled: true
-    session_ny: ["10:00", "11:00"] 
+    timeframe: "H1"
+    stop_atr: 1.0          # SL = entry ± 1.0 × ATR(14)
+    windows: [[0, 24]]     # no session gate (edge validated all-hours on H1)
     risk_reward: 2.0
-    pairs: ["EURUSD", "GBPUSD", "XAUUSD", "US30", "GBPCAD"] 
+    # Cost-viable universe (median round-trip cost ≤ 0.25R at the 1.0-ATR stop);
+    # GBPCAD/XBRUSD excluded — spreads too wide for the stop size.
+    pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+            "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
   
   # 2. Unicorn (Breaker + FVG + Sweep)
   # Requires Liquidity Sweep confirmation before entry

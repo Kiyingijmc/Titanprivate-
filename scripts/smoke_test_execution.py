@@ -140,16 +140,28 @@ async def main():
         # 4. MODIFY over REQ (the previously-dead trailing/BE path)
         new_sl = snap(bid * (1 - SL_PCT * 0.8), ts)
         new_tp = snap(bid * (1 + TP_PCT * 1.2), ts)
+        # Long ack timeout: an SLTP OrderSend round-trip can exceed 2.5s on a
+        # slow (e.g. weekend crypto) server. The PASS verdict comes from the
+        # observed heartbeat state, not the ack — a late ack is lost by the
+        # REQ reset but the modify may still have applied at the broker.
         ok = await bridge.send_order_reliable({
             "action": "TRADE", "cmd": "MODIFY", "symbol": symbol, "ticket": ticket,
-            "sl": new_sl, "tp": new_tp, "volume": 0.0, "strat": "SmokeTest"})
+            "sl": new_sl, "tp": new_tp, "volume": 0.0, "strat": "SmokeTest"},
+            timeout=10000)
         # Tolerance covers the pre-v14.4 EA's %G heartbeat (6 significant digits,
         # i.e. up to ~0.5 error at BTC prices) as well as the tick grid.
         tol = max(float(ts), abs(new_sl) * 1e-5)
-        pos = await mon.wait_for(
-            lambda: (p := mon.my_position()) and abs(float(p.get("sl", 0)) - new_sl) <= tol and p,
-            20, "modified SL in HEARTBEAT")
-        results.append(report("MODIFY SL/TP via REQ", ok, f"sl={pos['sl']} tp={pos['tp']}"))
+        try:
+            pos = await mon.wait_for(
+                lambda: (p := mon.my_position()) and abs(float(p.get("sl", 0)) - new_sl) <= tol and p,
+                20, "modified SL in HEARTBEAT")
+            results.append(report("MODIFY SL/TP via REQ", True,
+                                  f"sl={pos['sl']} tp={pos['tp']} (ack={'OK' if ok else 'lost/timeout'})"))
+        except TimeoutError:
+            p = mon.my_position()
+            results.append(report("MODIFY SL/TP via REQ", False,
+                                  f"SL unchanged in heartbeat (now {p.get('sl') if p else '?'}, "
+                                  f"wanted {new_sl}, ack={'OK' if ok else 'timeout'}) — check Experts log"))
 
         # 5. Partial close (v14.4 EA feature)
         await bridge.send_command("CLOSE_POS", {"ticket": ticket, "volume": partial})

@@ -284,11 +284,15 @@ class SystemController:
         """
         action = c.get('action')
         if action == "MODIFY":
+            # 8s ack window: SLTP round-trips can exceed the 2.5s default on
+            # slow servers. A failed/lost MODIFY is logged as ERROR below —
+            # staged ratchet levels do NOT re-issue (level already advanced),
+            # so surface it rather than hide it.
             ok = await self.bridge.send_order_reliable({
                 "action": "TRADE", "cmd": "MODIFY", "symbol": c.get('symbol', ''),
                 "ticket": int(c['ticket']), "sl": float(c.get('sl', 0.0)),
                 "tp": float(c.get('tp', 0.0)), "volume": 0.0, "strat": c.get('comment', 'Mgmt')
-            })
+            }, timeout=8000)
             level = "MGMT" if ok else "ERROR"
             self.logger.log_event(level, "TRADE_MGR",
                                   f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "

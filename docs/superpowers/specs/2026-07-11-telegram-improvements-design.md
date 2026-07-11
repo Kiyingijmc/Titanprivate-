@@ -84,10 +84,26 @@ Phase 1 bounded to the bot.
 
 ### `TelegramBot` changes (`src/ops/telemetry.py`)
 
-- `parse_mode` → `"HTML"` in `_async_send_retry`.
+- **Per-call `parse_mode`, default `"HTML"`.** `send_message` / `_async_send_retry` gain a
+  `parse_mode="HTML"` parameter threaded into the payload. The five migrated bot builders
+  send HTML (default). **All not-yet-migrated Markdown callers must pass
+  `parse_mode="Markdown"`** so they keep rendering correctly and don't hit the new 400
+  surface. This is required because `send_message` is a single shared pipe: ~10 controller
+  call sites still emit `**bold**`/`` `code` `` Markdown with unescaped dynamic data —
+  `system_controller.py` lines 157, 215 (`str(e)`), 233, 417 (order strategy), 436
+  (`get_*_report` output), 534 (news `reason`), 537, 616, 619 — plus the bot's own inline
+  `_process` error replies (`❌ Error: {e}` at telemetry.py:237,249). A *global* flip to
+  HTML would (a) render their `**`/backticks literally and (b) 400 on any `&`/`<`/`>` in an
+  exception, news reason, or broker comment — none of which route through `esc()` in Phase 1.
+  The per-call override keeps Phase 1 bounded to the bot without silently breaking them.
 - `notify_signal` / `notify_execution` / `notify_close` / `notify_management` delegate to
-  the corresponding `telegram_format` builders instead of inline f-strings.
-- `HELP_MENU` constant replaced by `telegram_format.help_menu()`.
+  the corresponding `telegram_format` builders (HTML) instead of inline f-strings.
+- `notify_execution` **renders the same fields it does today** (ticket / pair / type /
+  logic) — it carries `price`/`sl` params but does NOT display SL, since it is still fed
+  `sl=0` (system_controller.py:346). Rendering real SL/TP/RR is Phase 2; Phase 1 must not
+  print "SL: 0".
+- `HELP_MENU` constant replaced by `telegram_format.help_menu()`, which **adds `/confirm`**
+  and updates the title `v14.3` → `v14.4`.
 
 **Dispatch table (`_process` rewrite):** extract the command explicitly:
 
@@ -111,15 +127,28 @@ Look `cmd` up in a `{ "status": ..., "balance": ..., "pending": ..., "pause": ..
 - `/closeall` no longer executes. It sets `_pending_confirm = ("closeall", time.time()+30)`
   and replies with the position count + open P/L:
   *"⚠️ Close N positions ($X open)? Reply /confirm within 30s."*
-- `/confirm`:
-  - if `_pending_confirm` is set and unexpired → clear it, run
-    `controller.close_all_market_orders()`, report the flattened count.
-  - if expired → clear it, reply *"⌛ Confirmation expired."*
-  - if none → reply *"Nothing to confirm."*
+- `/confirm` — **capture-and-clear before any `await`** to guarantee exactly-once:
+  ```python
+  pending = self._pending_confirm
+  self._pending_confirm = None          # clear FIRST, before awaiting the close
+  if pending and pending[1] >= time.time():
+      count = await controller.close_all_market_orders()   # safe: slot already cleared
+      ...report count...
+  elif pending:   # was set but expired
+      reply "⌛ Confirmation expired."
+  else:
+      reply "Nothing to confirm."
+  ```
+  Clearing before the `await` is required: `_process` is dispatched as an independent task
+  (`asyncio.create_task(self._process(u))`, telemetry.py:190), so two `/confirm` updates
+  could otherwise both pass the check and double-close.
 - `/panic` stays **instant** (its existing path is unchanged) — it is the genuine
   emergency button and confirmation would defeat its purpose.
 - Single-slot only: a new confirmable command overwrites any prior pending one. No
   multi-action queue (YAGNI).
+- Bare non-slash words dispatch too: after `raw[0].lstrip('/')`, `"pause"` == `"/pause"`.
+  This is **intended** — and the real hazard from the old substring matcher is gone, because
+  only the *first token* is inspected (`"don't pause"` → first token `"don't"` → no match).
 
 ### Explicitly NOT in Phase 1
 
@@ -132,7 +161,7 @@ stat tracking, risk/DD alerts. Those are Phases 2–3.
   - `esc()` on values containing `<`, `>`, `&` (and that `_`/`*` pass through safely under HTML).
   - `close()` P/L emoji thresholds at the boundaries (500, 0, -50).
   - `management()` icon mapping for L1/L2/L3/Risk and the default.
-  - `help_menu()` renders and lists the commands.
+  - `help_menu()` renders, lists the commands, **includes `/confirm`**, and shows `v14.4`.
 - Command-dispatch unit coverage: extracting `cmd` from inputs like `/CloseAll@Bot`,
   `/status`, `don't pause` (must NOT fire pause), empty string.
 - Confirm FSM: `/closeall` sets pending; `/confirm` within window executes exactly once;
@@ -142,8 +171,11 @@ stat tracking, risk/DD alerts. Those are Phases 2–3.
 
 ### Risks / notes
 
-- HTML parse_mode: builders must NOT emit raw `<`/`>`/`&` outside intended tags — enforced
-  by routing all dynamic values through `esc()`.
-- `_process` runs per-update via `asyncio.create_task`; `_pending_confirm` is single-writer
-  from the one poll loop, so no locking needed.
+- HTML parse_mode: the five migrated builders must NOT emit raw `<`/`>`/`&` outside intended
+  tags — enforced by routing all dynamic values through `esc()`. Un-migrated callers stay on
+  `parse_mode="Markdown"` (see bot changes) and are out of scope for Phase 1 escaping.
+- `_process` runs per-update via `asyncio.create_task`, so tasks CAN interleave across an
+  `await`. The confirm FSM does not rely on single-writer serialization — it captures and
+  clears `_pending_confirm` before awaiting the close, which is what makes execution
+  exactly-once. No lock needed given that ordering.
 - No new dependencies. No EA/bridge change. No config schema change in Phase 1.

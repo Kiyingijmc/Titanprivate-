@@ -87,7 +87,7 @@ Wire the currently-dead `notify_management` into `_dispatch_mgmt_command`
 symbol, sl, tp, comment}`.
 
 - **SL-move milestones** — `action == "MODIFY"` and comment in {`Ratchet L1`, `Ratchet L2`,
-  `Ratchet L3`, `Risk Guard`}: look up `initial_entry, initial_sl, lots` from `active_orders` by
+  `Ratchet L3`}: look up `initial_entry, initial_sl, lots` from `active_orders` by
   ticket. **Direction** is inferred from the stored stop: `is_long = initial_sl < initial_entry`.
   **Signed locked-in distance** = `(new_sl - initial_entry)` for a long, `(initial_entry - new_sl)`
   for a short (positive once the stop is past entry into profit; negative while still below).

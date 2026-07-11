@@ -103,5 +103,31 @@ class GiveBackArmA(unittest.TestCase):
         self.assertEqual(len([t for t in trace if t[0] == "bank"]), 2, trace)
 
 
+class TrailTightenArmC(unittest.TestCase):
+    def test_c_takes_no_extra_trades_and_tightens(self):
+        bars = _runner_then_pullback()
+        tr = _long_trade()
+        trace = []
+        r_c, extra_c = sb.replay_overlay(tr, bars, arm="C", signal="giveback",
+                                         f=0.5, g=0.5, trace=trace)
+        self.assertEqual(extra_c, 0.0)                 # no re-adds ever in C
+        self.assertEqual(trace, [])                    # C never emits bank/readd events
+        # tightened trail (0.10*rng=1.0) exits differently from Control
+        r_off, _ = sb.replay_overlay(tr, bars, arm="off")
+        self.assertNotAlmostEqual(r_c, r_off, places=6)
+
+    def test_c_tightens_only_once(self):
+        # even with multiple pullbacks, C sets DONE after the first tighten
+        bars = _bars([
+            (100.5, 99.9), (104.0, 103.0), (106.5, 105.5),
+            (109.2, 108.0), (108.6, 107.3), (110.0, 109.4),
+            (109.3, 108.0), (108.0, 100.0),
+        ])
+        tr = _long_trade()
+        r_c, extra_c = sb.replay_overlay(tr, bars, arm="C", signal="giveback",
+                                         f=0.5, g=0.5)
+        self.assertEqual(extra_c, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

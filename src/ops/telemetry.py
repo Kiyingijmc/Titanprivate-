@@ -126,70 +126,64 @@ class TelegramBot:
             pass
 
     async def _process(self, update):
-        """Processes a single update safely."""
+        """Route one authenticated update to its command handler."""
         try:
             msg = update.get("message", {})
-            
-            # Auth Check
+
             sender_id = str(msg.get("from", {}).get("id"))
-            if sender_id != str(self.allowed_chat_id): 
+            if sender_id != str(self.allowed_chat_id):
                 return
-            
-            text = msg.get("text", "").lower().strip()
-            print(f"[CMD] {text}")
-            
-            if not self.controller_ref: return
-            
-            # --- COMMAND PARSING ---
-            if "/status" in text: 
-                await self.send_message(self.controller_ref.get_status_report())
-            
-            elif "/balance" in text: 
-                await self.send_message(self.controller_ref.get_balance_report())
-            
-            elif "/pending" in text:
-                await self.send_message(self.controller_ref.get_pending_orders_report())
-                
-            elif "/pause" in text: 
-                await self.send_message(f"⏸️ System: {self.controller_ref.set_system_pause(True)}")
-            
-            elif "/resume" in text: 
-                await self.send_message(f"▶️ System: {self.controller_ref.set_system_pause(False)}")
-            
-            elif "/cancel" in text:
-                try:
-                    args = text.split()
-                    if len(args) < 2:
-                        await self.send_message("⚠️ Usage: `/cancel 123456` or `/cancel all`")
-                    else:
-                        target = args[1] if "all" not in args[1] else None
-                        res = await self.controller_ref.cancel_pending_orders(target)
-                        await self.send_message(f"🗑️ Result: {res}")
-                except Exception as e:
-                    await self.send_message(f"❌ Error: {e}")
 
-            elif "/close" in text and "/closeall" not in text:
-                try:
-                    args = text.split()
-                    if len(args) < 2:
-                        await self.send_message("⚠️ Usage: `/close 123456` (Active Ticket ID)")
-                    else:
-                        target_id = int(args[1])
-                        res = await self.controller_ref.close_specific_market_order(target_id)
-                        await self.send_message(res)
-                except Exception as e:
-                    await self.send_message(f"❌ Error: {e}")
+            cmd, args = telegram_format.parse_command(msg.get("text", ""))
+            print(f"[CMD] {cmd} {args}")
 
-            elif "/closeall" in text:
-                res = await self.controller_ref.close_all_market_orders()
-                await self.send_message(f"☠️ **GLOBAL CLOSE:** `{res}` positions flattened.")
+            c = self.controller_ref
+            if not c:
+                return
 
-            elif "/panic" in text:
-                await self.controller_ref.trigger_panic()
-                await self.send_message("🚨 **PANIC PROTOCOL EXECUTED** 🚨")
-                
+            if cmd == "status":
+                await self.send_message(c.get_status_report(), parse_mode="Markdown")
+            elif cmd == "balance":
+                await self.send_message(c.get_balance_report(), parse_mode="Markdown")
+            elif cmd == "pending":
+                await self.send_message(c.get_pending_orders_report(), parse_mode="Markdown")
+            elif cmd == "pause":
+                await self.send_message(f"⏸️ System: {c.set_system_pause(True)}", parse_mode="Markdown")
+            elif cmd == "resume":
+                await self.send_message(f"▶️ System: {c.set_system_pause(False)}", parse_mode="Markdown")
+            elif cmd == "cancel":
+                if not args:
+                    await self.send_message("⚠️ Usage: `/cancel 123456` or `/cancel all`", parse_mode="Markdown")
+                else:
+                    target = args[0] if "all" not in args[0].lower() else None
+                    res = await c.cancel_pending_orders(target)
+                    await self.send_message(f"🗑️ Result: {res}", parse_mode="Markdown")
+            elif cmd == "close":
+                if not args:
+                    await self.send_message("⚠️ Usage: `/close 123456` (Active Ticket ID)", parse_mode="Markdown")
+                else:
+                    try:
+                        target_id = int(args[0])
+                    except ValueError:
+                        await self.send_message("⚠️ Ticket must be a number.", parse_mode="Markdown")
+                        return
+                    res = await c.close_specific_market_order(target_id)
+                    await self.send_message(res, parse_mode="Markdown")
+            elif cmd == "closeall":
+                await self._prompt_closeall_confirm()
+            elif cmd == "confirm":
+                await self._handle_confirm()
+            elif cmd == "panic":
+                await c.trigger_panic()
+                await self.send_message("🚨 <b>PANIC PROTOCOL EXECUTED</b> 🚨")
             else:
                 await self.send_message(telegram_format.help_menu())
-                
+
         except Exception as e:
             self.logger.log_event("ERROR", "TELEMETRY", f"Cmd Process Fail: {e}")
+
+    async def _prompt_closeall_confirm(self):
+        await self.send_message("closeall stub", parse_mode="Markdown")
+
+    async def _handle_confirm(self):
+        await self.send_message("confirm stub", parse_mode="Markdown")

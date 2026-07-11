@@ -34,5 +34,82 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(b._build_payload("hi", "Markdown")["parse_mode"], "Markdown")
 
 
+import asyncio
+
+
+class _FakeController:
+    def __init__(self):
+        self.paused = None
+        self.status_calls = 0
+
+    def get_status_report(self):
+        self.status_calls += 1
+        return "STATUS"
+
+    def get_balance_report(self):
+        return "BALANCE"
+
+    def get_pending_orders_report(self):
+        return "PENDING"
+
+    def set_system_pause(self, p):
+        self.paused = p
+        return "PAUSED" if p else "ACTIVE"
+
+
+def _sent_recorder(bot):
+    """Replace send_message with an async recorder; returns the capture list."""
+    sent = []
+
+    async def _fake_send(text, parse_mode="HTML"):
+        sent.append((text, parse_mode))
+
+    bot.send_message = _fake_send
+    return sent
+
+
+def _update(text, sender="42"):
+    return {"message": {"from": {"id": sender}, "text": text}}
+
+
+class DispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_routes_to_report(self):
+        b = _bot()
+        c = _FakeController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/status"))
+        self.assertEqual(c.status_calls, 1)
+        self.assertEqual(sent[0][0], "STATUS")
+        self.assertEqual(sent[0][1], "Markdown")   # controller report stays Markdown
+
+    async def test_wrong_sender_is_ignored(self):
+        b = _bot()
+        c = _FakeController()
+        b.register_controller(c)
+        sent = _sent_recorder(b)
+        await b._process(_update("/status", sender="999"))
+        self.assertEqual(sent, [])
+        self.assertEqual(c.status_calls, 0)
+
+    async def test_non_command_shows_help(self):
+        b = _bot()
+        b.register_controller(_FakeController())
+        sent = _sent_recorder(b)
+        await b._process(_update("don't pause"))
+        self.assertEqual(b.controller_ref.paused, None)   # pause NOT fired
+        self.assertIn("TITAN SMC COMMANDER", sent[0][0])   # help shown
+
+    async def test_pause_and_resume(self):
+        b = _bot()
+        c = _FakeController()
+        b.register_controller(c)
+        _sent_recorder(b)
+        await b._process(_update("/pause"))
+        self.assertTrue(c.paused)
+        await b._process(_update("/resume"))
+        self.assertFalse(c.paused)
+
+
 if __name__ == "__main__":
     unittest.main()

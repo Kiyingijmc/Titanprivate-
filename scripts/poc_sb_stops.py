@@ -294,6 +294,8 @@ def replay_overlay(tr, bars, *, arm="off", signal="giveback",
                     elif arm == "C":
                         trail = TIGHT_TRAIL * rng
                         ov_state = "DONE"
+                        if trace is not None:
+                            trace.append(("tighten", k, trail))
             if arm == "A" and ov_state == "BANKED":
                 new_hwm = (cur_ext > hwm) if is_long else (cur_ext < hwm)
                 if new_hwm:

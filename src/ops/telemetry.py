@@ -70,8 +70,12 @@ class TelegramBot:
         await self.send_message(telegram_format.close(ticket, pnl, symbol, strategy, hold_seconds, r_multiple))
 
     # --- 4. RATCHET MANAGEMENT ---
-    async def notify_management(self, action_comment, ticket):
-        await self.send_message(telegram_format.management(action_comment, ticket))
+    async def notify_management(self, action_comment, ticket, new_sl=None, locked_money=None):
+        await self.send_message(telegram_format.management(action_comment, ticket, new_sl, locked_money))
+
+    # --- 5. PARTIAL BANK ---
+    async def notify_partial(self, comment, ticket, volume):
+        await self.send_message(telegram_format.partial(comment, ticket, volume))
 
     # --- CORE NETWORK LAYER ---
     async def send_message(self, text, parse_mode="HTML"):

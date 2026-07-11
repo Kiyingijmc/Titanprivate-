@@ -123,7 +123,7 @@ def close(ticket, pnl, symbol="???", strategy="Unknown", hold_seconds=None, r_mu
     return "\n".join(lines)
 
 
-def management(action_comment, ticket) -> str:
+def management(action_comment, ticket, new_sl=None, locked_money=None) -> str:
     comment = str(action_comment)
     icon, desc = "⚙️", comment
     if "L1" in comment:
@@ -134,7 +134,20 @@ def management(action_comment, ticket) -> str:
         icon, desc = "🥂", "Ratchet L3 (Bank 50%)"
     elif "Risk" in comment:
         icon, desc = "👮", "RISK GUARD KILL"
-    return f"{icon} <b>Auto-Pilot:</b> {esc(desc)}\n🎫 Trade <code>#{esc(ticket)}</code>"
+    lines = [f"{icon} <b>Auto-Pilot:</b> {esc(desc)}", f"🎫 Trade <code>#{esc(ticket)}</code>"]
+    if new_sl is not None:
+        lines.append(f"🛡️ <b>SL→</b> <code>{esc(new_sl)}</code>")
+    if locked_money is not None:
+        lines.append(f"🔐 <b>Locked:</b> <code>{locked_money:+,.2f}</code>")
+    return "\n".join(lines)
+
+
+def partial(comment, ticket, volume) -> str:
+    label = esc(comment) if comment else "Partial Close"
+    return (
+        f"💰 <b>Partial Bank:</b> {label}\n"
+        f"🎫 Trade <code>#{esc(ticket)}</code>   📦 <code>{esc(volume)}</code> lots"
+    )
 
 
 def help_menu() -> str:

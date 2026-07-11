@@ -156,7 +156,8 @@ class TradeManager:
         if mode == "FULL":
             return [{"action": "CLOSE_POS", "ticket": ticket, "comment": "Dust Guard Exit"}]
         if mode == "PARTIAL":
-            return [{"action": "CLOSE_PARTIAL", "ticket": ticket, "volume": close_vol}]
+            return [{"action": "CLOSE_PARTIAL", "ticket": ticket, "volume": close_vol,
+                     "comment": f"Bank {int(pct * 100)}%"}]
         return []
 
     def _partial_volume(self, symbol, vol, pct):

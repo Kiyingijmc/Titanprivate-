@@ -294,15 +294,33 @@ class SystemController:
             self.logger.log_event("MGMT", "TRADE_MGR",
                                   f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "
                                   f"({c.get('comment', '')}) sent")
+            comment = c.get('comment', '')
+            if comment != "Runner Trail" and any(k in comment for k in ("Ratchet L1", "Ratchet L2", "Ratchet L3")):
+                new_sl = float(c.get('sl', 0.0))
+                locked = None
+                row = self.state_manager.get_order(int(c['ticket']))
+                if row and new_sl:
+                    init_entry = row.get('initial_entry') or 0
+                    init_sl = row.get('initial_sl') or 0
+                    lots = row.get('lots') or 0
+                    if init_entry:
+                        is_long = init_sl < init_entry
+                        dist = (new_sl - init_entry) if is_long else (init_entry - new_sl)
+                        mag = self.risk_manager.money_for_move(c.get('symbol', ''), dist, lots)
+                        locked = mag if dist >= 0 else -mag
+                await self.telemetry.notify_management(comment, int(c['ticket']), new_sl, locked)
         elif action == "CLOSE_PARTIAL":
             await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket']),
                                                          "volume": float(c['volume'])})
             self.logger.log_event("MGMT", "TRADE_MGR",
                                   f"PARTIAL #{c['ticket']} vol={c['volume']}")
+            await self.telemetry.notify_partial(c.get('comment', ''), int(c['ticket']), c['volume'])
         elif action == "CLOSE_POS":
             await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket'])})
             self.logger.log_event("MGMT", "TRADE_MGR",
                                   f"CLOSE #{c['ticket']} ({c.get('comment', '')})")
+            if c.get('comment', '') == "Risk Guard":
+                await self.telemetry.notify_management("Risk Guard", int(c['ticket']))
 
     async def _process_incoming_data(self, msg):
         if not isinstance(msg, dict): 

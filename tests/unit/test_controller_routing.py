@@ -33,6 +33,7 @@ class FakeState:
     def get_pending_orders(self):
         return [{"ticket_id": 77, "strategy": "SilverBullet", "time_placed": time.time() - 9999}]
     def delete_order(self, t): self.deleted.append(t)
+    def get_order(self, t): return None
 
 
 class FakeLogger:
@@ -43,6 +44,8 @@ class FakeLogger:
 class FakeTelemetry:
     async def send_message(self, *a, **kw): pass
     async def notify_execution(self, *a, **kw): pass
+    async def notify_management(self, *a, **kw): pass
+    async def notify_partial(self, *a, **kw): pass
 
 
 class FakeRisk:

@@ -78,5 +78,27 @@ class CloseEnrichTests(unittest.TestCase):
         self.assertIn("$5.00", out)
 
 
+class ManagementEnrichTests(unittest.TestCase):
+    def test_ratchet_shows_new_sl_and_locked(self):
+        out = tf.management("Ratchet L2", 9, new_sl=1995.0, locked_money=42.5)
+        self.assertIn("💸", out)              # L2 icon preserved
+        self.assertIn("1995.0", out)          # new SL
+        self.assertIn("+42.50", out)          # signed locked-in
+
+    def test_negative_locked_sign(self):
+        self.assertIn("-10.00", tf.management("Ratchet L1", 1, new_sl=1.0, locked_money=-10.0))
+
+    def test_risk_guard_without_sl(self):
+        out = tf.management("Risk Guard", 3)
+        self.assertIn("👮", out)
+        self.assertNotIn("SL", out)           # no SL line when new_sl is None
+
+    def test_partial_builder(self):
+        out = tf.partial("Bank 30%", 9, 0.03)
+        self.assertIn("Bank 30%", out)
+        self.assertIn("#9", out)
+        self.assertIn("0.03", out)
+
+
 if __name__ == "__main__":
     unittest.main()

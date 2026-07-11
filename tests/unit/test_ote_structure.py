@@ -4,6 +4,7 @@ import unittest
 from src.analysis.ote_structure import (
     is_swing_high, is_swing_low, confirmed_swings, structure_bias,
 )
+from src.analysis.ote_structure import impulse_leg, ote_zone, zone_invalidation
 
 # Shared fixture: lk=1 uptrend with confirmed HH+HL.
 # Swing highs at j=2 (10) and j=6 (12); swing lows at j=4 (8) and j=8 (9).
@@ -47,6 +48,55 @@ class TestStructureBias(unittest.TestCase):
     def test_short_series_all_neutral(self):
         self.assertEqual(structure_bias([1.0, 2.0], [0.5, 1.5], lk=3),
                          ["NEUTRAL", "NEUTRAL"])
+
+
+class TestImpulseLeg(unittest.TestCase):
+    def test_bullish_leg_found(self):
+        # HIGHS/LOWS fixture: SWH 6 (12) broke SWH 2 (10) -> BOS up;
+        # origin = most recent confirmed swing low before it = idx 4 (8.0)
+        leg = impulse_leg(HIGHS, LOWS, upto=10, lk=1, bias="BULLISH")
+        self.assertEqual(leg, (8.0, 12.0, 4, 6))
+
+    def test_fast_path_matches_slow_path(self):
+        swh, swl = confirmed_swings(HIGHS, LOWS, 1)
+        slow = impulse_leg(HIGHS, LOWS, 10, 1, "BULLISH")
+        fast = impulse_leg(HIGHS, LOWS, 10, 1, "BULLISH", swh, swl)
+        self.assertEqual(slow, fast)
+
+    def test_no_leg_when_neutral_or_no_bos(self):
+        self.assertIsNone(impulse_leg(HIGHS, LOWS, 10, 1, "NEUTRAL"))
+        flat_h = [10.0, 11.0, 10.0, 11.0, 10.0, 11.0, 10.0]
+        flat_l = [9.0, 10.0, 9.0, 10.0, 9.0, 10.0, 9.0]
+        self.assertIsNone(impulse_leg(flat_h, flat_l, 6, 1, "BULLISH"))
+
+    def test_bearish_mirror(self):
+        h = [x for x in reversed(HIGHS)]
+        l = [x for x in reversed(LOWS)]
+        leg = impulse_leg(h, l, upto=10, lk=1, bias="BEARISH")
+        self.assertIsNotNone(leg)
+        leg_low, leg_high, lo_idx, hi_idx = leg
+        self.assertLess(leg_low, leg_high)
+        self.assertGreater(lo_idx, hi_idx)   # bear leg: high first, low after
+
+
+class TestOteZone(unittest.TestCase):
+    def test_bull_zone_measured_down_from_high(self):
+        z_lo, z_hi = ote_zone(8.0, 12.0, "BULLISH")
+        self.assertAlmostEqual(z_lo, 12.0 - 0.79 * 4.0)   # 8.84
+        self.assertAlmostEqual(z_hi, 12.0 - 0.62 * 4.0)   # 9.52
+
+    def test_bear_zone_measured_up_from_low(self):
+        z_lo, z_hi = ote_zone(8.0, 12.0, "BEARISH")
+        self.assertAlmostEqual(z_lo, 8.0 + 0.62 * 4.0)    # 10.48
+        self.assertAlmostEqual(z_hi, 8.0 + 0.79 * 4.0)    # 11.16
+
+
+class TestZoneInvalidation(unittest.TestCase):
+    def test_long_below_zone_bottom(self):
+        self.assertAlmostEqual(zone_invalidation(8.84, 9.52, 1.0, True), 8.74)
+
+    def test_short_above_zone_top(self):
+        self.assertAlmostEqual(zone_invalidation(10.48, 11.16, 1.0, False), 11.26)
 
 
 if __name__ == "__main__":

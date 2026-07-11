@@ -55,3 +55,51 @@ def structure_bias(highs, lows, lk=3):
         else:
             out.append("NEUTRAL")
     return out
+
+
+def impulse_leg(highs, lows, upto, lk, bias, swh=None, swl=None):
+    """Most recent leg in the bias direction that BROKE the prior swing, using
+    bars [0..upto]. BULL: a confirmed swing high exceeding the previous confirmed
+    swing high (BOS up); origin = most recent confirmed swing low before it.
+    Returns (leg_low, leg_high, lo_idx, hi_idx) or None.
+    Pass precomputed full-series swh/swl (confirmed_swings on the whole array)
+    for the O(log n) fast path; both paths are behavior-equivalent."""
+    if bias not in ("BULLISH", "BEARISH"):
+        return None
+    if swh is None or swl is None:
+        swh, swl = confirmed_swings(highs[:upto + 1], lows[:upto + 1], lk)
+        nh, nl = len(swh), len(swl)
+    else:
+        cutoff = upto - lk
+        nh = bisect.bisect_right(swh, cutoff)
+        nl = bisect.bisect_right(swl, cutoff)
+    if bias == "BULLISH":
+        for k in range(nh - 1, 0, -1):
+            if highs[swh[k]] > highs[swh[k - 1]]:            # BOS up
+                hi = swh[k]
+                p = bisect.bisect_left(swl, hi, 0, nl) - 1   # last low before hi
+                if p >= 0:
+                    lo = swl[p]
+                    return (lows[lo], highs[hi], lo, hi)
+        return None
+    for k in range(nl - 1, 0, -1):
+        if lows[swl[k]] < lows[swl[k - 1]]:                  # BOS down
+            lo = swl[k]
+            p = bisect.bisect_left(swh, lo, 0, nh) - 1       # last high before lo
+            if p >= 0:
+                hi = swh[p]
+                return (lows[lo], highs[hi], lo, hi)
+    return None
+
+
+def ote_zone(leg_low, leg_high, bias, lo=0.62, hi=0.79):
+    """Golden-zone price band (z_lo, z_hi). BULL: measured down from the high."""
+    rng = leg_high - leg_low
+    if bias == "BULLISH":
+        return (leg_high - hi * rng, leg_high - lo * rng)
+    return (leg_low + lo * rng, leg_low + hi * rng)
+
+
+def zone_invalidation(z_lo, z_hi, atr, is_long, buffer_mult=0.1):
+    """Level the stop must sit at/beyond: past the 0.79 edge + 0.1*ATR buffer."""
+    return (z_lo - buffer_mult * atr) if is_long else (z_hi + buffer_mult * atr)

@@ -34,6 +34,7 @@ class Monitor:
         self.symbol = symbol
         self.last_bid = 0.0
         self.positions = []          # from last HEARTBEAT
+        self.hb_count = 0            # heartbeats received (freshness tracking)
         self.executions = []         # EXECUTION messages
         self.history_specs = None    # (tv, ts, vm, vs)
         self.bars = 0
@@ -50,6 +51,7 @@ class Monitor:
                     self.last_bid = float(m.get("b", 0))
                 elif t == "HEARTBEAT":
                     self.positions = m.get("pos", [])
+                    self.hb_count += 1
                 elif t == "EXECUTION":
                     self.executions.append(m)
                 elif t == "HISTORY" and m.get("symbol") == self.symbol:
@@ -160,23 +162,31 @@ async def main():
                                   f"SL unchanged in heartbeat (now {p.get('sl') if p else '?'}, "
                                   f"wanted {new_sl}) — check Experts log for 'Modify'"))
 
-        # 5. Partial close (v14.4 EA feature)
+        # 5. Partial close (v14.4 EA feature). Long window + heartbeat
+        # freshness: a weekend dealer can hold the OrderSend for 20s+, during
+        # which the EA (single-threaded) cannot heartbeat — judging by a stale
+        # snapshot produced a false "ignored" verdict on an executed partial.
+        hb_before = mon.hb_count
         await bridge.send_command("CLOSE_POS", {"ticket": ticket, "volume": partial})
         try:
             pos = await mon.wait_for(
                 lambda: (p := mon.my_position()) and abs(float(p.get("vol", 0)) - (lots - partial)) < 1e-9 and p,
-                20, "reduced volume in HEARTBEAT")
+                45, "reduced volume in HEARTBEAT")
             results.append(report("PARTIAL close via CLOSE_POS+volume", True,
                                   f"remaining vol={pos['vol']}"))
         except TimeoutError:
             p = mon.my_position()
-            if p is None:
+            if mon.hb_count == hb_before:
+                results.append(report("PARTIAL close via CLOSE_POS+volume", False,
+                                      "no heartbeat arrived during the wait (EA busy in a slow "
+                                      "OrderSend?) — check terminal deal history before trusting this"))
+            elif p is None:
                 results.append(report("PARTIAL close via CLOSE_POS+volume", False,
                                       "position fully closed -> OLD EA still running (recompile needed)"))
                 ticket = None
             else:
                 results.append(report("PARTIAL close via CLOSE_POS+volume", False,
-                                      f"volume unchanged ({p['vol']}) -> partial ignored"))
+                                      f"volume unchanged ({p['vol']}) with fresh heartbeats -> partial ignored"))
 
         # 6. Full close of whatever remains
         if mon.my_position() is not None:

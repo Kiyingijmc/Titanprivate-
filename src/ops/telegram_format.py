@@ -42,6 +42,14 @@ def _fmt_rr(entry, sl, tp) -> str:
         return "—"
 
 
+def _fmt_price(v) -> str:
+    """esc(v), but '—' for a 0/unknown price (manual-order degraded render)."""
+    try:
+        return "—" if float(v) == 0 else esc(v)
+    except (TypeError, ValueError):
+        return esc(v)
+
+
 def _fmt_money(amount) -> str:
     """'$1,234.50'; '—' when unknown (0.0 sentinel from money_for_move)."""
     try:
@@ -72,7 +80,7 @@ def execution(ticket, symbol, order_type, entry, sl, tp, lots, grade, risk_money
         f"🎫 <b>Ticket:</b> <code>#{esc(ticket)}</code>\n"
         f"💱 <b>Pair:</b> {esc(symbol)} · {esc(order_type)}\n"
         f"📍 <b>Entry:</b> <code>{esc(entry)}</code>\n"
-        f"🛡️ <b>SL:</b> <code>{esc(sl)}</code>   🎯 <b>TP:</b> <code>{esc(tp)}</code>\n"
+        f"🛡️ <b>SL:</b> <code>{_fmt_price(sl)}</code>   🎯 <b>TP:</b> <code>{_fmt_price(tp)}</code>\n"
         f"⚖️ <b>RR:</b> <code>{_fmt_rr(entry, sl, tp)}</code>   📦 <b>Lots:</b> <code>{esc(lots)}</code>\n"
         f"🏅 <b>Grade:</b> <code>{esc(grade)}</code>   💵 <b>Risk:</b> <code>{_fmt_money(risk_money)}</code>\n"
         f"⚙️ <b>Logic:</b> <i>{esc(strategy)}</i>"

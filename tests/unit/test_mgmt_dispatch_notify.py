@@ -25,7 +25,15 @@ class _FakeTelemetry:
 
 
 class _FakeRisk:
+    def __init__(self, specs=True):
+        self._specs = specs
+        self.money_for_move_calls = []
+
+    def has_specs(self, symbol):
+        return self._specs
+
     def money_for_move(self, symbol, distance, lots):
+        self.money_for_move_calls.append((symbol, distance, lots))
         return 100.0  # non-zero so locked-in is computable
 
 
@@ -35,12 +43,13 @@ class _FakeState:
         return {"initial_entry": 2000.0, "initial_sl": 1990.0, "lots": 0.10}
 
 
-def _controller():
+def _controller(specs=True):
     c = SystemController.__new__(SystemController)   # bypass __init__/live sockets
     c.bridge = _FakeBridge()
     c.telemetry = _FakeTelemetry()
-    c.risk_manager = _FakeRisk()
+    c.risk_manager = _FakeRisk(specs=specs)
     c.state_manager = _FakeState()
+    c.current_open_positions = [{"t": 9, "vol": 0.05}]
 
     class _L:
         def log_event(self, *a, **k):
@@ -57,6 +66,20 @@ class MgmtDispatchNotifyTests(unittest.IsolatedAsyncioTestCase):
         comment, ticket, new_sl, locked = c.telemetry.mgmt[0]
         self.assertEqual((comment, ticket, new_sl), ("Ratchet L2", 9, 2005.0))
         self.assertGreater(locked, 0)   # sl 2005 > entry 2000 on a long -> profit locked
+
+    async def test_ratchet_uses_remaining_volume_not_db_lots(self):
+        c = _controller()
+        await c._dispatch_mgmt_command({"action": "MODIFY", "ticket": 9, "symbol": "XAUUSD", "sl": 2005.0, "tp": 2025.0, "comment": "Ratchet L1"})
+        self.assertEqual(len(c.risk_manager.money_for_move_calls), 1)
+        symbol, distance, lots = c.risk_manager.money_for_move_calls[0]
+        self.assertEqual(lots, 0.05)   # live remaining vol from heartbeat, not DB lots=0.10
+
+    async def test_ratchet_locked_none_when_specs_unknown(self):
+        c = _controller(specs=False)
+        await c._dispatch_mgmt_command({"action": "MODIFY", "ticket": 9, "symbol": "XAUUSD", "sl": 2005.0, "tp": 2025.0, "comment": "Ratchet L2"})
+        self.assertEqual(len(c.telemetry.mgmt), 1)
+        comment, ticket, new_sl, locked = c.telemetry.mgmt[0]
+        self.assertIsNone(locked)
 
     async def test_runner_trail_suppressed(self):
         c = _controller()

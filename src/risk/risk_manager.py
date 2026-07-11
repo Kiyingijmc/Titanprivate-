@@ -193,6 +193,11 @@ class RiskManager:
         lots = math.floor(adjusted_lots / vol_step) * vol_step
         return round(lots, 2)
 
+    def has_specs(self, symbol) -> bool:
+        """True when real broker tick_value/tick_size are loaded for this symbol."""
+        spec = self.symbol_specs.get(symbol)
+        return bool(spec and spec['val'] > 0 and spec['ts'] > 0)
+
     def money_for_move(self, symbol, price_distance, lots) -> float:
         """Account-currency value of a `price_distance` move at `lots`, from broker specs.
 

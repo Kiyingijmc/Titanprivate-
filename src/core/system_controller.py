@@ -297,16 +297,19 @@ class SystemController:
             comment = c.get('comment', '')
             if comment != "Runner Trail" and any(k in comment for k in ("Ratchet L1", "Ratchet L2", "Ratchet L3")):
                 new_sl = float(c.get('sl', 0.0))
+                symbol = c.get('symbol', '')
                 locked = None
                 row = self.state_manager.get_order(int(c['ticket']))
-                if row and new_sl:
+                if row and new_sl and self.risk_manager.has_specs(symbol):
                     init_entry = row.get('initial_entry') or 0
                     init_sl = row.get('initial_sl') or 0
-                    lots = row.get('lots') or 0
                     if init_entry:
+                        tkt = int(c['ticket'])
+                        live = next((p for p in self.current_open_positions if int(p.get('t', 0)) == tkt), None)
+                        vol = float(live.get('vol', 0)) if live else (row.get('lots') or 0)
                         is_long = init_sl < init_entry
                         dist = (new_sl - init_entry) if is_long else (init_entry - new_sl)
-                        mag = self.risk_manager.money_for_move(c.get('symbol', ''), dist, lots)
+                        mag = self.risk_manager.money_for_move(symbol, dist, vol)
                         locked = mag if dist >= 0 else -mag
                 await self.telemetry.notify_management(comment, int(c['ticket']), new_sl, locked)
         elif action == "CLOSE_PARTIAL":

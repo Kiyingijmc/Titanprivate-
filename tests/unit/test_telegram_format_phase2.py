@@ -37,6 +37,13 @@ class ExecutionEnrichTests(unittest.TestCase):
         self.assertIn("A&amp;B", out)
         self.assertIn("S&lt;x&gt;", out)
 
+    def test_sl_tp_dashed_when_zero(self):
+        # sl=0, tp=0 (manual-order degraded render) -> "—", not "0.0"
+        out = tf.execution(1, "X", "MARKET", 2000.0, 0, 0, 0.1, "A", 0.0, "S")
+        self.assertIn("SL:</b> <code>—</code>", out)
+        self.assertIn("TP:</b> <code>—</code>", out)
+        self.assertNotIn("<code>0.0</code>", out)
+
 
 class FormatDurationTests(unittest.TestCase):
     def test_seconds(self):

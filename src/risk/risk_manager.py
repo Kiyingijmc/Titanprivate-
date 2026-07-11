@@ -193,6 +193,21 @@ class RiskManager:
         lots = math.floor(adjusted_lots / vol_step) * vol_step
         return round(lots, 2)
 
+    def money_for_move(self, symbol, price_distance, lots) -> float:
+        """Account-currency value of a `price_distance` move at `lots`, from broker specs.
+
+        Mirrors calculate_lot_size's spec discipline: without real tick_value/tick_size
+        it returns 0.0 (caller treats 0.0 as 'unknown') rather than guessing.
+        """
+        spec = self.symbol_specs.get(symbol)
+        if not (spec and spec['val'] > 0 and spec['ts'] > 0):
+            return 0.0
+        try:
+            ticks = abs(float(price_distance)) / spec['ts']
+            return ticks * spec['val'] * float(lots)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+
     def reset_daily_metrics(self):
         """New trading day: reset range trackers and re-anchor the daily DD."""
         self.equity_max = self.current_equity

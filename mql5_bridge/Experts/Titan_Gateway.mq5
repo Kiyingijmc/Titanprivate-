@@ -33,7 +33,7 @@ int OnInit() {
    if(!socket_push.Connect(ZMQ_PUSH, StringFormat("tcp://%s:%d", InpIP, InpPushPort))) return INIT_FAILED;
    if(!socket_rep.Connect(ZMQ_REP,   StringFormat("tcp://%s:%d", InpIP, InpRepPort)))  return INIT_FAILED;
    
-   Print("TITAN v14.3 PRO | Institutional Gateway Online.");
+   Print("TITAN v14.4 PRO | Institutional Gateway Online.");
    Print("Ports Configured: CMD:", InpPullPort, " | DATA:", InpPushPort, " | REP:", InpRepPort);
    
    EventSetMillisecondTimer(InpTimerMS);
@@ -79,9 +79,12 @@ void OnTimer() {
       if(SymbolInfoTick(watchlist[i], t)) {
          // Push only if price changes
          if(t.bid != last_bid_prices[i]) {
-            // Using %I64d for millis
-            string msg = StringFormat("{\"type\":\"TICK\",\"s\":\"%s\",\"b\":%G,\"a\":%G,\"t\":%I64d}",
-                                       watchlist[i], t.bid, t.ask, t.time_msc);
+            // v14.4: full symbol precision (%G truncates to 6 sig figs and
+            // drops cents on BTC/index prices)
+            int dig = (int)SymbolInfoInteger(watchlist[i], SYMBOL_DIGITS);
+            string msg = StringFormat("{\"type\":\"TICK\",\"s\":\"%s\",\"b\":%s,\"a\":%s,\"t\":%I64d}",
+                                       watchlist[i], DoubleToString(t.bid, dig),
+                                       DoubleToString(t.ask, dig), t.time_msc);
             socket_push.Send(msg);
             last_bid_prices[i] = t.bid;
          }
@@ -178,15 +181,19 @@ void SendHeartbeat() {
       ulong t_id = PositionGetTicket(i);
       if(PositionSelectByTicket(t_id)) {
          if(added > 0) pos_json += ",";
-         
+
+         // v14.4: DoubleToString at symbol digits (%G loses cents on BTC/indices)
+         string p_sym = PositionGetString(POSITION_SYMBOL);
+         int p_dig = (int)SymbolInfoInteger(p_sym, SYMBOL_DIGITS);
+
          // 'type' 0=BUY, 1=SELL in MT5
          pos_json += StringFormat(
-            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%G,\"sl\":%G,\"tp\":%G,\"pf\":%.2f,\"vol\":%.2f,\"type\":%d,\"comment\":\"%s\"}",
+            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"sl\":%s,\"tp\":%s,\"pf\":%.2f,\"vol\":%.2f,\"type\":%d,\"comment\":\"%s\"}",
             (long)t_id,
-            PositionGetString(POSITION_SYMBOL),
-            PositionGetDouble(POSITION_PRICE_OPEN),
-            PositionGetDouble(POSITION_SL),
-            PositionGetDouble(POSITION_TP),
+            p_sym,
+            DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), p_dig),
+            DoubleToString(PositionGetDouble(POSITION_SL), p_dig),
+            DoubleToString(PositionGetDouble(POSITION_TP), p_dig),
             PositionGetDouble(POSITION_PROFIT),
             PositionGetDouble(POSITION_VOLUME),
             (int)PositionGetInteger(POSITION_TYPE),
@@ -206,13 +213,16 @@ void SendHeartbeat() {
       ulong ticket = OrderGetTicket(i);
       if(OrderSelect(ticket)) {
          if(o_added > 0) ord_json += ",";
-         
+
+         string o_sym = OrderGetString(ORDER_SYMBOL);
+         int o_dig = (int)SymbolInfoInteger(o_sym, SYMBOL_DIGITS);
+
          // Only send relevant info for tracking/cancelling
          ord_json += StringFormat(
-            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%G,\"type\":%d,\"vol\":%.2f}",
+            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"type\":%d,\"vol\":%.2f}",
             (long)ticket,
-            OrderGetString(ORDER_SYMBOL),
-            OrderGetDouble(ORDER_PRICE_OPEN),
+            o_sym,
+            DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), o_dig),
             (int)OrderGetInteger(ORDER_TYPE),
             OrderGetDouble(ORDER_VOLUME_INITIAL)
          );
@@ -254,11 +264,17 @@ void HandleCommand(string json) {
       int copied = CopyRates(sym, tf, 0, bars_count, rates);
       
       if(copied > 0) {
+         // v14.4: full precision (%G truncates BTC/index prices to 6 sig figs)
+         int h_dig = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
          // Construct minimal JSON manually to save memory
          string data = "[";
          for(int i=0; i<copied; i++) {
-            data += StringFormat("{\"t\":%I64d,\"o\":%G,\"h\":%G,\"l\":%G,\"c\":%G}", 
-                                 rates[i].time, rates[i].open, rates[i].high, rates[i].low, rates[i].close);
+            data += StringFormat("{\"t\":%I64d,\"o\":%s,\"h\":%s,\"l\":%s,\"c\":%s}",
+                                 rates[i].time,
+                                 DoubleToString(rates[i].open, h_dig),
+                                 DoubleToString(rates[i].high, h_dig),
+                                 DoubleToString(rates[i].low, h_dig),
+                                 DoubleToString(rates[i].close, h_dig));
             if(i < copied - 1) data += ",";
          }
          data += "]";

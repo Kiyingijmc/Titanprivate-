@@ -59,10 +59,13 @@ void OnTimer() {
       }
       else {
          // It's a Trade Order
+         Print("TITAN | REQ received: ", StringSubstr(req_raw, 0, 160));
          bool success = ExecuteTrade(req_raw);
-         // Respond JSON so Python 'reliable_send' stops blocking
-         if(success) socket_rep.Send("{\"status\":\"OK\"}");
-         else        socket_rep.Send("{\"status\":\"ERROR\"}");
+         // Respond JSON so Python 'reliable_send' stops blocking.
+         // v14.4.1: a failed reply wedges the REP state machine (it will
+         // never Recv again) — log it loudly so it is visible in Experts.
+         bool replied = socket_rep.Send(success ? "{\"status\":\"OK\"}" : "{\"status\":\"ERROR\"}");
+         if(!replied) Print("TITAN | !! REP reply send FAILED — REP socket may be wedged, reattach EA");
       }
    }
 
@@ -290,6 +293,26 @@ void HandleCommand(string json) {
       }
    }
    
+   // MODIFY SL/TP (v14.4.1: fire-and-forget path; Python verifies the result
+   // via the HEARTBEAT position SL/TP instead of a synchronous ack, so a slow
+   // or lost reply can never wedge the REQ/REP handshake socket)
+   if(StringFind(json, "\"action\":\"MODIFY\"") >= 0) {
+      MqlTradeRequest req; ZeroMemory(req); MqlTradeResult res; ZeroMemory(res);
+      req.action   = TRADE_ACTION_SLTP;
+      req.position = (ulong)GetJSONLong(json, "ticket");
+      req.symbol   = GetJSONString(json, "symbol");
+      req.sl       = GetJSONDouble(json, "sl");
+      req.tp       = GetJSONDouble(json, "tp");
+      if(!OrderSend(req, res))
+         Print("TITAN | Modify Failed: ", GetLastError());
+      else if(res.retcode != TRADE_RETCODE_DONE)
+         Print("TITAN | Modify Error: ", res.retcode, " ", res.comment);
+      else
+         Print("TITAN | Modified #", (long)req.position, " sl=", DoubleToString(req.sl, 5),
+               " tp=", DoubleToString(req.tp, 5));
+      return;
+   }
+
    // CANCEL PENDING
    if(StringFind(json, "CANCEL") >= 0) {
       ulong t_id = (ulong)GetJSONLong(json, "ticket");

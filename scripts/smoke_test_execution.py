@@ -137,31 +137,28 @@ async def main():
         results.append(report("MARKET BUY execution", ticket > 0,
                               f"ticket #{ticket} vol={pos['vol']} entry={pos['p']}"))
 
-        # 4. MODIFY over REQ (the previously-dead trailing/BE path)
+        # 4. MODIFY via fire-and-forget PUSH (v14.4.1 architecture: the live
+        # ratchet uses this exact path; result is verified from the HEARTBEAT,
+        # never a synchronous ack — a slow SLTP round-trip once wedged the
+        # REQ/REP socket for good).
         new_sl = snap(bid * (1 - SL_PCT * 0.8), ts)
         new_tp = snap(bid * (1 + TP_PCT * 1.2), ts)
-        # Long ack timeout: an SLTP OrderSend round-trip can exceed 2.5s on a
-        # slow (e.g. weekend crypto) server. The PASS verdict comes from the
-        # observed heartbeat state, not the ack — a late ack is lost by the
-        # REQ reset but the modify may still have applied at the broker.
-        ok = await bridge.send_order_reliable({
-            "action": "TRADE", "cmd": "MODIFY", "symbol": symbol, "ticket": ticket,
-            "sl": new_sl, "tp": new_tp, "volume": 0.0, "strat": "SmokeTest"},
-            timeout=10000)
+        await bridge.send_command("MODIFY", {"ticket": ticket, "symbol": symbol,
+                                             "sl": new_sl, "tp": new_tp})
         # Tolerance covers the pre-v14.4 EA's %G heartbeat (6 significant digits,
         # i.e. up to ~0.5 error at BTC prices) as well as the tick grid.
         tol = max(float(ts), abs(new_sl) * 1e-5)
         try:
             pos = await mon.wait_for(
                 lambda: (p := mon.my_position()) and abs(float(p.get("sl", 0)) - new_sl) <= tol and p,
-                20, "modified SL in HEARTBEAT")
-            results.append(report("MODIFY SL/TP via REQ", True,
-                                  f"sl={pos['sl']} tp={pos['tp']} (ack={'OK' if ok else 'lost/timeout'})"))
+                25, "modified SL in HEARTBEAT")
+            results.append(report("MODIFY SL/TP via PUSH", True,
+                                  f"sl={pos['sl']} tp={pos['tp']} (heartbeat-verified)"))
         except TimeoutError:
             p = mon.my_position()
-            results.append(report("MODIFY SL/TP via REQ", False,
+            results.append(report("MODIFY SL/TP via PUSH", False,
                                   f"SL unchanged in heartbeat (now {p.get('sl') if p else '?'}, "
-                                  f"wanted {new_sl}, ack={'OK' if ok else 'timeout'}) — check Experts log"))
+                                  f"wanted {new_sl}) — check Experts log for 'Modify'"))
 
         # 5. Partial close (v14.4 EA feature)
         await bridge.send_command("CLOSE_POS", {"ticket": ticket, "volume": partial})

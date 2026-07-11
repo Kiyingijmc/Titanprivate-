@@ -69,21 +69,21 @@ def run(coro):
 
 
 class MgmtCommandRouting(unittest.TestCase):
-    """MODIFY must travel over the reliable REQ socket as TRADE/cmd=MODIFY;
-    the EA's fire-and-forget handler silently drops a bare MODIFY action."""
+    """Management commands are fire-and-forget on the PUSH socket; the REQ
+    handshake is reserved for order entry (a slow SLTP ack wedged it live)."""
 
-    def test_modify_routed_via_reliable_trade(self):
+    def test_modify_routed_via_push(self):
         sc = make_controller()
         run(sc._dispatch_mgmt_command({"action": "MODIFY", "ticket": 5, "symbol": "EURUSD",
                                        "sl": 1.1003, "tp": 1.11, "comment": "Ratchet L1"}))
-        self.assertEqual(len(sc.bridge.reliable), 1)
-        p = sc.bridge.reliable[0]
-        self.assertEqual(p["action"], "TRADE")
-        self.assertEqual(p["cmd"], "MODIFY")
+        self.assertEqual(sc.bridge.reliable, [])   # REQ untouched
+        self.assertEqual(len(sc.bridge.commands), 1)
+        action, p = sc.bridge.commands[0]
+        self.assertEqual(action, "MODIFY")
         self.assertEqual(p["symbol"], "EURUSD")
         self.assertEqual(p["ticket"], 5)
         self.assertAlmostEqual(p["sl"], 1.1003)
-        self.assertEqual(sc.bridge.commands, [])
+        self.assertAlmostEqual(p["tp"], 1.11)
 
     def test_partial_routed_as_close_pos_with_volume(self):
         sc = make_controller()

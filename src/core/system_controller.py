@@ -276,27 +276,23 @@ class SystemController:
 
     async def _dispatch_mgmt_command(self, c):
         """
-        Routes TradeManager commands onto the protocol the EA understands:
-        - MODIFY goes over the reliable REQ socket as a TRADE/cmd=MODIFY
-          (the fire-and-forget PULL handler has no MODIFY branch).
+        Routes TradeManager commands onto the protocol the EA understands
+        (all fire-and-forget on the PUSH socket; the REQ handshake is reserved
+        for order entry so a slow SLTP round-trip can never wedge it):
+        - MODIFY   -> EA HandleCommand MODIFY branch (v14.4.1+ EA required);
+                      outcome is observable in the next HEARTBEAT's SL/TP.
         - CLOSE_PARTIAL becomes CLOSE_POS with an explicit volume.
         - CLOSE_POS passes through.
         """
         action = c.get('action')
         if action == "MODIFY":
-            # 8s ack window: SLTP round-trips can exceed the 2.5s default on
-            # slow servers. A failed/lost MODIFY is logged as ERROR below —
-            # staged ratchet levels do NOT re-issue (level already advanced),
-            # so surface it rather than hide it.
-            ok = await self.bridge.send_order_reliable({
-                "action": "TRADE", "cmd": "MODIFY", "symbol": c.get('symbol', ''),
-                "ticket": int(c['ticket']), "sl": float(c.get('sl', 0.0)),
-                "tp": float(c.get('tp', 0.0)), "volume": 0.0, "strat": c.get('comment', 'Mgmt')
-            }, timeout=8000)
-            level = "MGMT" if ok else "ERROR"
-            self.logger.log_event(level, "TRADE_MGR",
+            await self.bridge.send_command("MODIFY", {
+                "ticket": int(c['ticket']), "symbol": c.get('symbol', ''),
+                "sl": float(c.get('sl', 0.0)), "tp": float(c.get('tp', 0.0))
+            })
+            self.logger.log_event("MGMT", "TRADE_MGR",
                                   f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "
-                                  f"({c.get('comment', '')}) -> {'OK' if ok else 'FAILED'}")
+                                  f"({c.get('comment', '')}) sent")
         elif action == "CLOSE_PARTIAL":
             await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket']),
                                                          "volume": float(c['volume'])})

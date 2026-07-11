@@ -65,9 +65,14 @@ Before v14.4 the ratchet **never fired in live trading** due to four
 independent breaks:
 
 1. `MODIFY` was pushed on the fire-and-forget socket with `action="MODIFY"`,
-   which the EA's command handler doesn't understand. It is now routed over
-   the reliable REQ socket as `TRADE`/`cmd=MODIFY` (which the EA always
-   supported) — see `SystemController._dispatch_mgmt_command`.
+   which the pre-v14.4 EA's command handler didn't understand — silently
+   dropped. v14.4.1 keeps the fire-and-forget PUSH route but adds a real
+   `MODIFY` branch to the EA's `HandleCommand`, with the outcome verified
+   from the next HEARTBEAT's SL/TP rather than a synchronous ack. (An interim
+   v14.4 attempt to route MODIFY over the REQ handshake socket was reverted:
+   a slow SLTP round-trip left the EA's REP socket wedged — it never serviced
+   another request until the EA was reattached. The REQ socket is reserved
+   for order entry.)
 2. The EA had no partial-close handler. `CLOSE_PARTIAL` is now translated to
    `CLOSE_POS` with an explicit `volume`, and the EA honours it.
 3. Trades were registered with `entry=0, tp=0` (the EA's OPENED message has no

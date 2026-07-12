@@ -44,9 +44,6 @@ from src.ops.health import HealthProbe, sd_notify
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
 
-# Strategy Models
-from src.strategies.models.silver_bullet import SilverBullet
-
 class BotState(Enum):
     BOOTING, WARMUP, ACTIVE, PAUSED, EMERGENCY = range(5)
 
@@ -595,10 +592,17 @@ class SystemController:
             return False
 
     def _init_strategies(self):
+        from src.strategies.manifest import load_manifests
+        from src.strategies.registry import StrategyRegistry
         s = self.config.get('strategies', {})
-        self.strategies = [
-            SilverBullet(s.get('silver_bullet',{}), self.logger),
-        ]
+        manifest_dir = self.root_dir / "config" / "manifests"
+        self.registry = StrategyRegistry(
+            load_manifests(manifest_dir), s, self.logger,
+            publish=self._publish, feature_bus=self.feature_bus,
+        )
+        self.registry.load_all()
+        self.registry.activate_eligible()
+        self.strategies = self.registry.active_instances()
         # Pending-limit TTL = 12 bars of each strategy's timeframe (matches the
         # validation harness; an H1 SilverBullet limit must live 12h, not 1h).
         tf_minutes = {"M5": 5, "M15": 15, "H1": 60}
@@ -735,6 +739,13 @@ class SystemController:
             hit_rate = (hits / total * 100) if total else 0.0
             cache_str = f"\n🗄️ Feature cache: `{n_resources} resources, hit-rate {hit_rate:.1f}%`"
 
+        registry = getattr(self, 'registry', None)
+        strat_str = ""
+        if registry is not None:
+            n_active = len(getattr(self, 'strategies', []))
+            n_registered = len(registry.report())
+            strat_str = f"\n🧩 Strategies: `{n_active} active / {n_registered} registered`"
+
         return (
             f"📊 **TITAN STATUS BOARD**\n"
             f"➖➖➖➖➖➖➖➖\n"
@@ -744,6 +755,7 @@ class SystemController:
             f"📋 **Active ({len(self.current_open_positions)}):**"
             f"{trades_str}"
             f"{cache_str}"
+            f"{strat_str}"
         )
 
     def get_balance_report(self):
@@ -790,6 +802,33 @@ class SystemController:
         self.state = BotState.PAUSED if p else BotState.ACTIVE
         self._publish(SystemStateChanged(state=self.state.name))
         return self.state.name
+
+    def _refresh_strategies_from_registry(self):
+        self.strategies = self.registry.active_instances()
+        tf_minutes = {"M5": 5, "M15": 15, "H1": 60}
+        self.strategy_ttls = {
+            st.name: 12 * tf_minutes.get(getattr(st, 'timeframe', 'M5'), 5) * 60
+            for st in self.strategies
+        }
+
+    def enable_strategy(self, sid):
+        msg = self.registry.enable(sid)
+        self._refresh_strategies_from_registry()
+        return msg
+
+    def disable_strategy(self, sid):
+        msg = self.registry.disable(sid)
+        self._refresh_strategies_from_registry()
+        return msg
+
+    def get_strategies_report(self):
+        rows = self.registry.report()
+        lines = ["🧩 **STRATEGY REGISTRY**", "➖➖➖➖➖➖➖➖"]
+        for r in rows:
+            lines.append(
+                f"`{r['id']}` v{r['version']} — {r['state']} (`{r['tf']}`)"
+            )
+        return "\n".join(lines)
 
     async def trigger_panic(self):
         self.state = BotState.EMERGENCY

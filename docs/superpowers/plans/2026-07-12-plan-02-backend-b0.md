@@ -376,6 +376,15 @@ git commit -m "feat(b0): EventBus — deterministic pub/sub with subscriber circ
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
 
+- [ ] **Step 6 (AMENDED during execution): unique stats keys**
+
+Task-2 review found a plan-mandated defect: `stats()` keys by subscriber name, so two
+anonymous `<lambda>` subscribers overwrite each other's accounting. Fix: `EventBus`
+deduplicates subscriber names at registration — first use keeps `name`, subsequent uses
+become `name#2`, `name#3`, … (track a counter dict on the bus; applies to both `subscribe`
+and `subscribe_all`). Add a regression test: subscribe two unnamed lambdas to the same
+event, publish once, assert `stats()` has two distinct entries each with `delivered == 1`.
+
 ---
 
 ### Task 3: Structured JSON logger

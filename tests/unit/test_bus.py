@@ -43,5 +43,16 @@ class TestEventBus(unittest.TestCase):
             bus.publish(TickReceived(symbol="X", bid=1.0))
         self.assertFalse(bus.stats()["flaky"]["circuit_open"])
 
+    def test_stats_keys_unique_for_anonymous_subscribers(self):
+        bus = EventBus()
+        bus.subscribe(TickReceived, lambda e: None)
+        bus.subscribe(TickReceived, lambda e: None)
+        bus.publish(TickReceived(symbol="X", bid=1.0))
+        st = bus.stats()
+        lam = {k: v for k, v in st.items() if k.startswith("<lambda>")}
+        self.assertEqual(len(lam), 2)
+        for v in lam.values():
+            self.assertEqual(v["delivered"], 1)
+
 if __name__ == "__main__":
     unittest.main()

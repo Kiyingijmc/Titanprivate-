@@ -30,13 +30,22 @@ class EventBus:
         self._all = []          # [_Sub]
         self._logger = logger
         self._max_failures = max_failures
+        self._name_counts = {}  # resolved name -> registration count
         self.no_loop_drops = 0
 
+    def _unique_name(self, handler, name):
+        """Resolve the subscriber name and deduplicate: 'x', 'x#2', 'x#3', ..."""
+        resolved = name or getattr(handler, "__name__", "anon")
+        count = self._name_counts.get(resolved, 0) + 1
+        self._name_counts[resolved] = count
+        return resolved if count == 1 else f"{resolved}#{count}"
+
     def subscribe(self, event_cls, handler, name=None):
-        self._by_type.setdefault(event_cls, []).append(_Sub(handler, name))
+        self._by_type.setdefault(event_cls, []).append(
+            _Sub(handler, self._unique_name(handler, name)))
 
     def subscribe_all(self, handler, name=None):
-        self._all.append(_Sub(handler, name))
+        self._all.append(_Sub(handler, self._unique_name(handler, name)))
 
     def publish(self, event) -> int:
         delivered = 0

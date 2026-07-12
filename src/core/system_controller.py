@@ -36,7 +36,8 @@ from src.execution.trade_manager import TradeManager
 from src.core.state_manager import StateManager
 from src.core.bus import EventBus
 from src.core.events import (TickReceived, BarClosed, HeartbeatReceived,
-                             ExecutionReceived, SpecsUpdated, SystemStateChanged)
+                             ExecutionReceived, SpecsUpdated, SystemStateChanged,
+                             WarmupSnapshot)
 from src.ops.jsonlog import JsonLogger
 from src.ops.event_journal import EventJournal
 from src.ops.health import HealthProbe, sd_notify
@@ -165,6 +166,38 @@ class SystemController:
         if bus is not None:
             bus.publish(event)
 
+    def _snapshot_warmup(self):
+        """Golden-tape fidelity: at ACTIVE, dump each symbol/tf buffer to CSV
+        and journal a WarmupSnapshot with a sha256 so a replay can verify the
+        warmup data it's fed matches what the live run actually saw. Advisory
+        only — any failure here must never block go-live."""
+        try:
+            import hashlib
+
+            ts_dir = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            out_dir = self.root_dir / "data" / "journal" / "warmup" / ts_dir
+            for sym, store in self.market_data.items():
+                for tf in ("M5", "M15", "H1"):
+                    try:
+                        df = store.get_data(tf)
+                        if df is None or len(df) == 0:
+                            continue
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        path = out_dir / f"{sym}_{tf}.csv"
+                        df.to_csv(path, index=False)
+                        data = path.read_bytes()
+                        digest = hashlib.sha256(data).hexdigest()
+                        self._publish(WarmupSnapshot(
+                            symbol=sym, tf=tf, n_bars=len(df),
+                            path=str(path), sha256=digest))
+                    except Exception as e:
+                        self.logger.log_event(
+                            "ERROR", "TAPE",
+                            f"warmup snapshot failed for {sym}/{tf}: {e}")
+        except Exception as e:
+            self.logger.log_event("ERROR", "TAPE", f"warmup snapshot failed: {e}")
+            return
+
     async def run(self):
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] TITAN V14.3 PRO (INSTITUTIONAL) IGNITION...")
         
@@ -189,6 +222,7 @@ class SystemController:
 
         self.state = BotState.ACTIVE
         self._publish(SystemStateChanged(state="ACTIVE"))
+        self._snapshot_warmup()
         print(f"[{datetime.now().strftime('%H:%M:%S')}] TRANSITION TO ACTIVE MODE.")
         
         # systemd + health probe (B0)
@@ -390,7 +424,12 @@ class SystemController:
                     self.risk_manager.update_symbol_specs(
                         sym, msg.get('tv'), msg.get('ts'), msg.get('vm'), msg.get('vs')
                     )
-                    self._publish(SpecsUpdated(symbol=sym))
+                    self._publish(SpecsUpdated(
+                        symbol=sym,
+                        tick_value=float(msg.get('tv', 0) or 0),
+                        tick_size=float(msg.get('ts', 0) or 0),
+                        vol_min=float(msg.get('vm', 0) or 0),
+                        vol_step=float(msg.get('vs', 0) or 0)))
 
         elif msg_type == 'EXECUTION':
             status = msg.get('status')

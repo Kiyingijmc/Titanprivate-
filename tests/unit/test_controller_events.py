@@ -78,7 +78,11 @@ class TestControllerPublishes(unittest.TestCase):
         seen = capture(c.bus, SpecsUpdated)
         self._process(c, {"type": "HISTORY", "symbol": "XAUUSD", "tf": "H1",
                           "data": [], "tv": 1.0, "ts": 0.01, "vm": 0.01, "vs": 0.01})
-        self.assertEqual(seen, [SpecsUpdated(symbol="XAUUSD")])
+        # Task 5: SpecsUpdated now carries the broker spec values from the
+        # HISTORY message (previously only symbol was published).
+        self.assertEqual(seen, [SpecsUpdated(symbol="XAUUSD", tick_value=1.0,
+                                             tick_size=0.01, vol_min=0.01,
+                                             vol_step=0.01)])
 
     def test_execution_closed_publishes(self):
         c = make_controller()

@@ -78,6 +78,10 @@ class ExecutionReceived(Event):
 class SpecsUpdated(Event):
     name: ClassVar[str] = "SpecsUpdated"
     symbol: str = ""
+    tick_value: float = 0.0
+    tick_size: float = 0.0
+    vol_min: float = 0.0
+    vol_step: float = 0.0
 
 
 @_register
@@ -85,3 +89,14 @@ class SpecsUpdated(Event):
 class SystemStateChanged(Event):
     name: ClassVar[str] = "SystemStateChanged"
     state: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class WarmupSnapshot(Event):
+    name: ClassVar[str] = "WarmupSnapshot"
+    symbol: str = ""
+    tf: str = ""
+    n_bars: int = 0
+    path: str = ""
+    sha256: str = ""

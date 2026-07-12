@@ -1,77 +1,59 @@
 # Deploy Titan via systemd
 
-## Prerequisites
+## Prerequisite: WSL systemd
 
-Ensure WSL has systemd enabled. Check `/etc/wsl.conf` on the Windows host:
+Systemd must be enabled in WSL. Check `/etc/wsl.conf` contains:
+
 ```ini
 [boot]
 systemd=true
 ```
-If missing, add it and restart WSL: `wsl --shutdown` then restart your terminal.
 
-## Install & Enable
+If missing, add it, run `wsl --shutdown` from Windows, and reopen the terminal.
 
-Copy the unit files and reload systemd:
+## Install & enable
+
 ```bash
 sudo cp deploy/systemd/titan-live.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now titan-live
 ```
 
-For demo staging (separate checkout with different ZMQ ports and config):
+Demo stage: same commands with `titan-demo.service` — but read the caveats below first.
+
+## Watchdog semantics
+
+- `Type=notify`: the controller sends `READY=1` via sd_notify when it reaches ACTIVE.
+- The heartbeat loop sends `WATCHDOG=1` every 10s; `WatchdogSec=90` means systemd
+  restarts the service after 90s of silence — a wedged event loop self-heals.
+- `Restart=on-failure` + `RestartSec=10` also covers crashes and watchdog kills.
+
+## Health checks
+
 ```bash
-sudo cp deploy/systemd/titan-demo.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now titan-demo
+curl -s localhost:8787/readyz     # ready once controller is ACTIVE
+systemctl status titan-live       # service state at a glance
 ```
 
-## Watchdog & Restart Semantics
+## Demo-stage caveats
 
-- **READY=1 on ACTIVE**: When the system controller reaches ACTIVE, it sends `sd_notify` with `READY=1`.
-- **WATCHDOG=1 every 10s**: The heartbeat loop sends `WATCHDOG=1` every 10 seconds to reset the watchdog timer.
-- **90s timeout**: If systemd receives no watchdog reset for 90 seconds, it forcefully restarts the service.
-- **Self-healing**: A wedged event loop that stops responding will be caught by the watchdog and automatically restarted; no manual intervention needed.
+`titan-demo.service` points at `/home/kiyingijmc/projects/Titan_demo` — a SEPARATE
+checkout with its own `.venv`, different ZMQ ports in its `config/config.yaml`,
+its own SQLite state DB, and an FBS-Demo login. Never point live and demo at the
+same MT5 terminal, and never enable the demo unit against the live checkout.
 
-## Health Check
+## Log access
 
-Once running, verify the service is healthy:
 ```bash
-curl -s localhost:8787/readyz
-```
-
-## Demo-Stage Caveats
-
-The demo unit points to `/home/kiyingijmc/projects/Titan_demo` — a **separate checkout** with:
-- Different ZMQ socket ports (avoid binding conflicts with live)
-- Separate SQLite state DB
-- **FBS-Demo login** configured in its `config/config.yaml` (never share the live MT5 terminal)
-- Own `.env` with test Telegram token (or none)
-
-Never enable both live and demo against the same MetaTrader 5 terminal.
-
-## Log Access & Troubleshooting
-
-View live logs (follow mode):
-```bash
-journalctl -u titan-live -f
-```
-
-View recent logs:
-```bash
-journalctl -u titan-live -n 50 --no-pager
-```
-
-Check service status:
-```bash
-systemctl status titan-live
+journalctl -u titan-live -f            # follow live logs
+journalctl -u titan-live -n 100 --no-pager   # last 100 lines
 ```
 
 ## Rollback
 
-To stop the service and revert to a previous stable tag:
 ```bash
 sudo systemctl stop titan-live
-git checkout v14.4  # or any prior tag
-# Restart after code restore
+git log --oneline -10                  # pick the last known-good commit SHA
+git checkout <sha> -- .                # restore working tree to that commit
 sudo systemctl start titan-live
 ```

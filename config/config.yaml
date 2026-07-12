@@ -83,3 +83,13 @@ strategies:
     # GBPCAD/XBRUSD excluded — spreads too wide for the stop size.
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
+
+ops:
+  journal:
+    enabled: true
+    dir: data/journal
+    tick_sample: 50
+  health:
+    enabled: true
+    bind: 127.0.0.1
+    port: 8787

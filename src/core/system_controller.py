@@ -34,6 +34,12 @@ from src.risk.exposure import ExposureManager
 from src.ops.telemetry import TelegramBot
 from src.execution.trade_manager import TradeManager
 from src.core.state_manager import StateManager
+from src.core.bus import EventBus
+from src.core.events import (TickReceived, BarClosed, HeartbeatReceived,
+                             ExecutionReceived, SpecsUpdated, SystemStateChanged)
+from src.ops.jsonlog import JsonLogger
+from src.ops.event_journal import EventJournal
+from src.ops.health import HealthProbe, sd_notify
 
 # Strategy Models
 from src.strategies.models.silver_bullet import SilverBullet
@@ -88,6 +94,20 @@ class SystemController:
         self.news_manager = NewsManager(self.logger)
         self.signal_grader = SignalGrader(self.config)
 
+        # --- Trading OS B0: bus, structured log, golden tape ---
+        ops_cfg = self.config.get('ops', {})
+        self.bus = EventBus(logger=self.logger)
+        self.jlog = JsonLogger(str(self.root_dir / "data" / "logs"))
+        j_cfg = ops_cfg.get('journal', {})
+        self.event_journal = None
+        if j_cfg.get('enabled', True):
+            self.event_journal = EventJournal(
+                str(self.root_dir / j_cfg.get('dir', 'data/journal')),
+                tick_sample=j_cfg.get('tick_sample', 50))
+            self.event_journal.attach(self.bus)
+        self.health_probe = None
+        self._health_cfg = ops_cfg.get('health', {})
+
         # Signal metadata (grade/SL/TP/lots) keyed by symbol, captured at send
         # time so EXECUTION:OPENED can journal the full trade record (the EA's
         # OPENED message carries no prices).
@@ -127,6 +147,15 @@ class SystemController:
                 return yaml.safe_load(f)
         sys.exit(f"[FATAL] config.yaml not found at {cfg_path}")
 
+    def _publish(self, event):
+        # Defensive: mirrors the getattr(self, 'x', default) pattern already
+        # used elsewhere (e.g. get_pending_orders_report) for unit-test
+        # fixtures built via object.__new__(SystemController) that populate
+        # only the attributes their target method needs, bypassing __init__.
+        bus = getattr(self, 'bus', None)
+        if bus is not None:
+            bus.publish(event)
+
     async def run(self):
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] TITAN V14.3 PRO (INSTITUTIONAL) IGNITION...")
         
@@ -145,12 +174,26 @@ class SystemController:
 
         # WARMUP
         self.state = BotState.WARMUP
+        self._publish(SystemStateChanged(state="WARMUP"))
         print(f"[{datetime.now().strftime('%H:%M:%S')}] RUNNING 5-CYCLE BUFFER SATURATION...")
         await self._perform_warmup(list(self.active_symbols))
 
         self.state = BotState.ACTIVE
+        self._publish(SystemStateChanged(state="ACTIVE"))
         print(f"[{datetime.now().strftime('%H:%M:%S')}] TRANSITION TO ACTIVE MODE.")
         
+        # systemd + health probe (B0)
+        sd_notify("READY=1")
+        if self._health_cfg.get('enabled', True):
+            try:
+                self.health_probe = HealthProbe(
+                    self._readiness,
+                    bind=self._health_cfg.get('bind', '127.0.0.1'),
+                    port=int(self._health_cfg.get('port', 8787)))
+                await self.health_probe.start()
+            except Exception as e:
+                self.logger.log_event("ERROR", "HEALTH", f"probe start failed: {e}")
+
         await self.telemetry.send_message(
             f"🚀 **Titan V14.4 Pro Online**\n"
             f"📍 Clock (NY): `{self.time_engine.get_current_ny_string()}`\n"
@@ -205,6 +248,7 @@ class SystemController:
                 # 10s PING to keep connection alive
                 if (now_dt.second % 10 == 0) and (now_dt.microsecond < 50000):
                     await self.bridge.send_command("PING")
+                    sd_notify("WATCHDOG=1")
                     await asyncio.sleep(0.01)
 
                 await asyncio.sleep(0.001) 
@@ -337,9 +381,13 @@ class SystemController:
                     self.risk_manager.update_symbol_specs(
                         sym, msg.get('tv'), msg.get('ts'), msg.get('vm'), msg.get('vs')
                     )
+                    self._publish(SpecsUpdated(symbol=sym))
 
         elif msg_type == 'EXECUTION':
             status = msg.get('status')
+            self._publish(ExecutionReceived(
+                status=str(status or ""), ticket=int(msg.get('ticket', 0) or 0),
+                symbol=str(msg.get('s', '') or ''), pnl=float(msg.get('pn', 0.0) or 0.0)))
             if status == 'OPENED':
                 ticket = int(msg.get('ticket', 0))
                 if ticket <= 0:
@@ -395,6 +443,7 @@ class SystemController:
             if not symbol: return
             
             self.live_prices[symbol] = float(msg.get('b', 0))
+            self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
             if self.state == BotState.ACTIVE:
                 closed_candles = self.market_data[symbol].process_tick(msg)
                 
@@ -405,6 +454,11 @@ class SystemController:
                         await self._dispatch_mgmt_command(c)
                 
                 for tf, df in closed_candles:
+                    last = df.iloc[-1]
+                    self._publish(BarClosed(
+                        symbol=symbol, tf=tf, bar_time=str(last.get('time', df.index[-1])),
+                        open=float(last.get('open', 0.0)), high=float(last.get('high', 0.0)),
+                        low=float(last.get('low', 0.0)), close=float(last.get('close', 0.0))))
                     await self._run_strategies(symbol, df, tf)
 
         elif msg_type == 'HEARTBEAT':
@@ -416,6 +470,10 @@ class SystemController:
             
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
+            self._publish(HeartbeatReceived(
+                balance=bal, equity=eq,
+                n_positions=len(self.current_open_positions),
+                n_orders=len(self.current_pending_orders)))
             
             for p in self.current_open_positions:
                 tid_raw = p.get('t')
@@ -573,9 +631,11 @@ class SystemController:
         blocked, reason = self.news_manager.check_news_block() 
         if blocked and self.state == BotState.ACTIVE:
             self.state = BotState.PAUSED
+            self._publish(SystemStateChanged(state="PAUSED"))
             await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}", parse_mode="Markdown")
         elif not blocked and self.state == BotState.PAUSED and not self.is_manual_pause:
             self.state = BotState.ACTIVE
+            self._publish(SystemStateChanged(state="ACTIVE"))
             await self.telemetry.send_message("✅ News Cleared. Resuming.", parse_mode="Markdown")
 
     def get_status_report(self):
@@ -648,9 +708,22 @@ class SystemController:
             report += (f"🎫 `#{tid}` **{symbol}** @ `{price}`\n")
         return report
 
+    def _readiness(self):
+        reasons = []
+        age = (datetime.now() - self.last_heartbeat_time).total_seconds()
+        if age > 30:
+            reasons.append(f"heartbeat stale ({age:.0f}s)")
+        if self.state not in (BotState.ACTIVE, BotState.PAUSED):
+            reasons.append(f"state={self.state.name}")
+        for sym in self.active_symbols:
+            if not self.risk_manager.has_specs(sym):
+                reasons.append(f"no specs: {sym}")
+        return (not reasons, reasons)
+
     def set_system_pause(self, p: bool):
         self.is_manual_pause = p
         self.state = BotState.PAUSED if p else BotState.ACTIVE
+        self._publish(SystemStateChanged(state=self.state.name))
         return self.state.name
 
     async def trigger_panic(self):

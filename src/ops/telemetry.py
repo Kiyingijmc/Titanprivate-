@@ -193,6 +193,18 @@ class TelegramBot:
             elif cmd == "panic":
                 await c.trigger_panic()
                 await self.send_message("🚨 <b>PANIC PROTOCOL EXECUTED</b> 🚨")
+            elif cmd == "strategies":
+                await self.send_message(c.get_strategies_report(), parse_mode="Markdown")
+            elif cmd == "enable":
+                if not args:
+                    await self.send_message("⚠️ Usage: `/enable silver_bullet`", parse_mode="Markdown")
+                else:
+                    await self.send_message(c.enable_strategy(args[0]), parse_mode="Markdown")
+            elif cmd == "disable":
+                if not args:
+                    await self.send_message("⚠️ Usage: `/disable silver_bullet`", parse_mode="Markdown")
+                else:
+                    await self.send_message(c.disable_strategy(args[0]), parse_mode="Markdown")
             else:
                 await self.send_message(telegram_format.help_menu())
 

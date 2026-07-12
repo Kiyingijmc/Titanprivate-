@@ -1,0 +1,9 @@
+# config/manifests/silver_bullet.yaml
+id: silver_bullet
+version: "14.4.2"
+class_path: "src.strategies.models.silver_bullet:SilverBullet"
+family: smc
+timeframe: H1
+requires: [smc.enriched_df, smc.bias_context]
+status: live
+priority: 50

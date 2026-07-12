@@ -21,9 +21,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 
 # 2. Logic Imports
 from src.strategies.models.silver_bullet import SilverBullet
-from src.strategies.models.unicorn import UnicornModel
-from src.strategies.models.ict_ote import ICT_OTE
-from src.strategies.models.crt import CandleRangeTheory
 from src.analysis.bias_engine import BiasEngine
 from src.analysis.smc_analyzer import SMCAnalyzer
 
@@ -210,10 +207,7 @@ class MockLogger:
 
 # Config
 TEST_CONFIG = {
-    'silver_bullet': {'enabled': True, 'session_ny': ["10:00", "11:00"]},
-    'unicorn_model': {'enabled': True},
-    'ict_ote': {'enabled': True},
-    'crt': {'enabled': True}
+    'silver_bullet': {'enabled': True, 'session_ny': ["10:00", "11:00"]}
 }
 
 class Backtester:
@@ -336,9 +330,6 @@ class Backtester:
 
     def _init_strategies(self):
         self.strategies.append(SilverBullet(TEST_CONFIG['silver_bullet'], self.logger))
-        self.strategies.append(UnicornModel(TEST_CONFIG['unicorn_model'], self.logger))
-        self.strategies.append(ICT_OTE(TEST_CONFIG['ict_ote'], self.logger))
-        self.strategies.append(CandleRangeTheory(TEST_CONFIG['crt'], self.logger))
         if self.only:
             self.strategies = [s for s in self.strategies if s.name == self.only]
 

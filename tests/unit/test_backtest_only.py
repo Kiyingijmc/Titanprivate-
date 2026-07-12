@@ -11,9 +11,10 @@ class OnlyFilter(unittest.TestCase):
         engine = bt.Backtester(FIX, shift_hours=0, only="SilverBullet")
         self.assertEqual([s.name for s in engine.strategies], ["SilverBullet"])
 
-    def test_default_runs_all_four(self):
+    def test_default_runs_approved_arsenal(self):
         engine = bt.Backtester(FIX, shift_hours=0)
-        self.assertEqual(len(engine.strategies), 4)
+        self.assertEqual(len(engine.strategies), 1)
+        self.assertIsInstance(engine.strategies[0], bt.SilverBullet)
 
 if __name__ == "__main__":
     unittest.main()

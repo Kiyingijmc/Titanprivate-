@@ -1,0 +1,19 @@
+[Unit]
+Description=Titan trading engine (DEMO stage — separate checkout, own ports/DBs)
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+# NOTE: point at a SEPARATE demo checkout before enabling (see runbook).
+WorkingDirectory=/home/kiyingijmc/projects/Titan_demo
+ExecStart=/home/kiyingijmc/projects/Titan_demo/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+WatchdogSec=90
+MemoryMax=2G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

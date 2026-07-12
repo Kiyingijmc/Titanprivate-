@@ -38,6 +38,9 @@ def load_manifest(path) -> StrategyManifest:
     with open(path, "r") as f:
         data = yaml.safe_load(f) or {}
 
+    if not isinstance(data, dict):
+        raise ManifestError(f"{fname}: manifest root must be a mapping, got {type(data).__name__}")
+
     for key in _REQUIRED_KEYS:
         if key not in data or data[key] in (None, ""):
             raise ManifestError(f"{fname}: missing required field '{key}'")

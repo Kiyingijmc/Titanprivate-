@@ -75,6 +75,31 @@ class TestLoadManifest(unittest.TestCase):
                 load_manifest(path)
             self.assertIn("class_path", str(ctx.exception))
 
+    def test_non_dict_root_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "scalar_root.yaml")
+            with open(path, "w") as f:
+                f.write("42\n")
+            with self.assertRaises(ManifestError) as ctx:
+                load_manifest(path)
+            msg = str(ctx.exception)
+            self.assertIn("scalar_root.yaml", msg)
+            self.assertIn("mapping", msg)
+
+    def test_non_string_requires_entry_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write_yaml(d, "bad_requires.yaml", _valid_data(requires=["ok", 42]))
+            with self.assertRaises(ManifestError) as ctx:
+                load_manifest(path)
+            self.assertIn("requires", str(ctx.exception))
+
+    def test_class_path_two_colons_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write_yaml(d, "two_colons.yaml", _valid_data(class_path="a:b:c"))
+            with self.assertRaises(ManifestError) as ctx:
+                load_manifest(path)
+            self.assertIn("class_path", str(ctx.exception))
+
 
 class TestLoadManifests(unittest.TestCase):
     def test_sorted_loading_and_duplicate_id_rejection(self):

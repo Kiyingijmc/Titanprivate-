@@ -37,9 +37,6 @@ from src.core.state_manager import StateManager
 
 # Strategy Models
 from src.strategies.models.silver_bullet import SilverBullet
-from src.strategies.models.unicorn import UnicornModel
-from src.strategies.models.ict_ote import ICT_OTE
-from src.strategies.models.crt import CandleRangeTheory
 
 class BotState(Enum):
     BOOTING, WARMUP, ACTIVE, PAUSED, EMERGENCY = range(5)
@@ -495,9 +492,6 @@ class SystemController:
         s = self.config.get('strategies', {})
         self.strategies = [
             SilverBullet(s.get('silver_bullet',{}), self.logger),
-            UnicornModel(s.get('unicorn_model',{}), self.logger),
-            ICT_OTE(s.get('ict_ote',{}), self.logger),
-            CandleRangeTheory(s.get('crt',{}), self.logger)
         ]
         # Pending-limit TTL = 12 bars of each strategy's timeframe (matches the
         # validation harness; an H1 SilverBullet limit must live 12h, not 1h).
@@ -532,10 +526,9 @@ class SystemController:
         for strat in active:
             decision = await strat.on_new_candle(enriched_df, context=ctx)
             if decision:
-                if strat.name != "CRT":
-                    if (bias_str == "BULLISH" and decision['signal'] == "SELL") or \
-                       (bias_str == "BEARISH" and decision['signal'] == "BUY"):
-                           continue
+                if (bias_str == "BULLISH" and decision['signal'] == "SELL") or \
+                   (bias_str == "BEARISH" and decision['signal'] == "BUY"):
+                    continue
 
                 # Confluence grading: journal every signal; execute only those
                 # at or above the configured quality floor (signal_grading cfg).

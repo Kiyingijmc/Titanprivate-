@@ -386,10 +386,9 @@ class Backtester:
                 if decision:
                     sig_type = decision['signal']
 
-                    if strat.name != "CRT":
-                        if (htf_bias == "BULLISH" and sig_type == "SELL") or \
-                           (htf_bias == "BEARISH" and sig_type == "BUY"):
-                               continue
+                    if (htf_bias == "BULLISH" and sig_type == "SELL") or \
+                       (htf_bias == "BEARISH" and sig_type == "BUY"):
+                        continue
 
                     signals.append({
                         'time': current_time,

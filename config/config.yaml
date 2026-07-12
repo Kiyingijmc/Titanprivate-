@@ -83,27 +83,3 @@ strategies:
     # GBPCAD/XBRUSD excluded — spreads too wide for the stop size.
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
-  
-  # 2. Unicorn (Breaker + FVG + Sweep)
-  # Requires Liquidity Sweep confirmation before entry
-  unicorn_model:
-    enabled: false
-    scan_depth: 50     # Lookback candles for Breaker Block
-    min_atr_size: 1.5  # Displacement Strength threshold
-    pairs: ["BTCUSD", "EURUSD", "GBPUSD", "XAUUSD", "GBPJPY", "USDJPY"]
-  
-  # 3. ICT OTE (Trend Continuation)
-  # Optimal Trade Entry (Fibo 0.705)
-  ict_ote:
-    enabled: false
-    ote_level: 0.705
-    min_swing_atr: 2.0 # Swing depth requirement
-    pairs: ["EURUSD", "GBPUSD", "AUDUSD", "BTCUSD", "USDCAD", "XAUUSD"]
-
-  # 4. CRT (Mean Reversion - Counter Trend)
-  # Candle Range Theory: Previous Day High/Low sweeps
-  crt:
-    enabled: false
-    trend_filter: true # If True: Only fade Highs in Bear Trend / Lows in Bull Trend
-    active_hours: [2, 17] # Broker Time active window
-    pairs: ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]

@@ -167,10 +167,25 @@ Expected: OK.
 Run: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py' 2>&1 | tail -3`
 Expected: `Ran N_baseline tests ... OK`
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4 (AMENDED during execution): align dependent tests**
+
+Discovered during execution — two tests depend on the 4-strategy engine:
+
+1. `tests/unit/test_backtest_only.py::test_default_runs_all_four` hardcodes
+   `len(engine.strategies) == 4`. Update it to assert exactly 1 strategy whose class is
+   `SilverBullet`, and rename it `test_default_runs_approved_arsenal`.
+2. `tests/unit/test_perf_equivalence.py::test_optimized_engine_matches_golden_trades`
+   compares against `golden_trades.csv`, whose 30 trades are ALL Unicorn/CRT (SilverBullet
+   never fires on the smoke window). SB-only, the test degrades to `empty == empty` —
+   a test that asserts nothing. DELETE that test and the `golden_trades.csv` fixture
+   (a redundant 4-strategy-era artifact per the sanitization mandate). Keep any other
+   tests in the module that don't depend on the fixture; if the module becomes empty,
+   delete the module. The suite count drops accordingly — record the new count.
+
+- [ ] **Step 5: Commit**
 
 ```bash
-git add tests/backtest/backtest_engine.py
+git add -A tests/
 git commit -m "refactor: backtest engine runs approved arsenal only (SilverBullet)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"

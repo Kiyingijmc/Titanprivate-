@@ -14,7 +14,6 @@ httpx>=0.27,<0.29
 # Configuration & Persistence
 python-dotenv>=1.0.0
 pyyaml>=6.0
-sqlalchemy>=2.0.0
 
 # Network & Telemetry
 requests>=2.31.0

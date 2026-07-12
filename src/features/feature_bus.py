@@ -176,22 +176,27 @@ class FeatureBus:
                 return
 
         # Cache miss: evaluate deps first
-        self._stats[name]["misses"] += 1
-
         deps_dict = {}
         for dep_name in spec.deps:
             self._evaluate_recursive(dep_name, symbol, tf, token, window, extra, result_dict)
             deps_dict[dep_name] = result_dict[dep_name]
 
-        # Compute this resource
+        # Compute this resource. A raising compute counts neither hit nor miss
+        # and writes nothing to the cache (no half-written entries).
         ctx = ResourceCtx(window=window, deps=deps_dict, extra=extra)
         start_time = time.perf_counter()
         value = spec.compute(ctx)
         elapsed_ms = (time.perf_counter() - start_time) * 1000
 
+        self._stats[name]["misses"] += 1
         self._stats[name]["compute_ms"] += elapsed_ms
 
-        # Store in cache (overwrites old entry with same symbol_key if present)
+        # Evict the superseded entry (latest-entry-only per (name, symbol_key)),
+        # then store the new one. This keeps the cache structurally bounded.
+        old_pointer = self._cache_keys.get(cache_latest_key)
+        if old_pointer is not None:
+            old_token, old_version = old_pointer
+            self._cache.pop((name, symbol_key, old_token, old_version), None)
         self._cache[cache_key] = value
         self._cache_keys[cache_latest_key] = (token, spec.version)
 

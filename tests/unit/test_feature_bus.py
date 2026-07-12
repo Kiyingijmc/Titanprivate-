@@ -56,6 +56,24 @@ class TestFeatureBus(unittest.TestCase):
         with self.assertRaises(KeyError):
             bus.evaluate("missing", "X", "M5", token="t")
 
+    def test_cache_evicts_superseded_tokens(self):
+        calls, bus = [], FeatureBus()
+        bus.register(counter_spec("a", calls=calls)); bus.validate()
+        for i in range(50):
+            bus.evaluate("a", "EURUSD", "H1", token=f"t{i}")
+        entries = [k for k in bus._cache if k[0] == "a"]
+        self.assertEqual(len(entries), 1)          # only the latest survives
+
+    def test_raising_compute_counts_neither_and_caches_nothing(self):
+        bus = FeatureBus()
+        def boom(ctx): raise RuntimeError("x")
+        bus.register(ResourceSpec(name="bad", compute=boom)); bus.validate()
+        with self.assertRaises(RuntimeError):
+            bus.evaluate("bad", "X", "M5", token="t")
+        st = bus.stats()["bad"]
+        self.assertEqual((st["hits"], st["misses"]), (0, 0))
+        self.assertFalse(any(k[0] == "bad" for k in bus._cache))
+
     def test_version_bump_cold_starts(self):
         calls, bus = [], FeatureBus()
         bus.register(counter_spec("a", calls=calls)); bus.validate()

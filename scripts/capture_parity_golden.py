@@ -124,7 +124,12 @@ def capture_stream(csv_path):
 
     stream = []
     for end in range(60, len(h1) + 1):
-        window = h1.iloc[:end].reset_index(drop=True)
+        # Cap the rolling window at 300 bars: mirrors live MultiTimeframeStore
+        # frame-cap semantics and keeps the parity capture O(n) instead of
+        # O(n^2) (uncapped windows blew the unit suite from ~10s to 862s).
+        # Coordinator-approved plan amendment; the one sanctioned pre-refactor
+        # fixture regeneration.
+        window = h1.iloc[max(0, end - 300):end].reset_index(drop=True)
         store.h1_df = window
 
         captured.clear()

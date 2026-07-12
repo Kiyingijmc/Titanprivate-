@@ -18,3 +18,4 @@ data/history/
 # --- Logs & crash dumps ---
 data/logs/*.log
 boot_crash.log
+data/journal/

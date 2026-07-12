@@ -40,6 +40,8 @@ from src.core.events import (TickReceived, BarClosed, HeartbeatReceived,
 from src.ops.jsonlog import JsonLogger
 from src.ops.event_journal import EventJournal
 from src.ops.health import HealthProbe, sd_notify
+from src.features.feature_bus import FeatureBus
+from src.features.packs.smc_pack import register_smc_pack
 
 # Strategy Models
 from src.strategies.models.silver_bullet import SilverBullet
@@ -107,6 +109,13 @@ class SystemController:
             self.event_journal.attach(self.bus)
         self.health_probe = None
         self._health_cfg = ops_cfg.get('health', {})
+
+        # v15: FeatureBus — token-keyed memoized resource DAG feeding
+        # _run_strategies (smc.enriched_df / smc.bias_context), replacing the
+        # inline SMCAnalyzer/BiasEngine calls with per-bar cached evaluation.
+        self.feature_bus = FeatureBus()
+        register_smc_pack(self.feature_bus)
+        self.feature_bus.validate()
 
         # Signal metadata (grade/SL/TP/lots) keyed by symbol, captured at send
         # time so EXECUTION:OPENED can journal the full trade record (the EA's
@@ -567,11 +576,16 @@ class SystemController:
         if not active:
             return
 
-        smc = SMCAnalyzer(tf_df)
-        enriched_df = smc.process()
-
         h1 = self.market_data[symbol].get_data("H1")
-        bias_str, liq = BiasEngine(h1).get_bias_context()
+        fb = getattr(self, 'feature_bus', None)
+        if fb is not None:
+            h1_token = str(h1.iloc[-1]['time']) if h1 is not None and len(h1) else "warmup"
+            own_token = str(tf_df.iloc[-1]['time'])
+            enriched_df = fb.evaluate('smc.enriched_df', symbol, tf, token=own_token, window=tf_df)
+            bias_str, liq = fb.evaluate('smc.bias_context', symbol, tf, token=h1_token, h1_df=h1)
+        else:  # __new__-built test fixtures without a bus: original inline path
+            enriched_df = SMCAnalyzer(tf_df).process()
+            bias_str, liq = BiasEngine(h1).get_bias_context()
 
         ctx = {
             'symbol': symbol,
@@ -671,6 +685,17 @@ class SystemController:
                     )
                 except: continue
 
+        fb = getattr(self, 'feature_bus', None)
+        cache_str = ""
+        if fb is not None:
+            fb_stats = fb.stats()
+            n_resources = len(fb_stats)
+            hits = sum(s['hits'] for s in fb_stats.values())
+            misses = sum(s['misses'] for s in fb_stats.values())
+            total = hits + misses
+            hit_rate = (hits / total * 100) if total else 0.0
+            cache_str = f"\n🗄️ Feature cache: `{n_resources} resources, hit-rate {hit_rate:.1f}%`"
+
         return (
             f"📊 **TITAN STATUS BOARD**\n"
             f"➖➖➖➖➖➖➖➖\n"
@@ -679,6 +704,7 @@ class SystemController:
             f"📡 Sync: `{health_icon} {feeds_ready}/{total_feeds}` Pairs\n"
             f"📋 **Active ({len(self.current_open_positions)}):**"
             f"{trades_str}"
+            f"{cache_str}"
         )
 
     def get_balance_report(self):

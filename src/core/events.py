@@ -100,3 +100,22 @@ class WarmupSnapshot(Event):
     n_bars: int = 0
     path: str = ""
     sha256: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class StrategyActivated(Event):
+    name: ClassVar[str] = "StrategyActivated"
+    strategy_id: str = ""
+    version: str = ""
+    family: str = ""
+    timeframe: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class StrategySuspended(Event):
+    name: ClassVar[str] = "StrategySuspended"
+    strategy_id: str = ""
+    version: str = ""
+    reason: str = ""

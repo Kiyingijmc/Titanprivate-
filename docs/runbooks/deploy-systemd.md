@@ -1,5 +1,4 @@
 # Deploy Titan via systemd
-
 ## Prerequisite: WSL systemd
 
 Systemd must be enabled in WSL. Check `/etc/wsl.conf` contains:
@@ -38,9 +37,10 @@ systemctl status titan-live       # service state at a glance
 ## Demo-stage caveats
 
 `titan-demo.service` points at `/home/kiyingijmc/projects/Titan_demo` — a SEPARATE
-checkout with its own `.venv`, different ZMQ ports in its `config/config.yaml`,
-its own SQLite state DB, and an FBS-Demo login. Never point live and demo at the
-same MT5 terminal, and never enable the demo unit against the live checkout.
+checkout with its own `.venv`, different ZMQ ports AND a different `ops.health.port`
+(live defaults to 8787) in its `config/config.yaml`, its own SQLite state DB, and an
+FBS-Demo login. Never point live and demo at the same MT5 terminal, and never enable
+the demo unit against the live checkout.
 
 ## Log access
 

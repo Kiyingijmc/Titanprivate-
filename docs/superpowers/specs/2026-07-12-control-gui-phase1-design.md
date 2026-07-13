@@ -1,7 +1,10 @@
 # Titan Control GUI — Phase 1 Design (Live Cockpit + Settings)
 
 **Date:** 2026-07-12
-**Status:** Approved design — Phase 1 scope
+**Status:** SUPERSEDED by `2026-07-14-control-gui-phase1-v15-design.md` — written
+pre-v15 kernel (Plans 01–06 added the EventBus/tape, strategy registry + promote-gate,
+Intent Arbiter, and run-cards, which invalidate this doc's event-feed and
+strategy-toggle designs). Kept for history; do not implement from this doc.
 **Branch:** feat/trade-mgmt-pipeline (GUI work will get its own branch)
 
 ## Problem

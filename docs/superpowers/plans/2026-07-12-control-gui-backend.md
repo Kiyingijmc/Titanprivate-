@@ -1,5 +1,12 @@
 # Titan Control GUI — Backend API Implementation Plan (Phase 1a)
 
+> **SUPERSEDED (2026-07-14):** this plan implements the pre-v15 spec. The approved
+> spec is now `docs/superpowers/specs/2026-07-14-control-gui-phase1-v15-design.md`
+> (EventBus feed instead of telemetry hooks, registry lifecycle instead of
+> `strategies.<name>.enabled`, arbiter visibility, hardening). A fresh backend plan
+> will be written from that spec. Do not execute this plan. Kept for history —
+> Tasks 1–3 (config_layer, SettingsStore, auth) remain largely valid references.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an embedded FastAPI + WebSocket control API to the running controller so a browser (or future mobile/SaaS client) can monitor live state, issue control actions, and edit safe-subset bot settings — without ever touching the ZMQ bridge or risking the trading loop.

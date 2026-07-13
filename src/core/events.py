@@ -119,3 +119,26 @@ class StrategySuspended(Event):
     strategy_id: str = ""
     version: str = ""
     reason: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class IntentEmitted(Event):
+    name: ClassVar[str] = "IntentEmitted"
+    strategy_id: str = ""
+    symbol: str = ""
+    direction: str = ""
+    kind: str = ""
+    grade: str = ""
+    thesis: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class IntentBlocked(Event):
+    name: ClassVar[str] = "IntentBlocked"
+    strategy_id: str = ""
+    symbol: str = ""
+    direction: str = ""
+    rule: str = ""
+    detail: str = ""

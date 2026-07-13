@@ -22,7 +22,9 @@ sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
 
 import backtest_engine as bt  # noqa: E402
 
+from lake_import import sniff_and_read  # noqa: E402
 from research_run import main as research_main  # noqa: E402
+from src.data.lake import Lake  # noqa: E402
 
 TEST_DATA_CSV = os.path.join(REPO, "test_data.csv")
 
@@ -207,6 +209,62 @@ class TestTimeframeRestrictionH1Only(_ResearchRunTestBase):
         # Verify no run directory was created (out_dir should not exist)
         self.assertFalse(self.out_dir.exists(),
                          "no run directory should be created when argparse fails")
+
+
+class TestLakeSymbolFallsBackToM5Resample(_ResearchRunTestBase):
+    """Plan 06 Task 5 gap: --lake-symbol only ever tried H1 partitions. Ingest
+    M5 bars (the shape scripts/lake_import.py actually writes for MT5 tab
+    exports) and confirm research_run resamples them to H1 via the T3 helper
+    (load_h1_from_m5) and reproduces the same golden signal count the CSV
+    path gets over the identical underlying data (test_data.csv)."""
+
+    def setUp(self):
+        super().setUp()
+        self.lake_root = Path(self._tmpdir) / "lake"
+        lake = Lake(self.lake_root)
+        m5 = sniff_and_read(TEST_DATA_CSV)
+        lake.ingest(m5, broker="fbs", symbol="EURUSD", tf="M5", source=TEST_DATA_CSV)
+
+    def test_lake_m5_only_resamples_to_h1_and_matches_golden_signal_count(self):
+        rc, output = self._run([
+            "--lake-symbol", "EURUSD", "--tf", "H1", "--strategy", "silver_bullet",
+            "--out", str(self.out_dir), "--lake-root", str(self.lake_root),
+            "--broker", "fbs",
+        ])
+        self.assertEqual(rc, 0, output)
+
+        run_dir = self._only_run_dir()
+        card = json.loads((run_dir / "run.json").read_text())
+
+        self.assertEqual(card["n_signals"], GOLDEN_N_SIGNALS)
+        # Run-card must stay truthful about what was actually loaded: an M5
+        # lake source that was resampled, not a (nonexistent) H1 partition.
+        self.assertIn("lake:", card["data"]["source"])
+        self.assertIn("fbs/EURUSD", card["data"]["source"])
+        self.assertIn("M5", card["data"]["source"])
+        self.assertEqual(len(card["data"]["sha256"]), 64)
+
+
+class TestLakeSymbolMissingBothTimeframesCleanError(_ResearchRunTestBase):
+    """No H1 AND no M5 partitions for the symbol -- must fail fast (no
+    kernel replay) with one clean, traceback-free error naming both misses."""
+
+    def test_missing_h1_and_m5_reports_clean_combined_error(self):
+        lake_root = Path(self._tmpdir) / "empty_lake"
+        Lake(lake_root)  # creates the root dir; no partitions ingested
+
+        rc, output = self._run([
+            "--lake-symbol", "NOPE", "--tf", "H1", "--strategy", "silver_bullet",
+            "--out", str(self.out_dir), "--lake-root", str(lake_root),
+            "--broker", "fbs",
+        ], expect_ok=False)
+
+        self.assertNotEqual(rc, 0)
+        self.assertIn("[RESEARCH_RUN] ERROR:", output)
+        self.assertIn("fbs/NOPE/H1", output)
+        self.assertIn("fbs/NOPE/M5", output)
+        self.assertNotIn("Traceback", output)
+        self.assertFalse(self.out_dir.exists())
 
 
 if __name__ == "__main__":

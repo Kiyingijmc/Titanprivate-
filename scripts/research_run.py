@@ -123,8 +123,31 @@ def _load_csv_h1(path, tf):
 
 
 def _load_lake_h1(lake_root, broker, symbol, tf):
+    """Load `symbol`'s H1 bars from the lake, matching the CSV path's
+    fallback: if H1 partitions aren't there, load M5 partitions for the same
+    symbol/broker and resample with load_h1_from_m5 (the T3 helper, imported
+    -- never re-derived; see _load_csv_h1). If M5 is missing too, raise one
+    LakeError naming both misses (Lake.load's own message already names the
+    broker/symbol/tf it looked for, so nesting both messages covers both).
+
+    Returns (df_h1, source) -- `source` names what was actually loaded (H1
+    partitions directly, or M5 partitions + the resample), so the run-card's
+    data.source field stays truthful about the real path taken.
+    """
     lake = Lake(lake_root)
-    return lake.load(symbol, tf=tf, broker=broker)
+    try:
+        df_h1 = lake.load(symbol, tf=tf, broker=broker)
+        return df_h1, f"lake:{broker}/{symbol}/{tf}"
+    except LakeError as h1_err:
+        try:
+            df_m5 = lake.load(symbol, tf="M5", broker=broker)
+        except LakeError as m5_err:
+            raise LakeError(
+                f"{h1_err}; M5 fallback also unavailable: {m5_err}"
+            ) from m5_err
+        df_m5 = _ensure_tick_volume(df_m5)
+        df_h1 = load_h1_from_m5(df_m5)
+        return df_h1, f"lake:{broker}/{symbol}/M5->H1(resampled)"
 
 
 def _build_strategy(strategy_id, config, manifest_dir):
@@ -243,11 +266,10 @@ def main(argv=None) -> int:
     if args.lake_symbol:
         symbol = args.lake_symbol
         try:
-            df_h1 = _load_lake_h1(args.lake_root, args.broker, symbol, args.tf)
+            df_h1, source = _load_lake_h1(args.lake_root, args.broker, symbol, args.tf)
         except LakeError as e:
             print(f"[RESEARCH_RUN] ERROR: {e}")
             return 1
-        source = f"lake:{args.broker}/{symbol}/{args.tf}"
         data_sha = _sha256_bytes(df_h1.to_csv(index=False).encode())
     else:
         csv_path = Path(args.csv)

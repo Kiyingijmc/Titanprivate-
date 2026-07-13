@@ -297,6 +297,7 @@ def main(argv=None) -> int:
 
     specs = _load_specs(args.specs)
     spec = specs.get(symbol, _DEFAULT_SPEC)
+    spec_source = "data/specs.json" if symbol in specs else "default"
     risk_cfg = config.get("risk", {}).get("trade", {})
     commission_per_lot = float(risk_cfg.get("static_commission_usd", 7.0))
     max_lots = float(risk_cfg.get("hard_max_lots", 5.0))
@@ -332,6 +333,10 @@ def main(argv=None) -> int:
             "commission_per_lot": commission_per_lot,
             "risk_dollars": DEFAULT_RISK_DOLLARS,
             "max_lots": max_lots,
+            "tick_size": spec.get("tick_size"),
+            "tick_value": spec.get("tick_value"),
+            "vol_step": spec.get("vol_step"),
+            "spec_source": spec_source,
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
 import backtest_engine as bt  # noqa: E402
 
 from lake_import import sniff_and_read  # noqa: E402
-from research_run import main as research_main  # noqa: E402
+from research_run import main as research_main, _DEFAULT_SPEC  # noqa: E402
 from src.data.lake import Lake  # noqa: E402
 
 TEST_DATA_CSV = os.path.join(REPO, "test_data.csv")
@@ -100,6 +100,25 @@ class TestEndToEndRun(_ResearchRunTestBase):
         self.assertIn("oos", card["metrics"])
         self.assertIn("spread_assumption", card)
         self.assertIn("timestamp", card)
+
+        # Verify spread_assumption records the resolved tick spec + provenance.
+        sp = card["spread_assumption"]
+        self.assertIn("tick_size", sp)
+        self.assertIn("tick_value", sp)
+        self.assertIn("vol_step", sp)
+        self.assertIn("spec_source", sp)
+        # spec_source must be one of the documented values.
+        self.assertIn(sp["spec_source"], ("data/specs.json", "default"))
+        # Spec values must be present and numeric (resolved from either
+        # data/specs.json or _DEFAULT_SPEC).
+        self.assertIsNotNone(sp["tick_size"])
+        self.assertIsNotNone(sp["tick_value"])
+        self.assertIsNotNone(sp["vol_step"])
+        # If using default spec, values must match _DEFAULT_SPEC.
+        if sp["spec_source"] == "default":
+            self.assertEqual(sp["tick_size"], _DEFAULT_SPEC["tick_size"])
+            self.assertEqual(sp["tick_value"], _DEFAULT_SPEC["tick_value"])
+            self.assertEqual(sp["vol_step"], _DEFAULT_SPEC["vol_step"])
 
         # Consistency pin: n_signals must match the frozen golden fixture.
         self.assertEqual(card["n_signals"], GOLDEN_N_SIGNALS)

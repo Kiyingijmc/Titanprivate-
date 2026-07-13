@@ -24,3 +24,6 @@ data/journal/
 data/lake/**
 !data/lake/frozen/
 !data/lake/frozen/**
+
+# --- Research run-cards (reproducible via scripts/research_run.py) ---
+data/results/**

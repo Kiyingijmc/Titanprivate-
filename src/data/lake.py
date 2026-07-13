@@ -110,9 +110,16 @@ class Lake:
         work = df.copy()
         work["time"] = parsed_time
 
+        # Coerce OHLC to numeric BEFORE the NaN + geometry checks: string
+        # data would otherwise compare lexicographically (e.g. "9" > "10")
+        # and defeat the geometry checks, then land in parquet as str.
+        # Coercion failures become NaN and are rejected by the check below.
+        for col in ("open", "high", "low", "close"):
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
         for col in ("open", "high", "low", "close"):
             if work[col].isna().any():
-                reason = f"NaN present in OHLC column '{col}'"
+                reason = f"non-numeric or NaN present in OHLC column '{col}'"
                 self._quarantine(df, symbol, tf, reason)
                 raise LakeError(reason)
 
@@ -145,6 +152,14 @@ class Lake:
     # ingest
     # ------------------------------------------------------------------
     def ingest(self, df: pd.DataFrame, broker: str, symbol: str, tf: str, source: str = "") -> list:
+        """Validate `df` and write it into year partitions; returns paths written.
+
+        Merge-dedupe tie-break policy: on overlapping re-ingest, NEW rows win
+        timestamp ties — existing partition rows are concatenated before the
+        incoming batch, sorted with a STABLE mergesort, then
+        `drop_duplicates(subset="time", keep="last")` keeps the new row.
+        (The stable sort is load-bearing: quicksort would shuffle ties.)
+        """
         validated = self._validate(df, symbol, tf)
 
         pdir = self._partition_dir(broker, symbol, tf)

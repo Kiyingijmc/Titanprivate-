@@ -160,6 +160,50 @@ class TestValidationOnIngest(LakeTestBase):
                 self.assertEqual(len(reason_files), 1)
                 self.assertGreater(reason_files[0].stat().st_size, 0)
 
+    def test_string_ohlc_impossible_candle_rejected(self):
+        # Reviewer repro: string-typed OHLC where numerically high < low.
+        # Lexicographically "9" > "10", so without numeric coercion the
+        # geometry checks pass and a broken candle lands in parquet as str.
+        df = pd.DataFrame(
+            {
+                "time": pd.date_range("2024-01-01", periods=1, freq="5min"),
+                "open": ["9"],
+                "high": ["9"],
+                "low": ["10"],
+                "close": ["9"],
+            }
+        )
+        before = set(self._rejected_files())
+        with self.assertRaises(LakeError):
+            self.lake.ingest(df, broker="fbs", symbol="EURUSD", tf="M5", source="bad")
+        new_files = set(self._rejected_files()) - before
+        self.assertEqual(len(new_files), 2, "expected a quarantine csv + reason file")
+
+    def test_non_numeric_ohlc_token_rejected(self):
+        df = _bars("2024-01-01", 5)
+        df["close"] = df["close"].astype(object)
+        df.loc[2, "close"] = "abc"
+        before = set(self._rejected_files())
+        with self.assertRaises(LakeError):
+            self.lake.ingest(df, broker="fbs", symbol="EURUSD", tf="M5", source="bad")
+        new_files = set(self._rejected_files()) - before
+        self.assertEqual(len(new_files), 2, "expected a quarantine csv + reason file")
+
+    def test_numeric_strings_coerced_and_written_numeric(self):
+        df = _bars("2024-01-01", 5)
+        for col in ("open", "high", "low", "close"):
+            df[col] = df[col].map(lambda v: f"{v:.5f}")  # all-string numerics
+
+        self.lake.ingest(df, broker="fbs", symbol="EURUSD", tf="M5", source="strs")
+        loaded = self.lake.load("EURUSD", "M5", broker="fbs")
+
+        for col in ("open", "high", "low", "close"):
+            self.assertTrue(
+                pd.api.types.is_float_dtype(loaded[col]),
+                f"{col} should load as float dtype, got {loaded[col].dtype}",
+            )
+        self.assertAlmostEqual(loaded["open"].iloc[0], 1.1000, places=5)
+
     def test_duplicate_timestamps_after_dedupe_still_strictly_increasing(self):
         # sanity: identical timestamps in a single ingest batch collapse via
         # dedupe (keep-last) rather than raising, since post-dedupe the

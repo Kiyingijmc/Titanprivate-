@@ -21,3 +21,6 @@ pytz>=2023.3
 
 # Utilities
 colorama>=0.4.6
+
+# Research lake (Parquet storage)
+pyarrow>=15.0

@@ -19,3 +19,8 @@ data/history/
 data/logs/*.log
 boot_crash.log
 data/journal/
+
+# --- Research lake (Parquet; frozen/ is kept in git) ---
+data/lake/**
+!data/lake/frozen/
+!data/lake/frozen/**

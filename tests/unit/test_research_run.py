@@ -4,6 +4,7 @@
 # End-to-end over test_data.csv with silver_bullet, driven through
 # scripts/research_run.py::main(argv) directly (no subprocess). Every run is
 # pointed at a tempdir via --out so tests never write into data/results.
+import contextlib
 import io
 import json
 import os
@@ -190,6 +191,22 @@ class TestSpreadFlowsIntoNetR(_ResearchRunTestBase):
             cheap_card["metrics"]["is"]["expectancy"],
             expensive_card["metrics"]["is"]["expectancy"],
         )
+
+
+class TestTimeframeRestrictionH1Only(_ResearchRunTestBase):
+    def test_non_h1_timeframe_rejected_at_argparse(self):
+        """Verify that --tf M5 (or other non-H1 values) fails cleanly with argparse
+        SystemExit code 2 and does not create a run directory."""
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            with self.assertRaises(SystemExit) as ctx:
+                research_main(self._base_argv(**{"--tf": "M5"}))
+
+        self.assertEqual(ctx.exception.code, 2,
+                         "argparse should exit with code 2 for invalid choice")
+        # Verify no run directory was created (out_dir should not exist)
+        self.assertFalse(self.out_dir.exists(),
+                         "no run directory should be created when argparse fails")
 
 
 if __name__ == "__main__":

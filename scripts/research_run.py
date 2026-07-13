@@ -58,7 +58,7 @@ DEFAULT_SPECS_PATH = os.path.join(REPO_ROOT, "data", "specs.json")
 DEFAULT_RISK_DOLLARS = 1000.0
 _DEFAULT_SPEC = {"tick_size": 1e-5, "tick_value": 1.0, "vol_step": 0.01}
 
-_TF_CHOICES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
+_TF_CHOICES = ("H1",)
 
 
 class _NullLogger:
@@ -215,7 +215,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol",
                     help="symbol for --csv (used for specs lookup + run-card naming); "
                          "inferred from a SYMBOL_TF.csv filename if omitted")
-    p.add_argument("--tf", required=True, choices=_TF_CHOICES)
+    p.add_argument("--tf", required=True, choices=_TF_CHOICES, default="H1",
+                   help="timeframe (H1 only; other timeframes not yet supported)")
     p.add_argument("--strategy", required=True, help="manifest id under config/manifests/")
     p.add_argument("--split", type=float, default=0.7, help="chronological IS/OOS train fraction")
     p.add_argument("--spread-pips", type=float, default=0.0,

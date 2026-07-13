@@ -70,6 +70,16 @@ class StrategyRegistry:
             self._instances[manifest.id] = instance
             self._state[manifest.id] = "LOADED"
 
+        names_seen = {}
+        for manifest in self._manifests:
+            name = getattr(self._instances[manifest.id], "name", None)
+            if name in names_seen:
+                raise RegistryError(
+                    f"duplicate instance name '{name}': manifests "
+                    f"'{names_seen[name]}' and '{manifest.id}' both resolve to it"
+                )
+            names_seen[name] = manifest.id
+
     def activate_eligible(self) -> None:
         for manifest in self._manifests:
             if self._state.get(manifest.id) != "LOADED":
@@ -89,10 +99,15 @@ class StrategyRegistry:
                 )
             )
 
-    def enable(self, strategy_id) -> str:
+    def enable(self, strategy_id, allow_research=False) -> str:
         manifest = self._by_id.get(strategy_id)
         if manifest is None:
             return f"Unknown strategy '{strategy_id}'."
+        if manifest.status == "research" and not allow_research:
+            return (
+                f"⛔ '{strategy_id}' is research-status (ungated). "
+                f"Use `/enable {strategy_id} confirm` to override."
+            )
         state = self._state.get(strategy_id)
         if state not in ("LOADED", "SUSPENDED"):
             return f"Cannot enable '{strategy_id}': illegal transition from {state}."

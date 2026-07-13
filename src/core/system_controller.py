@@ -811,8 +811,8 @@ class SystemController:
             for st in self.strategies
         }
 
-    def enable_strategy(self, sid):
-        msg = self.registry.enable(sid)
+    def enable_strategy(self, sid, allow_research=False):
+        msg = self.registry.enable(sid, allow_research=allow_research)
         self._refresh_strategies_from_registry()
         return msg
 

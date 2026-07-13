@@ -198,6 +198,10 @@ class TelegramBot:
             elif cmd == "enable":
                 if not args:
                     await self.send_message("⚠️ Usage: `/enable silver_bullet`", parse_mode="Markdown")
+                elif len(args) > 1 and args[1] == "confirm":
+                    await self.send_message(
+                        c.enable_strategy(args[0], allow_research=True), parse_mode="Markdown"
+                    )
                 else:
                     await self.send_message(c.enable_strategy(args[0]), parse_mode="Markdown")
             elif cmd == "disable":

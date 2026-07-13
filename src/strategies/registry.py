@@ -143,6 +143,15 @@ class StrategyRegistry:
     def instance_of(self, strategy_id):
         return self._instances.get(strategy_id)
 
+    def id_of(self, instance):
+        """Reverse lookup: manifest id for a live strategy instance (identity
+        match, not equality — two instances of the same class are distinct).
+        Returns None if the instance isn't one this registry loaded."""
+        for sid, inst in self._instances.items():
+            if inst is instance:
+                return sid
+        return None
+
     def state_of(self, strategy_id) -> str:
         return self._state.get(strategy_id)
 

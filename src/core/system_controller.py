@@ -43,6 +43,8 @@ from src.ops.event_journal import EventJournal
 from src.ops.health import HealthProbe, sd_notify
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
+from src.arbiter.arbiter import Arbiter
+from src.arbiter.intent import Intent
 
 class BotState(Enum):
     BOOTING, WARMUP, ACTIVE, PAUSED, EMERGENCY = range(5)
@@ -114,6 +116,12 @@ class SystemController:
         self.feature_bus = FeatureBus()
         register_smc_pack(self.feature_bus)
         self.feature_bus.validate()
+
+        # v15.2: Arbiter — deterministic conflict-resolution stage between
+        # strategy signal generation and _execute_signal. Strategies submit
+        # Intents; the Arbiter dedups/resolves opposition/caps once per bar
+        # cycle in _run_strategies. Pure/synchronous, no registry dependency.
+        self.arbiter = Arbiter(self.config.get('arbiter', {}), publish=self._publish)
 
         # Signal metadata (grade/SL/TP/lots) keyed by symbol, captured at send
         # time so EXECUTION:OPENED can journal the full trade record (the EA's
@@ -326,7 +334,13 @@ class SystemController:
                 cmd = "MARKET"
                 p = cur_bid
 
-        lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias)
+        # v15.2: config-gated drawdown throttle. Default (disabled) always
+        # returns 1.0, so sizing stays byte-identical to pre-throttle.
+        # getattr-guarded: some fixture controllers wire a bare risk_manager
+        # stand-in without throttle_factor (or config) — treat as unthrottled.
+        throttle_fn = getattr(getattr(self, 'risk_manager', None), 'throttle_factor', None)
+        risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
+        lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
         if lot <= 0: return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
@@ -621,9 +635,14 @@ class SystemController:
 
         h1 = self.market_data[symbol].get_data("H1")
         fb = getattr(self, 'feature_bus', None)
+        arb = getattr(self, 'arbiter', None)
+        # own_token: this bar's identity, used both as the FeatureBus cache
+        # key and (below) as the Arbiter's bar_key for thesis-aging. Only
+        # computed when something needs it: legacy __new__ fixtures pass
+        # frames without a 'time' column and have neither a bus nor arbiter.
+        own_token = str(tf_df.iloc[-1]['time']) if (fb is not None or arb is not None) else ""
         if fb is not None:
             h1_token = str(h1.iloc[-1]['time']) if h1 is not None and len(h1) else "warmup"
-            own_token = str(tf_df.iloc[-1]['time'])
             enriched_df = fb.evaluate('smc.enriched_df', symbol, tf, token=own_token, window=tf_df)
             bias_str, liq = fb.evaluate('smc.bias_context', symbol, tf, token=h1_token, h1_df=h1)
         else:  # __new__-built test fixtures without a bus: original inline path
@@ -637,6 +656,12 @@ class SystemController:
             'ny_time': self.time_engine.get_current_ny_string(),
             'smc_df': enriched_df
         }
+
+        # v15.2: strategies submit Intents; the Arbiter resolves conflicts
+        # once after the loop. __new__-built fixtures without an arbiter fall
+        # back to the pre-Plan-05 direct-execute path (mirrors the feature_bus
+        # fallback above) so legacy unit fixtures keep working untouched.
+        pending_meta = {}
 
         for strat in active:
             decision = await strat.on_new_candle(enriched_df, context=ctx)
@@ -659,7 +684,40 @@ class SystemController:
                                           f"{self.signal_grader.min_grade}")
                     continue
 
-                await self._execute_signal(symbol, decision, strat.name, bias_str, grade=g['grade'])
+                if arb is None:
+                    await self._execute_signal(symbol, decision, strat.name, bias_str, grade=g['grade'])
+                    continue
+
+                registry = getattr(self, 'registry', None)
+                strategy_id = registry.id_of(strat) if registry is not None else None
+                if strategy_id is None:
+                    strategy_id = strat.name
+                intent = Intent(
+                    strategy_id=strategy_id,
+                    symbol=symbol, direction=decision['signal'], kind=decision['type'],
+                    price=float(decision['price']), sl=float(decision['sl']), tp=float(decision['tp']),
+                    grade=g['grade'],
+                    priority=50,
+                )
+                arb.submit(intent)
+                # Keyed by the intent's own effective_thesis() so the lookup
+                # below is guaranteed to match exactly what the Arbiter saw
+                # (same formatting/rounding), not a re-derived formula.
+                pending_meta[intent.effective_thesis()] = (decision, strat.name, g['grade'])
+
+        if arb is not None:
+            # resolve() runs every cycle (not just when this call submitted
+            # something) so the Arbiter's bar-index — and therefore thesis
+            # TTL aging — tracks real elapsed bars rather than only bars that
+            # happened to carry a signal.
+            open_positions = getattr(self, 'current_open_positions', None) or []
+            approved = arb.resolve(open_positions, bar_key=own_token)
+            for intent in approved:
+                meta = pending_meta.get(intent.effective_thesis())
+                if meta is None:
+                    continue
+                decision, name, grade = meta
+                await self._execute_signal(symbol, decision, name, bias_str, grade=grade)
 
     async def _perform_warmup(self, symbols_list):
         await asyncio.sleep(2)

@@ -105,6 +105,19 @@ def _make_controller():
     except ImportError:
         pass
 
+    try:  # Plan 05 / Task 4: the fixture must exercise the SAME production
+          # code path as the live controller -- i.e. through the Arbiter, not
+          # the pre-Plan-05 direct-execute fallback (which real __init__
+          # controllers no longer take). Sanctioned harness edit: the frozen
+          # golden fixture itself is untouched; this only makes the replay
+          # driver representative of production wiring. publish=None (no
+          # tape) since this harness only cares about the executed args.
+        from src.arbiter.arbiter import Arbiter
+        c.arbiter = Arbiter(cfg.get('arbiter', {}), publish=None)
+        c.current_open_positions = []
+    except ImportError:
+        pass
+
     return c, captured
 
 

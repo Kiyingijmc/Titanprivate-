@@ -122,19 +122,24 @@ class RiskManager:
         base_risk = self.current_equity * (self.risk_pct / 100.0)
         return base_risk * bias_multiplier
 
-    def calculate_lot_size(self, entry, sl, symbol, htf_bias="NEUTRAL") -> float:
+    def calculate_lot_size(self, entry, sl, symbol, htf_bias="NEUTRAL", risk_mult=1.0) -> float:
         """
         FULL POSITION SIZER.
         Sizes from broker tick_value/tick_size (any asset class); includes Net
         Risk Adjustment and Hard Caps. Fails safe (returns 0) without specs.
+
+        risk_mult: v15.2 drawdown-throttle multiplier (default 1.0 = no-op,
+        byte-identical sizing). Applied to the risk amount BEFORE the lot math
+        so vol_step normalization at the end still applies to the throttled
+        size, not tacked on afterward.
         """
         # 1. Circuit Breaker
-        if not self.check_can_trade(): 
+        if not self.check_can_trade():
             return 0.0
 
         # 2. Bias Shield (V14 Feature)
         multiplier = 1.0 if htf_bias != "NEUTRAL" else 0.5
-        raw_risk_money = self.get_max_risk_amount(bias_multiplier=multiplier)
+        raw_risk_money = self.get_max_risk_amount(bias_multiplier=multiplier) * risk_mult
 
         entry = float(entry); sl = float(sl)
         diff = abs(entry - sl)
@@ -192,6 +197,32 @@ class RiskManager:
         # Precision Floor Math to match VolStep
         lots = math.floor(adjusted_lots / vol_step) * vol_step
         return round(lots, 2)
+
+    def throttle_factor(self) -> float:
+        """v15.2 config-gated drawdown throttle.
+
+        Config (config.yaml `risk.drawdown_throttle`):
+            enabled: false          # default OFF -> always returns 1.0
+            trigger_dd_pct: 2.0     # intraday drawdown pct (vs day-start equity)
+            factor: 0.5             # risk multiplier once triggered
+
+        Reuses the same day_start_equity anchor as check_can_trade() (reset
+        daily by reset_daily_metrics). Returns 1.0 (no throttle) whenever
+        disabled, un-anchored, or below the trigger threshold.
+        """
+        cfg = self.config.get('drawdown_throttle', {})
+        if not cfg.get('enabled', False):
+            return 1.0
+
+        anchor = self.day_start_equity if self.day_start_equity > 0 else self.starting_balance
+        if anchor <= 0:
+            return 1.0
+
+        trigger_pct = cfg.get('trigger_dd_pct', 2.0)
+        dd_pct = (anchor - self.current_equity) / anchor * 100.0
+        if dd_pct >= trigger_pct:
+            return cfg.get('factor', 0.5)
+        return 1.0
 
     def has_specs(self, symbol) -> bool:
         """True when real broker tick_value/tick_size are loaded for this symbol."""

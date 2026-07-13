@@ -42,6 +42,26 @@ risk:
     hard_max_lots: 5.0          # Absolute Cap to prevent fat-finger errors
     static_commission_usd: 7.0  # Used for Net-Risk Calculation ($7.00 per round turn lot)
 
+  # v15.2: config-gated intraday drawdown throttle. Ships OFF (factor stays
+  # 1.0, byte-identical sizing) -- flip `enabled` on to halve (or scale by
+  # `factor`) new-trade risk once the day's equity has fallen `trigger_dd_pct`%
+  # below the daily anchor (RiskManager.day_start_equity, same anchor used by
+  # the existing daily-drawdown circuit breaker).
+  drawdown_throttle:
+    enabled: false
+    trigger_dd_pct: 2.0
+    factor: 0.5
+
+# v15.2: Arbiter -- deterministic conflict-resolution stage between strategy
+# signal generation and _execute_signal (src/arbiter/arbiter.py). Defaults
+# match Plan 05 / Task 2. Single-strategy live config never exercises dedup/
+# opposition/caps in a way that changes outcomes -- see test_signal_parity.
+arbiter:
+  opposition_policy: "higher_grade_wins"   # or "block_both"
+  max_positions_per_symbol: 1
+  max_total_positions: 6
+  thesis_ttl_bars: 12
+
 # v14.4: Confluence grading. Every signal is scored 0-100 (HTF bias alignment,
 # R:R, displacement, premium/discount location, killzone timing) and journaled;
 # only signals at or above min_grade are executed.

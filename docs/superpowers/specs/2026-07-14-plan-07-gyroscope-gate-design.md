@@ -226,6 +226,14 @@ filter manifest-driven:
 task; the frozen fixture is untouched. Both changes must be shown parity-neutral by
 re-running parity in the task review.
 
+**Parity-safety invariant (hardening #6b):** the SB-only parity harness
+(`build_research_controller` / `_make_controller`, captured at Plan 03) has **no
+registry** wired. The bias-filter lookup MUST therefore fall back to *honor bias* when
+the registry is absent or the id is unknown — otherwise the exemption would silently
+un-filter SilverBullet in the parity harness and break the frozen golden. State this
+default explicitly in code and lock it with a test that drives `_run_strategies` with no
+registry and asserts the SB counter-bias signal is still dropped.
+
 **Extensibility acceptance test (roadmap DoD):** after §6, adding a further non-SMC
 strategy of an already-generalized shape requires **zero** additional `src/core` /
 `src/execution` diffs — demonstrated by MaSlopeBaseline (D5) reusing the same exemption
@@ -248,10 +256,29 @@ Extend `scripts/research_run.py`:
   tick spec + spec_source (existing provenance), cost model (`trade_dollars`),
   `--spread-pips`, IS/OOS split, per-symbol and pooled metrics, symbol list.
 - Preserve single-symbol behaviour exactly (regression test).
-- **MARKET-entry check:** `research_run`'s note (lines ~178-182) flags that a MARKET-order
-  strategy may need a `SignalRecord` field. Verify Gyroscope's MARKET decisions resolve
-  correctly through `resolve_trade`; add the field if genuinely required (test-locked,
-  and confirm SilverBullet's existing records are unchanged).
+
+**Hardening #1 — single-position-per-symbol enforcement (study-validity CRITICAL).**
+`research_run._resolve_signals` today resolves EVERY signal into an independent trade with
+no in-trade skip. SilverBullet fires ~once per session so overlap never bit; Gyroscope's
+SPRT can fire on consecutive bars, which would produce overlapping, double-counted trades
+→ inflated `n_trades` and a corrupted pooled net. The live arbiter enforces
+`max_positions_per_symbol = 1` and the SB/OTE rigs simulate a single position; the offline
+gate MUST match. Requirement: within each symbol's resolution, a new signal is skipped
+(not resolved) if its entry bar index precedes the exit bar index of the prior resolved
+trade on that symbol — one open position per symbol at a time. Test-locked with a
+constructed overlapping-signal stream (RED against the current resolve-all behaviour).
+This also silently corrects a latent SB-study subtlety and must be shown NOT to change
+SilverBullet's existing single-symbol trade set (SB rarely overlaps → regression pins it).
+
+**Hardening #2 — MARKET entry = next-H1-open fill (look-ahead invariant).**
+`_resolve_signals` hardcodes `cmd:"LIMIT"` and fills at the signal bar's decision price;
+its own comment (lines ~178-182) says a MARKET strategy needs a `SignalRecord` type field.
+Gyroscope emits MARKET. Requirement: `SignalRecord` carries the decision `type`; a MARKET
+record resolves as a fill at `bars[bar_idx+1]["open"]` (decision at bar *i* close, fill at
+*i+1* open) — the same look-ahead-safe convention the OTE final review verified. The
+LIMIT path (SilverBullet) is byte-identical (regression-pinned); MARKET adds a new,
+test-locked branch. Assert no same-bar look-ahead: resolution only ever consults
+`bars[bar_idx+1:]`.
 
 ### 7.2 Pre-registered gate doc (D8) — thresholds fixed BEFORE the run
 
@@ -259,7 +286,7 @@ Extend `scripts/research_run.py`:
 style. Fixed inputs: 3-yr H1, **9 symbols** (the exact list pinned in the doc, from the
 committed frozen dataset), FBS `trade_dollars` cost model, IS/OOS split = final 30% OOS.
 
-**GO requires ALL of:**
+**GO requires ALL of (evaluated at the pre-registered defaults):**
 1. Pooled net **≥ +0.10 R/trade**.
 2. **≥ 150** pooled trades.
 3. **≥ 6/9** symbols non-negative net.
@@ -267,9 +294,29 @@ committed frozen dataset), FBS `trade_dollars` cost model, IS/OOS split = final 
 5. **±30% sweeps** on (α, β, δ, q_atr_frac) do **not flip** the pooled sign.
 6. **Beats the MaSlopeBaseline** pooled net on identical exits/cost.
 7. **×1.5 spread stress** keeps pooled net positive.
+8. **Significance (hardening #3):** the pooled net's lower confidence bound is **> 0**.
+   `bootstrap_expectancy_ci` was deleted with the OTE rig (Plan 01), so the plan
+   re-implements a small, deterministic bootstrap helper (fixed seed / fixed resample
+   count, no wall-clock) OR an SE-based one-sided 95% bound; the exact method is pinned in
+   the gate doc. This closes the small-sample-optimism trap the program has hit before
+   (MTF-PB "÷3–8 toward zero as n→~1000") and satisfies the standing "significance" rule.
+
+**Sweep discipline (hardening #4):** the ±30% sweep in criterion 5 is a **falsification
+test, not a parameter search.** The headline GO/NO-GO verdict is evaluated **only at the
+pre-registered defaults** (§5.3). A sweep cell that flips the pooled sign is a NO-GO
+signal; a sweep cell that looks *better* than the defaults is NEVER adopted as the result.
+The gate doc states this in the pre-registration.
 
 **Diagnostics (reported, not gating):** realized false-entry rate ≈ α on OOS; favorable
 excursion after boundary crossings vs 2× spread; NIS-suspend frequency.
+
+**Cost & spread-screen honesty (hardening #5):** offline replay carries no live spread, so
+Gyroscope's `max_spread_atr_frac` *entry-selection* screen degrades to "pass" — the gate
+takes some trades that live would reject on a wide spread (optimistic on selection). Cost
+itself is applied per-symbol via `trade_dollars` (spread + commission) and is conservative
+on cost. The gate doc states this asymmetry plainly and designates the **×1.5 spread
+stress (criterion 7) as the binding cost-robustness check** — mirroring the SB/OTE
+studies. The disabled selection-screen is a known, documented optimism, not a hidden one.
 
 **Advisory-C note (required in the doc):** Gyroscope is H1, so the arbiter `_bar_index`
 single-counter M5-aging bug (Plan-05 advisory C) is inert for this study. The doc records
@@ -303,6 +350,13 @@ summarizes with the run-card sha256s for provenance.
   ([[silverbullet-timing-edge]], "9 syms") for cross-strategy comparability, and is
   pinned in the gate doc (D8) before the run.** Any symbol with prior cost-exclusion
   (e.g. crypto/oil outliers from the OTE study) is excluded and that exclusion recorded.
+- **Provenance sidecar (hardening #6a):** the glob-fallback (D1) loads frozen data
+  WITHOUT the lake manifest, so the manifest's per-partition provenance (source, sha256,
+  row counts, times) is lost for a dataset that is the basis of a GO/NO-GO. Commit a
+  small committed record beside the parquet — `data/lake/frozen/PROVENANCE.md` (or a
+  `frozen_manifest.json` that `load()` ignores) — capturing, per symbol/year: the source
+  `data/history/<SYM>_M5.csv` sha256, the resample method (`load_h1_from_m5`), the date
+  range, and the H1 row count. This keeps the gate dataset auditable from a clean clone.
 
 ## 9. Testing strategy & task order
 
@@ -319,8 +373,11 @@ Proposed task order:
 5. **D5** `MaSlopeBaseline` + manifest + config block + tests.
 6. **D6** Controller touches (advisory-B priority + bias exemption) — **parity-gated**,
    test-locked.
-7. **D7** `research_run` multi-symbol pooled mode + MARKET-entry check.
-8. **D8** Pre-registered gate doc (written BEFORE D9's run).
+7. **D7** `research_run` multi-symbol pooled mode + single-position enforcement
+   (hardening #1) + MARKET next-open fill (hardening #2) + deterministic significance
+   helper (hardening #3).
+8. **D8** Pre-registered gate doc (written BEFORE D9's run) — the 8 GO criteria, the
+   sweep-is-falsification discipline (#4), and the spread-screen-off honesty (#5).
 9. **D9** Run the gate + record the verdict.
 
 Execution: `superpowers:writing-plans` → `superpowers:subagent-driven-development` with
@@ -330,10 +387,9 @@ in `.superpowers/sdd/progress.md`).
 
 ## 10. Open risks / notes for the plan author
 
-- **Spread in offline replay:** the FeatureBus/replay context may not carry a live spread
-  at signal time; the entry spread screen degrades to "pass" offline and cost is applied
-  by the gate's `trade_dollars` model + ×1.5 stress. The plan must state this and ensure
-  the ×1.5 stress is the binding cost-robustness check (mirrors the SB/OTE studies).
+- **Spread in offline replay:** handled by hardening #5 (§7.2) — the entry spread-screen
+  degrades to "pass" offline; cost applied via `trade_dollars` + ×1.5 stress as the
+  binding cost check. Listed here only as a cross-reference.
 - **Baseline exit parity:** the gate doc must pin the MaSlopeBaseline stop/target
   geometry precisely so "identical exits" is literally true for the comparison.
 - **Stateful filter fidelity:** the idempotency guard (`_last_ts`) is the only thing

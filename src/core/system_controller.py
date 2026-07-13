@@ -700,10 +700,11 @@ class SystemController:
                     priority=50,
                 )
                 arb.submit(intent)
-                # Keyed by the intent's own effective_thesis() so the lookup
-                # below is guaranteed to match exactly what the Arbiter saw
-                # (same formatting/rounding), not a re-derived formula.
-                pending_meta[intent.effective_thesis()] = (decision, strat.name, g['grade'])
+                # Keyed by intent IDENTITY: resolve() returns the same
+                # submitted objects (never copies), and two strategies can
+                # emit the SAME thesis string with different decisions — a
+                # value key would let the loser overwrite the winner's slot.
+                pending_meta[id(intent)] = (decision, strat.name, g['grade'])
 
         if arb is not None:
             # resolve() runs every cycle (not just when this call submitted
@@ -713,7 +714,7 @@ class SystemController:
             open_positions = getattr(self, 'current_open_positions', None) or []
             approved = arb.resolve(open_positions, bar_key=own_token)
             for intent in approved:
-                meta = pending_meta.get(intent.effective_thesis())
+                meta = pending_meta.get(id(intent))
                 if meta is None:
                     continue
                 decision, name, grade = meta

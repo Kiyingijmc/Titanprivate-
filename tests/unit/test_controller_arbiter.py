@@ -171,6 +171,46 @@ class TestConflictResolution(unittest.TestCase):
         self.assertEqual(blocked[0].direction, "SELL")
 
 
+class TestSameThesisCrossStrategy(unittest.TestCase):
+    def test_same_thesis_cross_strategy_executes_winner_decision(self):
+        """Reviewer-reproduced Critical: two strategies emitting the SAME
+        thesis (identical symbol/direction/price/sl) but DIFFERENT tp and
+        grades. The Arbiter's thesis-dedup keeps the higher grade (StratHigh
+        A+, tp=1.11) and blocks the replay (StratLow B, tp=1.2) -- but
+        pending_meta keyed by the thesis STRING was last-writer-wins by
+        ITERATION order, so StratLow (iterated second) overwrote the winner's
+        slot and its decision executed: wrong TP at the broker + wrong
+        attribution. Keying by intent identity (id(intent)) fixes it: the
+        Arbiter returns the SAME submitted objects, never copies."""
+        high_decision = _decision(signal="BUY", price=1.1000, sl=1.0950, tp=1.1100)
+        low_decision = _decision(signal="BUY", price=1.1000, sl=1.0950, tp=1.2000)
+        # StratHigh iterates FIRST, StratLow SECOND: the buggy thesis-string
+        # key lets the second (losing) submission overwrite the winner's slot.
+        strat_high = FakeStrategy("StratHigh", high_decision)
+        strat_low = FakeStrategy("StratLow", low_decision)
+        c, captured, published = make_controller([strat_high, strat_low])
+        c.signal_grader = FakeGrader()
+        c.signal_grader.grade = lambda decision, context, candle=None: (
+            {"score": 100,
+             "grade": "A+" if decision["tp"] == 1.1100 else "B",
+             "factors": []}
+        )
+
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
+
+        self.assertEqual(len(captured), 1)
+        symbol, got_decision, name, htf_bias, grade = captured[0]
+        self.assertIs(got_decision, high_decision)   # the WINNER's exact dict
+        self.assertEqual(name, "StratHigh")
+        self.assertEqual(grade, "A+")
+        self.assertEqual(got_decision["tp"], 1.1100)
+
+        # The losing same-thesis intent was journaled as blocked, not silent.
+        blocked = [e for e in published if isinstance(e, IntentBlocked)]
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0].strategy_id, "StratLow")
+
+
 class TestOpenPositionBlocks(unittest.TestCase):
     def test_open_position_on_symbol_blocks_new_intent(self):
         decision = _decision()

@@ -138,6 +138,77 @@ class TestOppositionPolicy(unittest.TestCase):
         self.assertTrue(all(b.rule == "opposition" for b in blocked))
 
 
+class TestRuleOrderInvariant(unittest.TestCase):
+    def test_dedup_then_opposition_combined_same_symbol(self):
+        """Rule 2 (dedup) MUST run before rule 3 (opposition), and dedup losers
+        must never leak into the opposition comparison.
+
+        One cycle, one symbol, three intents: BUY A+ (strat a), BUY B (strat b),
+        SELL A (strat c), policy higher_grade_wins.
+
+        Expected: dedup collapses the BUY group to the A+ (blocking the B BUY
+        with rule='dedup'), THEN opposition pits BUY A+ vs SELL A and the A+
+        wins (blocking the SELL with rule='opposition'). The blocked-event
+        ORDER (dedup before opposition) fails if the rules were swapped, and
+        the exact per-loser rule attribution fails if the B BUY leaked into
+        the opposition stage."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"opposition_policy": "higher_grade_wins"}, publish=pub)
+
+        buy_best = make_intent(strategy_id="strat_a", direction="BUY", grade="A+", thesis_id="t-a")
+        buy_dup = make_intent(strategy_id="strat_b", direction="BUY", grade="B", thesis_id="t-b")
+        sell = make_intent(strategy_id="strat_c", direction="SELL", grade="A", thesis_id="t-c")
+        arb.submit(buy_best)
+        arb.submit(buy_dup)
+        arb.submit(sell)
+        approved = arb.resolve(open_positions=[], bar_key="b1")
+
+        self.assertEqual(len(approved), 1)
+        self.assertIs(approved[0], buy_best)
+
+        blocked = pub.of_type(IntentBlocked)
+        self.assertEqual(len(blocked), 2)
+        # Order is load-bearing: dedup (rule 2) must have fired before
+        # opposition (rule 3).
+        self.assertEqual(blocked[0].rule, "dedup")
+        self.assertEqual(blocked[0].strategy_id, "strat_b")
+        self.assertEqual(blocked[0].direction, "BUY")
+        self.assertEqual(blocked[1].rule, "opposition")
+        self.assertEqual(blocked[1].strategy_id, "strat_c")
+        self.assertEqual(blocked[1].direction, "SELL")
+
+
+class TestBarKeyAging(unittest.TestCase):
+    def test_same_bar_key_does_not_double_age_thesis(self):
+        """Thesis aging counts DISTINCT bar_key values, not resolve() calls.
+        Multiple resolves on the same bar_key must not advance the age."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 2}, publish=pub)
+
+        # Thesis T first seen at bar k1.
+        t1 = make_intent(thesis_id="T")
+        arb.submit(t1)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="k1"), [t1])
+
+        # Two empty resolves on the SAME new bar_key k2: only ONE distinct
+        # key has elapsed, however many times we resolve.
+        arb.resolve(open_positions=[], bar_key="k2")
+        arb.resolve(open_positions=[], bar_key="k2")
+
+        # Replay T at k2 -> age is 1 distinct key (< ttl=2) -> still BLOCKED.
+        t2 = make_intent(thesis_id="T")
+        arb.submit(t2)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="k2"), [])
+        blocked = pub.of_type(IntentBlocked)
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0].rule, "thesis_dedup")
+
+        # Replay T at k3 -> age is now 2 distinct keys (>= ttl=2) -> allowed.
+        t3 = make_intent(thesis_id="T")
+        arb.submit(t3)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="k3"), [t3])
+
+
 class TestSymbolCap(unittest.TestCase):
     def test_symbol_cap_blocks_when_open_position_exists(self):
         pub = RecordingPublisher()

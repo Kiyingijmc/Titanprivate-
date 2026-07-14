@@ -88,9 +88,9 @@ class GyroscopeStrategy(BaseStrategy):
         for i in range(start_idx, len(times)):
             atr_i = last_atr(df.iloc[:i + 1])
             reading = filt.update(math.log(closes[i]), atr_i)
-        self._last_ts[symbol] = times[-1]
         if reading is None:
-            return None
+            return None  # stale/older window: no bars fed, state untouched
+        self._last_ts[symbol] = times[-1]
 
         # Cooldown ages once per newly-fed bar. A signal sets the counter to
         # reentry_lockout; the newest bar is still inside the lockout while

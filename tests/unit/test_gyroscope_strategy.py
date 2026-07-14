@@ -107,6 +107,22 @@ class TestGyroscopeContract(unittest.TestCase):
         df, _ = first
         self.assertIsNone(_run(strat, df), "same window re-fed must be a no-op")
 
+    def test_older_window_leaves_state_untouched(self):
+        # T4-review Important: a strictly-OLDER window (newest ts < last fed)
+        # must not overwrite _last_ts — otherwise the next legitimate window
+        # would re-feed already-seen bars into the filter (state corruption).
+        closes = _drift_series(n_flat=100, n_drift=0)
+        strat = GyroscopeStrategy(CFG, _NullLogger())
+        full = _bars(closes)                       # bootstrap: bars 0..99
+        self.assertIsNone(_run(strat, full))       # flat noise -> no signal
+        newest = str(full["time"].iloc[-1])
+        self.assertEqual(strat._last_ts["EURUSD"], newest)
+
+        stale = _bars(closes[:95])                 # strictly older window
+        self.assertIsNone(_run(strat, stale))
+        self.assertEqual(strat._last_ts["EURUSD"], newest,
+                         "stale window must not rewind _last_ts")
+
     def test_cooldown_blocks_reentry_for_lockout_bars(self):
         closes = _drift_series(n_drift=200)  # long drift: crossings keep coming
         strat = GyroscopeStrategy(CFG, _NullLogger())

@@ -28,3 +28,8 @@ pyarrow>=15.0
 # Control GUI API (embedded FastAPI server)
 fastapi>=0.115,<1.0
 uvicorn>=0.30,<1.0
+# WebSocket backend for uvicorn — WITHOUT this, uvicorn's ws="auto" finds no
+# impl and real /ws upgrades fail (the live GUI feed goes dead; only the
+# GET /api/state polling fallback survives). The Starlette TestClient masks
+# this because it implements WS in-process — a real uvicorn server needs it.
+websockets>=12,<16

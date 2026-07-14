@@ -82,6 +82,17 @@ class TestSnapshot(unittest.TestCase):
         c.last_heartbeat_time = datetime.now() - timedelta(seconds=120)
         self.assertFalse(build_snapshot(c)["health"]["bridge_connected"])
 
+    def test_raising_get_order_does_not_propagate(self):
+        class RaisingState:
+            def get_order(self, ticket):
+                raise RuntimeError("db locked")
+
+        c = FakeController()
+        c.state_manager = RaisingState()
+        pos = build_snapshot(c)["positions"][0]   # must not raise
+        self.assertEqual(pos["grade"], "")
+        self.assertEqual(pos["strategy"], "")
+
 
 class TestHistoryRows(unittest.TestCase):
     def test_reads_newest_first_with_limit(self):

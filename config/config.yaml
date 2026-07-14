@@ -104,6 +104,28 @@ strategies:
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
 
+  # 2. Gyroscope (Kalman drift + SPRT, H1) — arsenal #1, Plan 07.
+  # status: research in config/manifests/gyroscope.yaml is the live gate
+  # (registry never auto-activates research); enabled:true here keeps the
+  # offline gate replay alive. Defaults below are the PRE-REGISTERED gate
+  # values (docs/research/2026-07-14-gyroscope-gate.md) — do not tune.
+  gyroscope:
+    enabled: true
+    timeframe: "H1"
+    warmup_bars: 200
+    q_atr_frac: 0.05
+    r_frac: 1.0
+    sprt: { alpha: 0.05, beta: 0.20, delta: 0.40 }
+    nis_window: 50
+    k_sl: 3.0
+    sl_atr_floor: 0.8
+    rr_target: 2.0
+    max_bars_in_trade: 48
+    reentry_lockout: 5
+    max_spread_atr_frac: 0.10
+    pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+            "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
+
 ops:
   journal:
     enabled: true

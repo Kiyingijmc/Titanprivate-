@@ -170,45 +170,59 @@ def _build_strategy(strategy_id, config, manifest_dir):
     return instance, manifest
 
 
-def _signals_to_trades(records, df_h1, spread_pips, spec, commission_per_lot, max_lots):
-    """resolve_trade() each executed signal against the bars that follow it
-    (tests.backtest.backtest_engine, imported -- never reimplemented), then
-    convert gross R to net R via trade_dollars (spread + commission).
+def _signals_to_trades(records, df_h1, spread_points, spec, commission_per_lot, max_lots):
+    """Resolve executed signals into trades under ONE-open-per-symbol
+    concurrency (tests.backtest.backtest_engine.simulate_signals -- imported,
+    never reimplemented; it walks signals chronologically and skips any that
+    arrive while a prior trade/limit still occupies the symbol).
 
-    Every strategy on this branch (silver_bullet, the only approved one)
-    emits LIMIT orders -- kernel_replay's SignalRecord doesn't carry the
-    decision's 'type' field, so 'LIMIT'/ttl_bars=12 is hardcoded here to
-    match the live/backtest convention (backtest_engine.py:401). A future
-    MARKET-order strategy would need that field added to SignalRecord --
-    out of scope for this CLI (kernel_replay.py is Task 3's centerpiece).
+    LIMIT signals rest at the decision price with the live 12-bar TTL
+    (backtest_engine.py:401 convention). MARKET signals fill at the NEXT
+    bar's open -- decision on bar-close i, fill at i+1 open; resolution only
+    ever consults bars[bar_idx+1:], so there is no same-bar look-ahead. A
+    MARKET decision on the final bar has no next open and is dropped.
+
+    Returns (trades, skipped): `trades` are resolved rows with net R attached
+    (gross R -> dollars via trade_dollars -> net R, same as before);
+    `skipped` are busy-skipped signals journaled as outcome="SKIPPED_BUSY"
+    (filled=False, r=0) so signals.jsonl remains a complete per-signal
+    record. (A signal simulate_signals drops as INVALID -- zero risk -- also
+    lands in `skipped`; with grader-passed decisions that is theoretical.)
     """
     bars = df_h1.to_dict("records")
-    trades = []
+    sigs = []
     for rec in records:
         if rec["signal"] is None:
             continue
-        # rec["i"] is the 1-indexed window end (see kernel_replay.replay);
-        # the signal was decided on the bar at 0-indexed position i - 1.
         bar_idx = rec["i"] - 1
-        future = bars[bar_idx + 1:]
-        sig = {
-            "dir": rec["signal"], "cmd": "LIMIT",
-            "entry": rec["price"], "sl": rec["sl"], "tp": rec["tp"],
-            "ttl_bars": 12,
-        }
-        res = bt.resolve_trade(sig, future)
-        risk = abs(rec["price"] - rec["sl"])
+        cmd = rec.get("type") or "LIMIT"
+        if cmd == "MARKET":
+            if bar_idx + 1 >= len(bars):
+                continue  # no next bar to fill on
+            entry = float(bars[bar_idx + 1]["open"])
+        else:
+            entry = float(rec["price"])
+        sigs.append({**rec, "bar_idx": bar_idx, "dir": rec["signal"], "cmd": cmd,
+                     "entry": entry, "sl": float(rec["sl"]), "tp": float(rec["tp"]),
+                     "ttl_bars": 12})
+
+    resolved = bt.simulate_signals(sigs, bars)
+    taken_idx = {t["bar_idx"] for t in resolved}
+
+    trades = []
+    for t in resolved:
+        risk = abs(t["entry"] - t["sl"])
         dollars = bt.trade_dollars(
-            res["r"], rec["price"], rec["sl"], spec,
-            spread_pips, commission_per_lot, DEFAULT_RISK_DOLLARS, max_lots=max_lots,
+            t["r"], t["entry"], t["sl"], spec,
+            spread_points, commission_per_lot, DEFAULT_RISK_DOLLARS, max_lots=max_lots,
         )
         net_r = (dollars["net"] / DEFAULT_RISK_DOLLARS) if DEFAULT_RISK_DOLLARS else 0.0
-        trades.append({
-            **rec, **res,
-            "bar_idx": bar_idx, "risk": risk,
-            "gross_r": res["r"], "r": net_r,
-        })
-    return trades
+        trades.append({**t, "risk": risk, "gross_r": t["r"], "r": net_r})
+
+    skipped = [{**s, "filled": False, "outcome": "SKIPPED_BUSY", "r": 0.0,
+                "gross_r": 0.0, "risk": abs(s["entry"] - s["sl"])}
+               for s in sigs if s["bar_idx"] not in taken_idx]
+    return trades, skipped
 
 
 def _print_report(card, run_dir):
@@ -302,7 +316,8 @@ def main(argv=None) -> int:
     commission_per_lot = float(risk_cfg.get("static_commission_usd", 7.0))
     max_lots = float(risk_cfg.get("hard_max_lots", 5.0))
 
-    trades = _signals_to_trades(records, df_h1, args.spread_pips, spec, commission_per_lot, max_lots)
+    trades, skipped = _signals_to_trades(records, df_h1, args.spread_pips, spec,
+                                          commission_per_lot, max_lots)
     n_trades = sum(1 for t in trades if t["filled"])
 
     is_trades, oos_trades = bt.split_trades(trades, train_frac=args.split)
@@ -325,6 +340,7 @@ def main(argv=None) -> int:
         "n_bars": int(len(df_h1)),
         "n_signals": n_signals,
         "n_trades": n_trades,
+        "n_skipped_busy": len(skipped),
         "split": args.split,
         "metrics": {"is": metrics_is, "oos": metrics_oos},
         "spread_assumption": {
@@ -343,7 +359,7 @@ def main(argv=None) -> int:
 
     (run_dir / "run.json").write_text(json.dumps(card, indent=2, sort_keys=True))
     with open(run_dir / "signals.jsonl", "w") as f:
-        for t in trades:
+        for t in sorted(trades + skipped, key=lambda t: t["bar_idx"]):
             f.write(json.dumps(t, default=str) + "\n")
 
     _print_report(card, run_dir)

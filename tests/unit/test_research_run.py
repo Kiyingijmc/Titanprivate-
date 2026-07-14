@@ -15,6 +15,8 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import pandas as pd
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "scripts"))
@@ -23,7 +25,7 @@ sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
 import backtest_engine as bt  # noqa: E402
 
 from lake_import import sniff_and_read  # noqa: E402
-from research_run import main as research_main, _DEFAULT_SPEC  # noqa: E402
+from research_run import main as research_main, _DEFAULT_SPEC, _signals_to_trades  # noqa: E402
 from src.data.lake import Lake  # noqa: E402
 
 TEST_DATA_CSV = os.path.join(REPO, "test_data.csv")
@@ -284,6 +286,71 @@ class TestLakeSymbolMissingBothTimeframesCleanError(_ResearchRunTestBase):
         self.assertIn("fbs/NOPE/M5", output)
         self.assertNotIn("Traceback", output)
         self.assertFalse(self.out_dir.exists())
+
+
+class TestSignalsToTradesResolution(unittest.TestCase):
+    """Plan 07 / Task 7: MARKET next-open fills + one-open-per-symbol
+    (hardenings #1/#2). Fabricated records -- no kernel replay."""
+
+    SPEC = {"tick_size": 1e-5, "tick_value": 1.0, "vol_step": 0.01}
+
+    def _df(self, bars):
+        return pd.DataFrame(bars)
+
+    def _rec(self, i, signal="BUY", typ="MARKET", price=1.0, sl=0.99, tp=1.02):
+        return {"i": i, "time": f"2026-01-01 {i:02d}:00:00", "bias": "BULLISH",
+                "signal": signal, "price": price, "sl": sl, "tp": tp,
+                "grade": "C", "strategy": "X", "type": typ}
+
+    def _bars(self, n, open_=1.001, hi=1.001, lo=0.999, close=1.0):
+        return [{"time": f"2026-01-01 {k:02d}:00:00", "open": open_, "high": hi,
+                 "low": lo, "close": close} for k in range(n)]
+
+    def test_market_fills_at_next_bar_open(self):
+        bars = self._bars(10)
+        bars[6]["open"] = 1.005  # the fill bar for a decision on bar 5
+        bars[7]["high"] = 1.10   # then TP
+        recs = [self._rec(6)]    # rec i=6 -> decided on 0-indexed bar 5
+        trades, skipped = _signals_to_trades(
+            recs, self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["entry"], 1.005)   # next open, NOT rec price
+        self.assertEqual(trades[0]["cmd"], "MARKET")
+        self.assertEqual(skipped, [])
+
+    def test_limit_still_rests_at_decision_price(self):
+        bars = self._bars(10)
+        recs = [self._rec(6, typ="LIMIT", price=0.9995)]
+        trades, _ = _signals_to_trades(recs, self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
+        self.assertEqual(trades[0]["entry"], 0.9995)
+        self.assertEqual(trades[0]["cmd"], "LIMIT")
+
+    def test_missing_type_defaults_to_limit(self):
+        bars = self._bars(10)
+        rec = self._rec(6)
+        del rec["type"]
+        trades, _ = _signals_to_trades([rec], self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
+        self.assertEqual(trades[0]["cmd"], "LIMIT")
+
+    def test_overlapping_signal_is_skipped_busy(self):
+        # First MARKET trade fills at bar 6 open and never resolves until the
+        # end (no SL/TP touch) -> a second signal at i=8 arrives while busy.
+        bars = self._bars(12)
+        recs = [self._rec(6), self._rec(8)]
+        trades, skipped = _signals_to_trades(
+            recs, self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(skipped[0]["outcome"], "SKIPPED_BUSY")
+        self.assertFalse(skipped[0]["filled"])
+        self.assertEqual(skipped[0]["i"], 8)
+
+    def test_market_on_final_bar_is_dropped(self):
+        bars = self._bars(7)
+        recs = [self._rec(7)]  # decided on last bar (0-idx 6): no next open
+        trades, skipped = _signals_to_trades(
+            recs, self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
+        self.assertEqual((len(trades), len(skipped)), (0, 0))
 
 
 if __name__ == "__main__":

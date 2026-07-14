@@ -211,6 +211,32 @@ class Lake:
     # ------------------------------------------------------------------
     # load
     # ------------------------------------------------------------------
+    def _load_frozen(self, broker: str, symbol: str, tf: str) -> list:
+        """Disk-glob fallback for committed frozen datasets. frozen/ is
+        deliberately manifest-less (manifest.json is gitignored while
+        frozen/ parquet is committed -- P06 final-review pre-req), so a
+        fresh clone can still load committed gate datasets."""
+        fdir = self.root / _FROZEN_DIR / broker / symbol / tf
+        frames = []
+        for path in sorted(fdir.glob("*.parquet")):
+            frame = pd.read_parquet(path, engine="pyarrow")
+            frame["time"] = pd.to_datetime(frame["time"])
+            frames.append(frame)
+        return frames
+
+    @staticmethod
+    def _combine(frames, start, end) -> pd.DataFrame:
+        combined = (
+            pd.concat(frames, ignore_index=True)
+            .sort_values("time", kind="mergesort")
+            .reset_index(drop=True)
+        )
+        if start is not None:
+            combined = combined[combined["time"] >= pd.Timestamp(start)]
+        if end is not None:
+            combined = combined[combined["time"] <= pd.Timestamp(end)]
+        return combined.reset_index(drop=True)
+
     def load(
         self,
         symbol: str,
@@ -222,6 +248,9 @@ class Lake:
         manifest = self.manifest()
         sym_years = manifest.get(broker, {}).get(symbol, {}).get(tf, {})
         if not sym_years:
+            frozen = self._load_frozen(broker, symbol, tf)
+            if frozen:
+                return self._combine(frozen, start, end)
             existing = sorted(manifest.get(broker, {}).keys())
             raise LakeError(
                 f"no lake partitions for {broker}/{symbol}/{tf}; "
@@ -241,17 +270,7 @@ class Lake:
         if not frames:
             raise LakeError(f"manifest has entries for {broker}/{symbol}/{tf} but no partition files exist on disk")
 
-        combined = (
-            pd.concat(frames, ignore_index=True)
-            .sort_values("time", kind="mergesort")
-            .reset_index(drop=True)
-        )
-
-        if start is not None:
-            combined = combined[combined["time"] >= pd.Timestamp(start)]
-        if end is not None:
-            combined = combined[combined["time"] <= pd.Timestamp(end)]
-        combined = combined.reset_index(drop=True)
+        combined = self._combine(frames, start, end)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         for year in sym_years:

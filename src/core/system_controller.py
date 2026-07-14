@@ -49,6 +49,27 @@ from src.arbiter.intent import Intent
 class BotState(Enum):
     BOOTING, WARMUP, ACTIVE, PAUSED, EMERGENCY = range(5)
 
+
+def _apply_runtime_setting(controller, key: str, value) -> None:
+    """Live-apply a whitelisted setting: mutate config in place + push cached attrs.
+
+    RiskManager/TradeManager hold the SAME config dict object, so the in-place
+    nested update is immediately visible to them; only objects that cache a
+    value at __init__ (SignalGrader) need the attribute push.
+    """
+    parts = key.split(".")
+    node = controller.config
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+
+    if key.startswith("signal_grading."):
+        attr = parts[-1]
+        grader = getattr(controller, "signal_grader", None)
+        if grader is not None and hasattr(grader, attr):
+            setattr(grader, attr, value)
+
+
 class SystemController:
     """
     Titan v14.3 Institutional Master Controller.
@@ -157,10 +178,10 @@ class SystemController:
 
     def _load_config(self):
         cfg_path = self.root_dir / "config" / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path, 'r') as f:
-                return yaml.safe_load(f)
-        sys.exit(f"[FATAL] config.yaml not found at {cfg_path}")
+        if not cfg_path.exists():
+            sys.exit(f"[FATAL] config.yaml not found at {cfg_path}")
+        from src.ops.web.config_layer import load_layered_config
+        return load_layered_config(cfg_path, self.root_dir / "config" / "overrides.yaml")
 
     def _publish(self, event):
         # Defensive: mirrors the getattr(self, 'x', default) pattern already
@@ -241,6 +262,21 @@ class SystemController:
                 await self.health_probe.start()
             except Exception as e:
                 self.logger.log_event("ERROR", "HEALTH", f"probe start failed: {e}")
+
+        # --- Embedded control API (optional; must never block trading) ---
+        try:
+            from src.ops.web.bus_bridge import BusBridge
+            from src.ops.web.settings import SettingsStore
+            from src.ops.web import server as web_server
+            self.gui_bridge = BusBridge()
+            self.bus.subscribe_all(self.gui_bridge.handle, name="gui")
+            self._settings_store = SettingsStore(
+                self.config, self.root_dir / "config" / "overrides.yaml")
+            self._web_task = web_server.start(self, self._settings_store, self.gui_bridge)
+            self.logger.log_event("INFO", "GUI", "Control API on :8770")
+        except Exception as e:
+            self.logger.log_event("WARN", "GUI", f"Control API failed to start: {e}")
+            self._web_task = None
 
         await self.telemetry.send_message(
             f"🚀 **Titan V14.4 Pro Online**\n"
@@ -861,6 +897,9 @@ class SystemController:
         self.state = BotState.PAUSED if p else BotState.ACTIVE
         self._publish(SystemStateChanged(state=self.state.name))
         return self.state.name
+
+    def apply_runtime_setting(self, key: str, value) -> None:
+        _apply_runtime_setting(self, key, value)
 
     def _refresh_strategies_from_registry(self):
         self.strategies = self.registry.active_instances()

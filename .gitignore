@@ -27,3 +27,6 @@ data/lake/**
 
 # --- Research run-cards (reproducible via scripts/research_run.py) ---
 data/results/**
+
+# --- Control GUI overrides (machine state, not source) ---
+config/overrides.yaml

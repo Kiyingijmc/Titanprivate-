@@ -392,6 +392,7 @@ EOF
   - `alert_windows(states) -> list[dict]` — contiguous runs where `state == "ALERT"`, each `{"start_time", "end_time", "start_i", "end_i", "duration": int, "peak_score": float}`.
   - `classify_trades(trades, windows_by_symbol) -> list[dict]` — each trade annotated with `"inside_alert": bool` (True iff some window for `trade["symbol"]` has `start_time <= trade_time <= end_time`, `trade_time = pd.to_datetime(trade["time"])`).
   - `bucket_metrics(trades) -> dict` — `{"n": int, "expectancy": float, "profit_factor": float}` over trades with `outcome in {TP, SL}` (expectancy = mean `r`; PF = sum positive `r` / abs sum negative `r`, `inf` if no losers, `0.0` if empty).
+  - `fit_diagnostics(fit_features) -> dict` — `{"min_variance": float, "cov_condition": float}` for one fit window: `min_variance` = smallest per-feature sample variance (`np.var(x, axis=0, ddof=1).min()`); `cov_condition` = `np.linalg.cond` of the SAME ε=1e-9-ridged covariance the scorer inverts. **Degeneracy diagnostic (carry-forward from Task-1 review, disclosure-C):** on real fit windows this surfaces whether any feature dimension is near-constant, which the fixed ε ridge would let dominate the Mahalanobis distance and distort q99. Recorded per-symbol (worst-across-windows: min of `min_variance`, max of `cov_condition`); Task 4 sanity-checks it, and the pre-registration doc (Task 3) names it. Does NOT change the spec-locked ε — it makes the risk empirical, not assumed. Fails loud (ValueError) on `< MIN_FIT_SAMPLES` fit rows, mirroring the scorer.
   - `build_study_card(...) -> dict` — study-card described below.
   - `main(argv=None) -> int` — CLI.
 
@@ -404,6 +405,7 @@ EOF
   "symbols": [str, ...],
   "per_symbol": { SYM: {"n_bars": int, "n_scored": int, "sha256": str,
                         "alert_rate": float, "n_alert_windows": int,
+                        "fit_diag": {"min_variance": float, "cov_condition": float},
                         "inside": {n,expectancy,profit_factor},
                         "outside": {n,expectancy,profit_factor}} },
   "pooled": {"alert_rate": float, "n_inside": int, "n_outside": int,
@@ -432,6 +434,7 @@ from scripts.antibody_study import (
     alert_windows,
     classify_trades,
     bucket_metrics,
+    fit_diagnostics,
     walk_forward_states,
 )
 
@@ -512,6 +515,31 @@ class TestBucketMetrics(unittest.TestCase):
         self.assertEqual(m["expectancy"], 0.0)
 
 
+class TestFitDiagnostics(unittest.TestCase):
+    def test_well_conditioned_window(self):
+        import random
+        rng = random.Random(4)
+        feats = [(rng.gauss(1.0, 0.3), rng.gauss(0.5, 0.2),
+                  rng.gauss(0.4, 0.15), rng.gauss(0.6, 0.2)) for _ in range(200)]
+        d = fit_diagnostics(feats)
+        self.assertGreater(d["min_variance"], 0.0)
+        self.assertLess(d["cov_condition"], 1e6)  # all dims have real variance
+
+    def test_degenerate_dimension_flagged(self):
+        # a constant 3rd feature -> near-zero variance -> huge condition number
+        import random
+        rng = random.Random(4)
+        feats = [(rng.gauss(1.0, 0.3), rng.gauss(0.5, 0.2), 0.0, rng.gauss(0.6, 0.2))
+                 for _ in range(200)]
+        d = fit_diagnostics(feats)
+        self.assertLess(d["min_variance"], 1e-12)
+        self.assertGreater(d["cov_condition"], 1e6)  # ridge lets it dominate
+
+    def test_too_few_samples_fails_loud(self):
+        with self.assertRaises(ValueError):
+            fit_diagnostics([(1.0, 0.5, 0.4, 0.6)] * 4)
+
+
 class TestWalkForwardLookahead(unittest.TestCase):
     def test_scored_region_and_refit_continuity(self):
         import random
@@ -568,6 +596,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -685,6 +714,38 @@ def bucket_metrics(trades):
     return {"n": len(resolved), "expectancy": sum(rs) / len(rs), "profit_factor": pf}
 
 
+def fit_diagnostics(fit_features):
+    """Degeneracy diagnostic for one fit window (carry-forward from the Task-1
+    review, disclosure-C): the smallest per-feature variance and the condition
+    number of the SAME eps=1e-9-ridged covariance the scorer inverts. A tiny
+    min_variance / huge cov_condition means a near-constant feature dimension
+    that the fixed ridge would let dominate the Mahalanobis distance and distort
+    q99. Recorded per-symbol so Task 4 can verify real data is well-conditioned;
+    does not change the spec-locked ridge. Mirrors the scorer's loud failure."""
+    if len(fit_features) < 5:
+        raise ValueError(f"antibody: need >= 5 fit samples, got {len(fit_features)}")
+    x = np.asarray(fit_features, dtype=float)
+    cov = np.atleast_2d(np.cov(x, rowvar=False, ddof=1)) + 1e-9 * np.eye(x.shape[1])
+    return {"min_variance": float(np.var(x, axis=0, ddof=1).min()),
+            "cov_condition": float(np.linalg.cond(cov))}
+
+
+def _worst_fit_diag(df, feats, fit_bars, step_bars):
+    """Worst-across-windows diagnostic for a symbol: min of min_variance, max of
+    cov_condition over the same fit windows walk_forward_states uses."""
+    worst = {"min_variance": float("inf"), "cov_condition": 0.0}
+    for fit_lo, fit_hi, _score_lo, _score_hi in window_bounds(len(df), fit_bars, step_bars):
+        ff = [f for f in feats[fit_lo:fit_hi] if f is not None]
+        if len(ff) < 5:
+            continue
+        d = fit_diagnostics(ff)
+        worst["min_variance"] = min(worst["min_variance"], d["min_variance"])
+        worst["cov_condition"] = max(worst["cov_condition"], d["cov_condition"])
+    if worst["min_variance"] == float("inf"):
+        worst["min_variance"] = 0.0  # no valid window (symbol too short)
+    return worst
+
+
 def _load_trades(run_dir):
     """Filled SB trades from a run-card's signals.jsonl (entered the market)."""
     path = Path(run_dir) / "signals.jsonl"
@@ -742,6 +803,7 @@ def main(argv=None):
     for sym in symbols:
         df = lake.load(sym, tf=args.tf, broker=args.broker)
         states = walk_forward_states(df, args.fit_bars, args.step_bars)
+        fit_diag = _worst_fit_diag(df, compute_features(df), args.fit_bars, args.step_bars)
         wins = alert_windows(states)
         windows_by_symbol[sym] = wins
         n_scored = len(states)
@@ -757,6 +819,7 @@ def main(argv=None):
             "sha256": _sha256_bytes(df.to_csv(index=False).encode()),
             "alert_rate": (n_alert / n_scored) if n_scored else 0.0,
             "n_alert_windows": len(wins),
+            "fit_diag": fit_diag,
             "inside": bucket_metrics(inside), "outside": bucket_metrics(outside),
         }
         for w in wins:
@@ -899,6 +962,12 @@ events (flash moves, liquidity holes), not artifacts.
   validated out-of-sample by criterion 1.
 - The first ~6000 bars per symbol are unscored (warmup); state resets are avoided
   across quarterly refits (one scorer, state carried).
+- **Degeneracy diagnostic:** the fixed ε=1e-9 covariance ridge is scale-blind, so a
+  near-constant feature dimension in a real fit window would dominate the Mahalanobis
+  distance and distort q99. The study-card records per-symbol `fit_diag`
+  (min per-feature variance, worst covariance condition number); the results doc
+  sanity-checks that no symbol's windows are pathologically ill-conditioned. This
+  does not alter the pre-registered ε — it makes the risk empirical.
 - This is a **counterfactual overlay**, not a live A/B: it measures whether ALERT
   windows coincided with worse SB entries, not the causal effect of blocking.
 ```

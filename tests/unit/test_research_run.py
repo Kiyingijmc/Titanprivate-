@@ -25,7 +25,10 @@ sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
 import backtest_engine as bt  # noqa: E402
 
 from lake_import import sniff_and_read  # noqa: E402
-from research_run import main as research_main, _DEFAULT_SPEC, _signals_to_trades  # noqa: E402
+from research_run import (  # noqa: E402
+    main, main as research_main, _DEFAULT_SPEC, _signals_to_trades,
+    _apply_overrides, _pooled_split, _expectancy_lower_bound,
+)
 from src.data.lake import Lake  # noqa: E402
 
 TEST_DATA_CSV = os.path.join(REPO, "test_data.csv")
@@ -351,6 +354,87 @@ class TestSignalsToTradesResolution(unittest.TestCase):
         trades, skipped = _signals_to_trades(
             recs, self._df(bars), 0.0, self.SPEC, 0.0, 5.0)
         self.assertEqual((len(trades), len(skipped)), (0, 0))
+
+
+class TestPooledHelpers(unittest.TestCase):
+    """Plan 07 / Task 8: pure helpers -- no kernel, no I/O."""
+
+    def test_apply_overrides_nested_dotted_path_and_yaml_types(self):
+        cfg = {"strategies": {"gyroscope": {"sprt": {"alpha": 0.05}}}}
+        applied = _apply_overrides(cfg, [
+            "strategies.gyroscope.sprt.alpha=0.065",
+            "signal_grading.min_grade=C",
+        ])
+        self.assertEqual(cfg["strategies"]["gyroscope"]["sprt"]["alpha"], 0.065)
+        self.assertEqual(cfg["signal_grading"]["min_grade"], "C")  # created path
+        self.assertEqual(applied["strategies.gyroscope.sprt.alpha"], 0.065)
+
+    def test_apply_overrides_rejects_malformed(self):
+        with self.assertRaises(ValueError):
+            _apply_overrides({}, ["no_equals_sign"])
+
+    def test_pooled_split_orders_by_time_across_symbols(self):
+        trades = [
+            {"symbol": "A", "bar_idx": 100, "time": "2024-01-03 00:00:00", "outcome": "TP", "r": 1.0},
+            {"symbol": "B", "bar_idx": 5,   "time": "2024-01-04 00:00:00", "outcome": "SL", "r": -1.0},
+            {"symbol": "A", "bar_idx": 101, "time": "2024-01-01 00:00:00", "outcome": "TP", "r": 1.0},
+            {"symbol": "B", "bar_idx": 6,   "time": "2024-01-02 00:00:00", "outcome": "SL", "r": -1.0},
+        ]
+        is_t, oos_t = _pooled_split(trades, 0.5)
+        self.assertEqual([t["time"][:10] for t in is_t], ["2024-01-01", "2024-01-02"])
+        self.assertEqual([t["time"][:10] for t in oos_t], ["2024-01-03", "2024-01-04"])
+
+    def test_expectancy_lower_bound_deterministic_and_sane(self):
+        rs = [0.5, 0.4, 0.6, 0.5, 0.45, 0.55] * 20  # clearly positive
+        lb1 = _expectancy_lower_bound(rs)
+        lb2 = _expectancy_lower_bound(rs)
+        self.assertEqual(lb1, lb2)                      # fixed seed
+        self.assertGreater(lb1, 0.0)
+        self.assertLess(lb1, sum(rs) / len(rs))        # a LOWER bound
+        self.assertEqual(_expectancy_lower_bound([]), 0.0)
+        mixed = [1.0, -1.0] * 5                         # tiny n, mean 0
+        self.assertLess(_expectancy_lower_bound(mixed), 0.0)
+
+
+class TestPooledEndToEnd(unittest.TestCase):
+    """Pooled --lake-symbols e2e over two copies of the golden CSV. Slow
+    (~2 kernel replays). Pins: pooled n_signals = 2x13, per-symbol sections,
+    pooled card schema, spread table applied per symbol."""
+
+    def test_pooled_run_card(self):
+        with tempfile.TemporaryDirectory(prefix="rr_pooled_") as tmp:
+            lake_root = Path(tmp) / "lake"
+            out_dir = Path(tmp) / "results"
+            lake = Lake(str(lake_root))
+            m5 = sniff_and_read(str(Path(REPO) / "test_data.csv"))
+            if "tick_volume" not in m5.columns:
+                m5["tick_volume"] = m5.get("volume", 1)
+            for sym in ("EURUSD", "GBPUSD"):
+                lake.ingest(m5, broker="fbs", symbol=sym, tf="M5")
+            rc = main([
+                "--lake-symbols", "EURUSD,GBPUSD", "--tf", "H1",
+                "--strategy", "silver_bullet", "--spread-mult", "1.0",
+                "--lake-root", str(lake_root), "--out", str(out_dir),
+            ])
+            self.assertEqual(rc, 0)
+            run_dir = next(out_dir.iterdir())
+            card = json.loads((run_dir / "run.json").read_text())
+            self.assertEqual(card["mode"], "pooled")
+            self.assertEqual(card["symbols"], ["EURUSD", "GBPUSD"])
+            self.assertEqual(card["n_signals"], 26)  # 13 golden signals x2
+            for sym in ("EURUSD", "GBPUSD"):
+                per = card["per_symbol"][sym]
+                for key in ("source", "sha256", "n_bars", "n_signals", "n_trades",
+                            "n_skipped_busy", "spread_points", "spec_source", "metrics"):
+                    self.assertIn(key, per)
+                self.assertEqual(per["n_signals"], 13)
+            self.assertIn("expectancy_lower_bound", card["ci"])
+            self.assertIn("is", card["metrics"])
+            self.assertIn("oos", card["metrics"])
+            self.assertEqual(card["spread_assumption"]["spread_mult"], 1.0)
+            # per-symbol FBS spreads differ (EURUSD 8 vs GBPUSD 12 ticks)
+            self.assertNotEqual(card["per_symbol"]["EURUSD"]["spread_points"],
+                                card["per_symbol"]["GBPUSD"]["spread_points"])
 
 
 if __name__ == "__main__":

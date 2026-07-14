@@ -126,6 +126,15 @@ strategies:
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
 
+  # 3. MA-slope baseline — Gyroscope gate criterion 6 reference ONLY.
+  # Never a live candidate; stays research forever.
+  ma_slope_baseline:
+    enabled: true
+    timeframe: "H1"
+    ma_window: 24
+    stop_atr: 1.0
+    rr_target: 2.0
+
 ops:
   journal:
     enabled: true

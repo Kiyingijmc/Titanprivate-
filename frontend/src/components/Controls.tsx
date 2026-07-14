@@ -34,17 +34,30 @@ export function Controls({
   api: Api;
   paused: boolean;
   readOnly: boolean;
-  onResult: (result: { readOnly: true }) => void;
+  onResult: (result: { readOnly?: true; error?: string }) => void;
 }) {
   const [pending, setPending] = useState<DestructiveCommand | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function run(command: string, extra: Record<string, unknown> = {}) {
+    setError(null);
     try {
       await api.postCommand({ command, ...extra });
     } catch (e) {
+      // A failed command — especially a destructive one — must never look like
+      // success. Read-only routes to the read-only banner; every other failure
+      // (network, 5xx, 429 throttle, 422) surfaces a visible operator alert.
       if (isApiError(e) && e.kind === "readOnly") {
         onResult({ readOnly: true });
+        return;
       }
+      const detail = isApiError(e)
+        ? e.kind === "throttled"
+          ? "Rate limited — wait and retry"
+          : e.detail || "Command failed"
+        : "Command failed — check the connection";
+      setError(`${command}: ${detail}`);
+      onResult({ error: detail });
     }
   }
 
@@ -110,6 +123,12 @@ export function Controls({
           <OctagonAlert aria-hidden /> Panic
         </Button>
       </div>
+
+      {error && (
+        <div role="alert" className="flex items-center gap-2 text-sm text-loss">
+          <OctagonAlert className="size-4" aria-hidden /> {error}
+        </div>
+      )}
 
       <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
         <AlertDialogContent>

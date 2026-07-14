@@ -53,6 +53,19 @@ describe("Controls", () => {
     expect(onResult).toHaveBeenCalledWith({ readOnly: true });
   });
 
+  it("surfaces a non-readOnly command failure as a visible alert (never looks like success)", async () => {
+    const onResult = vi.fn();
+    const a = {
+      postCommand: vi.fn().mockRejectedValue({ status: 500, kind: "error", detail: "bridge down" }),
+    } as any;
+    render(<Controls api={a} paused={false} readOnly={false} onResult={onResult} />);
+    // destructive path: confirm, then the failed call must show an alert
+    await userEvent.click(screen.getByRole("button", { name: /panic/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/panic.*bridge down/i);
+    expect(onResult).toHaveBeenCalledWith({ error: "bridge down" });
+  });
+
   it("disables everything in read-only", () => {
     render(<Controls api={api()} paused={false} readOnly onResult={() => {}} />);
     screen.getAllByRole("button").forEach((b) => expect(b).toBeDisabled());

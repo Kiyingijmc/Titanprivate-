@@ -34,8 +34,9 @@ Integrity: rolling mean of NIS = eps^2/S over nis_window bars must sit in
 1 +/- nis_z*sqrt(2/W). Suspension is a RARE failsafe: it triggers only after
 the mean stays out of band for a full window of consecutive bars (a drift
 onset is a brief spike and never trips it; a sustained regime break does).
-While suspended the SPRT emits no decision; it auto-resumes the bar the mean
-returns to band.
+While suspended the SPRT emits no decision and both Lambda statistics FREEZE
+at their pre-suspension values (accumulated evidence is retained, not
+discarded); accumulation resumes the bar the mean returns to band.
 """
 from collections import deque
 from dataclasses import dataclass

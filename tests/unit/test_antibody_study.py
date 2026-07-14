@@ -29,12 +29,24 @@ class TestWindowBounds(unittest.TestCase):
         self.assertEqual([w[3] for w in wins], [15, 20, 25])
 
     def test_partial_last_window(self):
+        # A short tail stays a short final region (NOT back-pinned to a full
+        # step) so score regions never overlap and no bar is scored twice.
         wins = window_bounds(n_bars=23, fit_bars=10, step_bars=5)
-        self.assertEqual(wins[-1], (8, 18, 18, 23))  # last score region is 5 bars
+        self.assertEqual(wins[-1], (10, 20, 20, 23))  # short 3-bar tail region
+        # score regions tile [10, 23) exactly, contiguous, no overlap
+        self.assertEqual([w[2] for w in wins], [10, 15, 20])
+        self.assertEqual([w[3] for w in wins], [15, 20, 23])
 
     def test_no_windows_when_too_short(self):
         self.assertEqual(window_bounds(n_bars=10, fit_bars=10, step_bars=5), [])
         self.assertEqual(window_bounds(n_bars=8, fit_bars=10, step_bars=5), [])
+
+    def test_partial_tail_never_double_scores(self):
+        # Regression guard: non-divisible tail must not overlap the prior window.
+        wins = window_bounds(n_bars=23, fit_bars=10, step_bars=5)
+        scored = [k for _flo, _fhi, lo, hi in wins for k in range(lo, hi)]
+        self.assertEqual(scored, sorted(set(scored)))          # no bar scored twice
+        self.assertEqual(scored, list(range(10, 23)))          # covers [fit_bars, n_bars)
 
 
 class TestAlertWindows(unittest.TestCase):
@@ -125,13 +137,15 @@ class TestWalkForwardLookahead(unittest.TestCase):
         import random
         rng = random.Random(5)
         rows, price = [], 1.0
-        for _ in range(60):
+        # 63 bars with fit_bars=20/step_bars=10 leaves a non-divisible 3-bar
+        # tail -- the case a back-pinned final window would double-score.
+        for _ in range(63):
             d = rng.uniform(-0.0002, 0.0002)
             o, c = price, price + d
             rows.append((o, max(o, c) + 0.0002, min(o, c) - 0.0002, c))
             price = c
         df = pd.DataFrame({
-            "time": pd.date_range("2024-01-01", periods=60, freq="h"),
+            "time": pd.date_range("2024-01-01", periods=63, freq="h"),
             "open": [r[0] for r in rows], "high": [r[1] for r in rows],
             "low": [r[2] for r in rows], "close": [r[3] for r in rows],
         })
@@ -139,7 +153,8 @@ class TestWalkForwardLookahead(unittest.TestCase):
         self.assertTrue(all(s["i"] >= 20 for s in states))
         self.assertTrue(all(s["state"] in ("PATROL", "ALERT") for s in states))
         idxs = [s["i"] for s in states]
-        self.assertEqual(idxs, sorted(set(idxs)))  # monotone, no duplicates
+        self.assertEqual(idxs, sorted(set(idxs)))     # monotone, no duplicates
+        self.assertEqual(idxs, list(range(20, 63)))   # every tail bar scored once
 
 
 if __name__ == "__main__":

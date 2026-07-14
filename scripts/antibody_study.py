@@ -57,25 +57,19 @@ def _git_sha() -> str:
 
 
 def window_bounds(n_bars, fit_bars, step_bars):
-    """Tile [fit_bars, n_bars) into score regions, each with a trailing fit
-    window of fit_bars ending where the score region begins. Full windows tile
-    with no overlap and no gaps; if the tail is shorter than step_bars, the
-    final window is pinned to end exactly at n_bars (full step_bars wide,
-    trailing-fit-window intact) rather than left as an undersized remainder --
-    this may overlap the tail of the second-to-last window."""
-    total = n_bars - fit_bars
-    if total <= 0:
-        return []
-    num_windows = -(-total // step_bars)  # ceil division
+    """Tile [fit_bars, n_bars) into NON-overlapping score regions, each with a
+    trailing fit window of fit_bars ending where the score region begins. A tail
+    shorter than step_bars stays a short final region (NOT back-pinned to a full
+    step) so score regions tile [fit_bars, n_bars) exactly -- every bar is scored
+    once, none twice. Back-pinning the last window would overlap the previous
+    one and double-score / double-feed the tail bars into the rolling state
+    machine (~337 bars/symbol at fit=6000/step=1500 on the study data)."""
     wins = []
-    for i in range(num_windows):
-        if i < num_windows - 1:
-            score_lo = fit_bars + i * step_bars
-            score_hi = score_lo + step_bars
-        else:
-            score_hi = n_bars
-            score_lo = max(fit_bars, n_bars - step_bars)
+    score_lo = fit_bars
+    while score_lo < n_bars:
+        score_hi = min(score_lo + step_bars, n_bars)
         wins.append((score_lo - fit_bars, score_lo, score_lo, score_hi))
+        score_lo = score_hi
     return wins
 
 

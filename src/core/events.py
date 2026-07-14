@@ -142,3 +142,14 @@ class IntentBlocked(Event):
     direction: str = ""
     rule: str = ""
     detail: str = ""
+
+
+@_register
+@dataclass(frozen=True)
+class GuiActionExecuted(Event):
+    """An accepted mutation issued through the control GUI (audit trail)."""
+    name: ClassVar[str] = "GuiActionExecuted"
+    action: str = ""     # e.g. "command:pause", "settings:risk.drawdown_throttle.enabled"
+    args: str = ""       # compact JSON of the request payload
+    outcome: str = ""    # "ok" | "error:<detail>"
+    client: str = ""     # requester IP

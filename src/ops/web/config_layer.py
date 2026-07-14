@@ -22,6 +22,14 @@ def load_layered_config(defaults_path: Path, overrides_path: Path) -> dict:
         defaults = yaml.safe_load(f) or {}
     overrides = {}
     if Path(overrides_path).exists():
-        with open(overrides_path, "r", encoding="utf-8") as f:
-            overrides = yaml.safe_load(f) or {}
+        # overrides.yaml is machine-written (SettingsStore.set, non-atomic). A
+        # truncated/invalid file must NEVER wedge startup (spec: "a bad override
+        # must never wedge startup") — fall back to defaults-only and let the
+        # caller surface the problem, rather than crashing the trading process.
+        try:
+            with open(overrides_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            overrides = loaded if isinstance(loaded, dict) else {}
+        except (yaml.YAMLError, OSError):
+            overrides = {}
     return deep_merge(defaults, overrides)

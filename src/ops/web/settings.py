@@ -13,19 +13,23 @@ import yaml
 
 from .config_layer import deep_merge
 
+# Live safe-subset = ONLY keys whose consumer re-reads config on every use, so a
+# mid-session change actually takes effect without a restart. This is narrower
+# than the v15 spec's original 12-key list: signal_grading.{enabled,min_grade}
+# are pushed to the cached SignalGrader attr by apply_runtime_setting, and
+# risk.drawdown_throttle.* are read fresh by RiskManager.throttle_factor() each
+# sizing call. The 7 keys the spec also listed as "live" (risk.trade.*,
+# risk.account.max_*, trade_management.runner.*) are cached as scalars at
+# __init__ by RiskManager/ExposureManager/TradeManager and never re-read, so
+# applying them live would be a no-op the GUI falsely reports as effective.
+# They are therefore restart-tier here. (Spec amended per operator decision
+# 2026-07-14; see SDD ledger Task 9 Important #1.)
 _SAFE_PATTERNS = [
     r"signal_grading\.enabled",
     r"signal_grading\.min_grade",
-    r"risk\.trade\.risk_per_trade_pct",
-    r"risk\.account\.max_daily_drawdown_pct",
-    r"risk\.account\.max_global_exposure_pct",
     r"risk\.drawdown_throttle\.enabled",
     r"risk\.drawdown_throttle\.trigger_dd_pct",
     r"risk\.drawdown_throttle\.factor",
-    r"trade_management\.runner\.enabled",
-    r"trade_management\.runner\.tighten_on_giveback",
-    r"trade_management\.runner\.giveback_frac",
-    r"trade_management\.runner\.tight_trail_frac",
 ]
 _SAFE_RE = [re.compile(f"^{p}$") for p in _SAFE_PATTERNS]
 

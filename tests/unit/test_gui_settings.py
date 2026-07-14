@@ -23,20 +23,29 @@ def _store(tmp):
 
 class TestSafeSubset(unittest.TestCase):
     def test_whitelisted_keys_are_safe(self):
+        # Only the 5 genuinely-live keys: signal_grading.* (attr-pushed) and
+        # risk.drawdown_throttle.* (read fresh each sizing call).
         with tempfile.TemporaryDirectory() as d:
             s = _store(d)
-            for key in ("signal_grading.min_grade", "risk.trade.risk_per_trade_pct",
+            for key in ("signal_grading.enabled", "signal_grading.min_grade",
                         "risk.drawdown_throttle.enabled",
                         "risk.drawdown_throttle.trigger_dd_pct",
-                        "risk.drawdown_throttle.factor",
-                        "trade_management.runner.tight_trail_frac"):
+                        "risk.drawdown_throttle.factor"):
                 self.assertTrue(s.is_safe(key), key)
 
     def test_restart_tier_keys_are_not_safe(self):
         with tempfile.TemporaryDirectory() as d:
             s = _store(d)
             for key in ("connection.zeromq.push_port", "arbiter.max_total_positions",
-                        "strategies.silver_bullet.enabled"):   # registry owns lifecycle
+                        "strategies.silver_bullet.enabled",   # registry owns lifecycle
+                        # cached-scalar consumers → restart-tier (never re-read config):
+                        "risk.trade.risk_per_trade_pct",
+                        "risk.account.max_daily_drawdown_pct",
+                        "risk.account.max_global_exposure_pct",
+                        "trade_management.runner.enabled",
+                        "trade_management.runner.tighten_on_giveback",
+                        "trade_management.runner.giveback_frac",
+                        "trade_management.runner.tight_trail_frac"):
                 self.assertFalse(s.is_safe(key), key)
 
 

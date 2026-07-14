@@ -38,6 +38,26 @@ class TestLoadLayered(unittest.TestCase):
             self.assertEqual(cfg["signal_grading"]["min_grade"], "A")
             self.assertTrue(cfg["signal_grading"]["enabled"])
 
+    def test_malformed_overrides_falls_back_to_defaults(self):
+        # overrides.yaml is machine-written non-atomically; a truncated/corrupt
+        # file must never wedge startup — it falls back to defaults, not raises.
+        with tempfile.TemporaryDirectory() as d:
+            defaults = Path(d) / "config.yaml"
+            defaults.write_text("signal_grading:\n  min_grade: B\n")
+            overrides = Path(d) / "overrides.yaml"
+            overrides.write_text("signal_grading:\n  min_grade: A\n  bad: [unterminated\n")
+            cfg = load_layered_config(defaults, overrides)   # must not raise
+            self.assertEqual(cfg["signal_grading"]["min_grade"], "B")
+
+    def test_non_dict_overrides_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            defaults = Path(d) / "config.yaml"
+            defaults.write_text("signal_grading:\n  min_grade: B\n")
+            overrides = Path(d) / "overrides.yaml"
+            overrides.write_text("- just\n- a\n- list\n")   # valid YAML, wrong shape
+            cfg = load_layered_config(defaults, overrides)   # must not raise
+            self.assertEqual(cfg["signal_grading"]["min_grade"], "B")
+
 
 if __name__ == "__main__":
     unittest.main()

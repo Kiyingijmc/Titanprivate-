@@ -1,0 +1,41 @@
+import { describe, it, expect } from "vitest";
+import { renderHook, act, waitFor } from "@testing-library/react";
+import { useLiveState } from "./useLiveState";
+
+class FakeWS {
+  static last: FakeWS | null = null;
+  onopen: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: string[] = [];
+  readyState = 0;
+  constructor(public url: string) { FakeWS.last = this; }
+  send(d: string) { this.sent.push(d); }
+  close() { this.readyState = 3; this.onclose?.(); }
+  open() { this.readyState = 1; this.onopen?.(); }
+  message(obj: unknown) { this.onmessage?.({ data: JSON.stringify(obj) }); }
+}
+
+describe("useLiveState", () => {
+  it("sends token as first frame, seeds snapshot, appends events", async () => {
+    const { result } = renderHook(() =>
+      useLiveState("sekret", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, pollFallback: false }));
+    act(() => { FakeWS.last!.open(); });
+    expect(FakeWS.last!.sent[0]).toBe("sekret");         // FIRST frame is the token
+    act(() => { FakeWS.last!.message({ type: "state", health: { paused: false }, positions: [] }); });
+    await waitFor(() => expect(result.current.snapshot).not.toBeNull());
+    expect(result.current.connected).toBe(true);
+    act(() => { FakeWS.last!.message({ type: "event", topic: "IntentBlocked", ts: 1, rule: "opposition" }); });
+    await waitFor(() => expect(result.current.events.at(-1)?.topic).toBe("IntentBlocked"));
+  });
+
+  it("caps the event buffer at 200", async () => {
+    const { result } = renderHook(() =>
+      useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, pollFallback: false, maxEvents: 3 }));
+    act(() => { FakeWS.last!.open(); });
+    act(() => { for (let i = 0; i < 5; i++) FakeWS.last!.message({ type: "event", topic: "T", ts: i }); });
+    await waitFor(() => expect(result.current.events.length).toBe(3));
+    expect(result.current.events[0].ts).toBe(2);         // oldest dropped
+  });
+});

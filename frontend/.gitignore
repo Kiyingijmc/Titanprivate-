@@ -1,0 +1,7 @@
+node_modules
+dist
+*.local
+*.tsbuildinfo
+# emitted by `tsc -b` on the composite node project (reproducible artifacts)
+vite.config.js
+vite.config.d.ts

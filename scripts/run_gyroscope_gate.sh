@@ -4,7 +4,7 @@
 # ~20k-bar kernel replay); run under nohup, sequentially.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY=.venv/bin/python
+PY="${PY:-.venv/bin/python}"   # override for worktrees: PY=/abs/path/to/python
 SYMS="EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,GBPJPY,XAUUSD,US30,BTCUSD"
 OUT=data/results/gyro_gate
 DRY_RUN=0
@@ -13,10 +13,10 @@ DRY_RUN=0
 run() {
   echo "=== [$(date -u +%H:%M:%S)] research_run $* ==="
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "[DRY-RUN] $PY scripts/research_run.py --lake-symbols \"$SYMS\" --tf H1 --set signal_grading.min_grade=C --out \"$OUT\" $*"
+    echo "[DRY-RUN] $PY scripts/research_run.py --lake-symbols \"$SYMS\" --tf H1 --split 0.7 --set signal_grading.min_grade=C --out \"$OUT\" $*"
     return 0
   fi
-  $PY scripts/research_run.py --lake-symbols "$SYMS" --tf H1 \
+  $PY scripts/research_run.py --lake-symbols "$SYMS" --tf H1 --split 0.7 \
       --set signal_grading.min_grade=C --out "$OUT" "$@"
 }
 

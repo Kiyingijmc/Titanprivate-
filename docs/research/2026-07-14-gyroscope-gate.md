@@ -18,8 +18,10 @@ H1 MARKET), status research. Baseline: `ma_slope_baseline` v1.0.0.
 - Parameters: the `strategies.gyroscope` block in `config/config.yaml` at
   this commit (α=0.05, β=0.20, δ=0.40, q_atr_frac=0.05, r_frac=1.0,
   warmup 200, nis_window 50, k_sl 3.0, sl_atr_floor 0.8, rr_target 2.0,
-  reentry_lockout 5). These ARE the pre-registered values; the headline
-  verdict is evaluated at these defaults ONLY.
+  reentry_lockout 5, max_bars_in_trade 48 [live-exit only, outside offline
+  accounting], max_spread_atr_frac 0.10 [vacuous offline, see §honesty]).
+  These ARE the pre-registered values; the headline verdict is evaluated at
+  these defaults ONLY.
 - Cost model: `trade_dollars` (spread + $7/lot commission, broker tick
   specs), spread per symbol = `scripts/poc_sb_stops.SPREADS` ticks ×
   spread-mult. Baseline stress: spread-mult 1.5.

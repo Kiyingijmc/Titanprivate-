@@ -218,5 +218,29 @@ class TestActiveInstancesOrderingAndReport(unittest.TestCase):
         self.assertEqual(row["status"], "live")
 
 
+class TestPriorityOfAndBiasTagging(unittest.TestCase):
+    def _make_loaded_registry(self):
+        m_default = _manifest(id="silver_bullet", requires=())
+        m_priority = _manifest(id="other_strat", priority=60, requires=())
+        params_by_id = {"silver_bullet": {"name": "silver_bullet"}, "other_strat": {"name": "other_strat"}}
+        reg = StrategyRegistry([m_default, m_priority], params_by_id, _LOGGER)
+        reg.load_all()
+        return reg
+
+    def test_priority_of_known_and_unknown(self):
+        reg = self._make_loaded_registry()
+        self.assertEqual(reg.priority_of("silver_bullet"), 50)
+        self.assertEqual(reg.priority_of("nope"), 50)  # unknown -> Intent default
+
+    def test_priority_of_differing_priority(self):
+        reg = self._make_loaded_registry()
+        self.assertEqual(reg.priority_of("other_strat"), 60)
+
+    def test_load_all_tags_instances_with_honors_htf_bias(self):
+        reg = self._make_loaded_registry()
+        inst = reg.instance_of("silver_bullet")
+        self.assertTrue(inst.honors_htf_bias)
+
+
 if __name__ == "__main__":
     unittest.main()

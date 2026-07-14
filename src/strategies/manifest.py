@@ -30,6 +30,7 @@ class StrategyManifest:
     requires: tuple[str, ...]
     status: str
     priority: int = 50
+    honors_htf_bias: bool = True
 
 
 def load_manifest(path) -> StrategyManifest:
@@ -71,6 +72,12 @@ def load_manifest(path) -> StrategyManifest:
     if not isinstance(priority, int) or isinstance(priority, bool):
         raise ManifestError(f"{fname}: field 'priority' must be an int, got {priority!r}")
 
+    honors_htf_bias = data.get("honors_htf_bias", True)
+    if not isinstance(honors_htf_bias, bool):
+        raise ManifestError(
+            f"{fname}: field 'honors_htf_bias' must be a boolean, got {honors_htf_bias!r}"
+        )
+
     return StrategyManifest(
         id=data["id"],
         version=str(data["version"]),
@@ -80,6 +87,7 @@ def load_manifest(path) -> StrategyManifest:
         requires=tuple(requires),
         status=status,
         priority=priority,
+        honors_htf_bias=honors_htf_bias,
     )
 
 

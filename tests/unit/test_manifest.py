@@ -125,5 +125,26 @@ class TestRealSilverBulletManifest(unittest.TestCase):
         self.assertEqual(manifest.status, "live")
 
 
+class TestHonorsHtfBias(unittest.TestCase):
+    def test_honors_htf_bias_defaults_true(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write_yaml(d, "test_strategy.yaml", _valid_data())
+            manifest = load_manifest(path)
+            self.assertTrue(manifest.honors_htf_bias)
+
+    def test_honors_htf_bias_explicit_false(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write_yaml(d, "test_strategy.yaml", _valid_data(honors_htf_bias=False))
+            manifest = load_manifest(path)
+            self.assertFalse(manifest.honors_htf_bias)
+
+    def test_honors_htf_bias_non_bool_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = _write_yaml(d, "test_strategy.yaml", _valid_data(honors_htf_bias="yes"))
+            with self.assertRaises(ManifestError) as ctx:
+                load_manifest(path)
+            self.assertIn("honors_htf_bias", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

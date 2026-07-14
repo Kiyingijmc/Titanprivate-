@@ -68,6 +68,11 @@ class StrategyRegistry:
                     )
 
             self._instances[manifest.id] = instance
+            # Tag the live instance so the controller's HTF-bias filter can
+            # honor the manifest without a registry lookup on the hot path
+            # (and so the registry-less parity/research harnesses default
+            # to honoring via getattr(..., True)).
+            instance.honors_htf_bias = manifest.honors_htf_bias
             self._state[manifest.id] = "LOADED"
 
         names_seen = {}
@@ -154,6 +159,11 @@ class StrategyRegistry:
 
     def state_of(self, strategy_id) -> str:
         return self._state.get(strategy_id)
+
+    def priority_of(self, strategy_id) -> int:
+        """Manifest priority for an id; 50 (the Intent default) when unknown."""
+        manifest = self._by_id.get(strategy_id)
+        return manifest.priority if manifest is not None else 50
 
     def report(self) -> list:
         return [

@@ -2,9 +2,10 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from src.core.events import GuiActionExecuted
 
@@ -14,6 +15,7 @@ from .registry_view import execute_registry_action, registry_report
 from .state_view import build_snapshot, history_rows
 
 _WS_AUTH_TIMEOUT_S = 3.0
+_DEFAULT_DIST_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 
 def _audit(controller, request, action: str, payload, outcome: str) -> None:
@@ -25,7 +27,7 @@ def _audit(controller, request, action: str, payload, outcome: str) -> None:
         pass  # audit must never break the request path
 
 
-def create_app(controller, settings_store, bridge) -> FastAPI:
+def create_app(controller, settings_store, bridge, dist_dir: Path | None = None) -> FastAPI:
     app = FastAPI(title="Titan Control API")
     app.state.controller = controller
 
@@ -102,6 +104,24 @@ def create_app(controller, settings_store, bridge) -> FastAPI:
             pass
         finally:
             bridge.detach(queue)
+
+    # --- Static SPA mount (added last so /api/* and /ws above always win) ---
+    spa_dir = Path(dist_dir) if dist_dir is not None else _DEFAULT_DIST_DIR
+    index_file = spa_dir / "index.html"
+    if index_file.is_file():
+        spa_root = spa_dir.resolve()
+
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            candidate = (spa_dir / full_path).resolve()
+            try:
+                candidate.relative_to(spa_root)
+            except ValueError:
+                candidate = None  # path traversal attempt: fall through to index.html
+            if candidate is not None and candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(index_file)
+    # else: no dist/ built yet -> backend stays headless, no mount, no raise.
 
     return app
 

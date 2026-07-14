@@ -27,3 +27,6 @@ data/lake/**
 
 # --- Research run-cards (reproducible via scripts/research_run.py) ---
 data/results/**
+
+# --- Broker specs snapshot (per-machine; never committed — see CLAUDE.md) ---
+data/specs.json

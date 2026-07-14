@@ -1,7 +1,6 @@
 # tests/unit/test_antibody.py
 # Antibody v1 / Task 1: pure OHLC anomaly scorer. Deterministic synthetic
 # data only (no market data, no randomness beyond a seeded Random).
-import math
 import os
 import random
 import sys
@@ -13,7 +12,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from src.analysis.antibody import (
     AntibodyScorer,
-    Reading,
     compute_features,
     MIN_FIT_SAMPLES,
 )

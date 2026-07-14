@@ -49,7 +49,10 @@ def compute_features(df):
     n = len(df)
     out = [None] * n
     for k in range(1, n):
-        atr = last_atr(df.iloc[:k], period=_ATR_PERIOD)  # bars strictly before k
+        # last_atr only ever reads the trailing period+1 rows (period TRs need
+        # period+1 closes); bound the slice so this stays O(n), not O(n^2), on
+        # the ~19k-bar/symbol study data. Byte-identical to df.iloc[:k] here.
+        atr = last_atr(df.iloc[max(0, k - _ATR_PERIOD - 1):k], period=_ATR_PERIOD)
         if atr <= 0.0:
             continue  # warmup / degenerate -> leave None
         rng = highs[k] - lows[k]

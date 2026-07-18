@@ -1,0 +1,9 @@
+# .mig/requirements — launch gate. TRUST NOTE: cmd lines execute shell.
+require bin git
+require bin jq
+require bin python3
+prefer bin graphify
+prefer cmd "python3 -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)'" "python >= 3.10 (graphify)"
+require file .venv/bin/python
+require file tests/unit
+prefer cmd ".venv/bin/python -c 'import zmq,pandas,numpy'" "core deps importable"

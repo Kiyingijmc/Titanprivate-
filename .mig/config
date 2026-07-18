@@ -1,0 +1,16 @@
+# .mig/config — parsed KEY=VALUE (never sourced); MIG_<KEY> env overrides.
+PROJECT_NAME="titan-ict-bot"
+VERIFY_CMD=".venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'"
+VERIFY_PATHS="src tests main.py bridge scripts"
+DOMAINS="api data models infra"
+RISKY_DOMAINS="execution risk_management order_lifecycle bridge_protocol mql5"
+MODEL_BUILD="sonnet"
+MODEL_REVIEW="sonnet"
+MODEL_STRONG="opus"
+VERIFY_TIMEOUT="1200"
+# Context layer (OPT-IN — uncomment to enable; see assets/context.graphify.example).
+# Fail-SOFT: a broken provider warns and the run proceeds hint-less.
+#CONTEXT_REFRESH_CMD="graphify update ."
+#CONTEXT_ARTIFACT="graphify-out/graph.json"
+#CONTEXT_HINT_FILE=".mig/context-hint.md"
+#CONTEXT_REFRESH_TIMEOUT="120"

@@ -30,3 +30,6 @@ data/results/**
 
 # --- Control GUI overrides (machine state, not source) ---
 config/overrides.yaml
+graphify-out/
+.mig/state/
+.mig/worktrees/

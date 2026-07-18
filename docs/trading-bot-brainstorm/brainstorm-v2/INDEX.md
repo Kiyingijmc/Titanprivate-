@@ -19,9 +19,9 @@ Start with `pass8-synthesis.md` because it is the reconciliation layer: it adjud
 
 ## Headline counts
 
-- **Findings:** F-001…F-042 (39 from the audit + 3 born in Pass 7). Final status: **40 RESOLVED, 2 OPEN-FOR-HUMAN** (F-002 netting-account posture, F-016 platform topology). Zero dangling dispositions.
-- **Decisions:** D-001…D-056 — **49 FINAL, 7 OPEN-FOR-HUMAN**.
-- **Human decision sheet:** 11 items (H1–H11), of which **H1 (netting), H2 (topology), H11 (broker tier)** block live money. See `pass8-synthesis.md` §5.
+- **Findings:** F-001…F-042 (39 from the audit + 3 born in Pass 7). Final status: **42 RESOLVED, zero open** — F-002 and F-016 were ratified by the owner on 2026-07-18 (see `DECISIONS.md`).
+- **Decisions:** D-001…D-056 — all FINAL except the H4-linked tax-lot-policy entry (see `DECISIONS.md`).
+- **Human decision sheet:** 11 items (H1–H11) — **10 ratified per the board's recommendations on 2026-07-18 (`DECISIONS.md`); only H4 (tax lot policy — "ask your accountant") remains open**, blocking tax exports only. Sheet of record: `pass8-synthesis.md` §5.
 - **Calibration register:** CAL-01…CAL-23 (`pass7-innovation.md` §4 + CAL-23 in `pass8-synthesis.md` §1), every deferred number with a starting hypothesis, procedure, and acceptance band.
 - **Milestones:** M0 (trustworthy skeleton) → M8 (roster growth); critical path M0→M1→M2→M3→M4→M6→M7. First admissible G1 verdict is gated behind the gate-control suite ("constitution rule"). First real money is M7 at 25% risk.
 

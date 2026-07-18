@@ -10,6 +10,14 @@ pass1-audit.md and pass3-systems.md §2.6):
 - F-036: binding-order report (dead vs binding limits).
 
 Plus a reload-class tagging check (04-architecture-config.md §B4).
+
+NOTE ON LOCATION: this file lives directly under tests/unit/ (flat, like every
+other test module here) rather than under tests/unit/tradebot/. A test package
+named `tradebot` would shadow the real top-level `tradebot` package during
+`unittest discover -s tests/unit`, so `from tradebot.config.schema import ...`
+would resolve to the test package (which has no `config`) and every case here
+would error out. Keeping the file flat lets the import resolve to the real
+package via the repo root on sys.path.
 """
 
 import unittest

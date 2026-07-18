@@ -11,8 +11,15 @@
 | decide-fate-of-docs-trading-bot | ? | done | brainstorm |  |  | 2026-07-18 | DELIVERED 2026-07-18 (commit 3979ade): docs/trading-bot-brainstorm/ (00-05 + brainstorm-v2 passes 1-8 + INDEX.md) committed to main |
 | intent-arbiter-priority-is-hardcoded-make | ? | inbox | brainstorm |  |  | 2026-07-18 | Intent Arbiter priority is hardcoded — make config-driven (v15 Plan 07+ advisory) |
 | cross-symbol-exposure-cap-missing-v15 | ? | inbox | brainstorm |  |  | 2026-07-18 | cross-symbol exposure cap missing (v15 Plan 10 advisory) |
+| m0-1-tradebot-skeleton-top-level | S | promoted | brainstorm |  |  | 2026-07-18 | M0-1 tradebot skeleton: top-level tradebot/ package + pyproject + config/schema.py (pydantic: hard caps, F-034 risk re-clamp, F-017 correlation-group memberships, F-036 binding-order report, live/next-signal/restart reload classes); acceptance = rejects every pass1 register counter-example. Spec: brainstorm-v2/pass8 M0 + pass3 SS6.1 |
+| m0-2-tradebot-core-clock-py | S | inbox | brainstorm | m0-1-tradebot-skeleton-top-level |  | 2026-07-18 | M0-2 tradebot core/clock.py (Clock protocol, LiveClock monotonic+NTP, SimClock) + core/events.py (envelope: seq/causality/idempotency/schema-version, registry, canonical JSON, upcasters); acceptance = same-input determinism, identical stream twice => identical serialization. Spec: pass3 SS1 |
+| m0-3-tradebot-core-event-log | S | inbox | brainstorm | m0-2-tradebot-core-clock-py |  | 2026-07-18 | M0-3 tradebot core/event_log.py: sole-writer chained SQLite log (seq + prev_hash/row_hash), snapshots every 10k/24h, archive, backup + restore-verify job; acceptance = 5 corruption drills (truncate, payload bit-flip, hash bit-flip, row delete, sidecar corrupt) each produce RECOVERY_REQUIRED, never a clean boot. RISKY-ADJACENT: this is the money-truth substrate. Spec: pass3 SS1.3 |
+| m0-4-tradebot-core-projection-py | S | inbox | brainstorm | m0-3-tradebot-core-event-log |  | 2026-07-18 | M0-4 tradebot core/projection.py (state=fold(events)) + core/recovery.py (verify_and_replay boot sequence) + sole-writer enforcement; acceptance = second-writer attempt fails a test, chain-head determinism. Spec: pass3 SS1.3-1.4 |
+| m0-5-tradebot-core-bus-py | S | inbox | brainstorm | m0-2-tradebot-core-clock-py |  | 2026-07-18 | M0-5 tradebot core/bus.py (ADAPT src/core/bus.py: keep sync deterministic delivery + stats; ADD critical-tier subscribers never circuit-broken, exception=halt+alert) + core/sta.py Signal Transition Actor skeleton. Spec: pass3 SS2.1 + SS6.1 |
+| m0-6-tradebot-ci-skeleton-property | S | inbox | brainstorm | m0-1-tradebot-skeleton-top-level |  | 2026-07-18 | M0-6 tradebot CI skeleton + property tests P4-P8 + P11 groundwork (hypothesis lib decision needed: stdlib-only vs add hypothesis dep — flag at spec time per ask-before-new-deps rule). Spec: pass3 SS7 |
 <!-- /MIG-BACKLOG-TABLE -->
 
 ## Promoted
 <!-- MIG-PROMOTED-LOG -->
+- m0-1-tradebot-skeleton-top-level → minted S001 (2026-07-18)
 <!-- /MIG-PROMOTED-LOG -->

@@ -1,7 +1,7 @@
 # .mig/config — parsed KEY=VALUE (never sourced); MIG_<KEY> env overrides.
 PROJECT_NAME="titan-ict-bot"
 VERIFY_CMD=".venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'"
-VERIFY_PATHS="src tests main.py bridge scripts"
+VERIFY_PATHS="src tests main.py bridge scripts tradebot"
 DOMAINS="api data models infra"
 RISKY_DOMAINS="execution risk_management order_lifecycle bridge_protocol mql5"
 MODEL_BUILD="sonnet"

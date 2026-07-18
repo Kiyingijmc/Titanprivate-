@@ -322,5 +322,60 @@ class TestPrune(LakeTestBase):
         self.assertIn(str(now.year), manifest["fbs"]["USDJPY"]["M5"])
 
 
+class TestFrozenGlobFallback(unittest.TestCase):
+    """Plan 07 / D1: frozen/ partitions are committed to git while
+    manifest.json is gitignored -- load() must fall back to a disk glob
+    under frozen/ so a fresh clone can load committed gate datasets."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="lake_frozen_")
+        self.lake = Lake(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _frame(self, times, base=1.0):
+        return pd.DataFrame({
+            "time": pd.to_datetime(times),
+            "open": [base] * len(times), "high": [base + 1] * len(times),
+            "low": [base - 1] * len(times), "close": [base] * len(times),
+            "tick_volume": [1] * len(times),
+        })
+
+    def _write_frozen(self, broker, symbol, tf, year, frame):
+        pdir = Path(self.tmp) / "frozen" / broker / symbol / tf
+        pdir.mkdir(parents=True, exist_ok=True)
+        frame.to_parquet(pdir / f"{year}.parquet", engine="pyarrow", index=False)
+
+    def test_frozen_partition_loads_without_manifest_entry(self):
+        self._write_frozen("fbs", "EURUSD", "H1", 2024,
+                           self._frame(["2024-01-01 00:00", "2024-01-01 01:00"]))
+        self._write_frozen("fbs", "EURUSD", "H1", 2023,
+                           self._frame(["2023-06-01 05:00"]))
+        df = self.lake.load("EURUSD", tf="H1", broker="fbs")
+        self.assertEqual(len(df), 3)
+        # chronological across year files, oldest first
+        self.assertEqual(str(df["time"].iloc[0]), "2023-06-01 05:00:00")
+        self.assertEqual(str(df["time"].iloc[-1]), "2024-01-01 01:00:00")
+
+    def test_frozen_load_respects_start_end_slicing(self):
+        self._write_frozen("fbs", "EURUSD", "H1", 2024,
+                           self._frame(["2024-01-01 00:00", "2024-01-01 01:00",
+                                        "2024-01-01 02:00"]))
+        df = self.lake.load("EURUSD", tf="H1", broker="fbs",
+                            start="2024-01-01 01:00", end="2024-01-01 01:00")
+        self.assertEqual(len(df), 1)
+
+    def test_manifest_path_still_wins_and_glob_miss_still_raises(self):
+        # ingest() writes through the manifest path -- untouched behavior
+        self.lake.ingest(self._frame(["2024-01-01 00:00"]), broker="fbs", symbol="GBPUSD", tf="H1")
+        df = self.lake.load("GBPUSD", tf="H1", broker="fbs")
+        self.assertEqual(len(df), 1)
+        # no manifest entry AND no frozen dir -> the existing clear error
+        with self.assertRaises(LakeError) as ctx:
+            self.lake.load("USDJPY", tf="H1", broker="fbs")
+        self.assertIn("no lake partitions", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

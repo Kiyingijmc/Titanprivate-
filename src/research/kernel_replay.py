@@ -125,8 +125,11 @@ def replay(df_h1, symbol, strategies, config, window=300, start=60):
     computes from the same window, via the Arbiter/FeatureBus path).
 
     Returns list[dict] SignalRecord: {i, time, bias, signal, price, sl, tp,
-    grade, strategy} — a superset of the golden fixture's element schema
-    (GOLDEN_FIELDS).
+    grade, strategy, type} — a superset of the golden fixture's element
+    schema (GOLDEN_FIELDS). `type` is the decision's order type
+    (`decision["type"]`, e.g. "MARKET"/"LIMIT"; None on no-signal rows) —
+    Plan 07 / Task 7: threaded through so scripts/research_run.py can resolve
+    MARKET signals at the next bar's open instead of assuming LIMIT.
     """
     controller, captured, published = build_research_controller(strategies, config)
     controller.market_data = {symbol: _StubStore(h1_df=None)}
@@ -155,6 +158,7 @@ def replay(df_h1, symbol, strategies, config, window=300, start=60):
                 "tp": float(decision["tp"]),
                 "grade": grade,
                 "strategy": name,
+                "type": decision.get("type"),
             }
         else:
             record = {
@@ -167,6 +171,7 @@ def replay(df_h1, symbol, strategies, config, window=300, start=60):
                 "tp": None,
                 "grade": None,
                 "strategy": None,
+                "type": None,
             }
         records.append(record)
 

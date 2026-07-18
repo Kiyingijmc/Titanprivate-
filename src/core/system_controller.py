@@ -702,8 +702,13 @@ class SystemController:
         for strat in active:
             decision = await strat.on_new_candle(enriched_df, context=ctx)
             if decision:
-                if (bias_str == "BULLISH" and decision['signal'] == "SELL") or \
-                   (bias_str == "BEARISH" and decision['signal'] == "BUY"):
+                # v15.3 (Plan 07): the HTF filter is manifest-driven. Absent
+                # attribute == honors (registry-less fixtures/parity harness
+                # keep today's behavior); non-SMC strategies whose manifest
+                # sets honors_htf_bias: false carry their own bias.
+                if getattr(strat, 'honors_htf_bias', True) and (
+                        (bias_str == "BULLISH" and decision['signal'] == "SELL") or
+                        (bias_str == "BEARISH" and decision['signal'] == "BUY")):
                     continue
 
                 # Confluence grading: journal every signal; execute only those
@@ -733,7 +738,8 @@ class SystemController:
                     symbol=symbol, direction=decision['signal'], kind=decision['type'],
                     price=float(decision['price']), sl=float(decision['sl']), tp=float(decision['tp']),
                     grade=g['grade'],
-                    priority=50,
+                    priority=(registry.priority_of(strategy_id)
+                              if registry is not None else 50),
                 )
                 arb.submit(intent)
                 # Keyed by intent IDENTITY: resolve() returns the same

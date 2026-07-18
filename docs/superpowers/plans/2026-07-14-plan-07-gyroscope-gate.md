@@ -289,18 +289,37 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ### Task 3: `KalmanDrift` — filter + SPRT + NIS integrity monitor
 
+> **⚠️ DESIGN AMENDMENT (2026-07-14, user-approved during execution).** TDD on the
+> original blueprint design (SPRT on whitened innovations `u=ε/√S`) surfaced a genuine
+> flaw: for a level+velocity filter the innovations are absorbed within a few bars of a
+> drift onset, and the NIS monitor then suspends on exactly that transient — the two
+> layers fight, so the SPRT never fires on drift. Also `R = return-variance`
+> over-estimates measurement noise ~2× (NIS≈0.44 not ~1). **Resolution (user chose
+> "velocity-SPRT redesign"):** the SPRT now runs on the filter's **standardized velocity**
+> `z = v̂/√P_vel` (the quantity the filter estimates well — blueprint §3's "trend with an
+> error bar"); `R = 0.5·var(returns)·r_frac` (the 0.5 is the structural return→obs-noise
+> correction, → NIS≈0.85); the NIS suspend is a **rare sustained-break failsafe** (a full
+> window of consecutive out-of-band bars, no `_nis.clear()`), decoupled from gating drift
+> onsets. Pre-registered α/β/δ carry over as the Wald boundaries + effect size (δ in
+> velocity-σ units, nominal since z is autocorrelated — the gate validates the realized
+> rate empirically). **The COMMITTED `src/analysis/kalman_drift.py` and
+> `tests/unit/test_kalman_drift.py` are authoritative** — the code blocks in Steps 1/3
+> below are the superseded original and are retained only for provenance; review against
+> the committed files. Task 4's `Reading` interface is unchanged except an added `z`
+> field; Task 4 still reads `.crossed`/`.state`/`.sqrt_S_price`/`.velocity`.
+
 **Files:**
 - Create: `src/analysis/kalman_drift.py`
 - Test: `tests/unit/test_kalman_drift.py`
 
 **Interfaces:**
 - Consumes: stdlib only (`math`, `collections.deque`, `dataclasses`).
-- Produces: `KalmanDrift(warmup_bars=200, q_atr_frac=0.05, r_frac=1.0, alpha=0.05, beta=0.20, delta=0.40, nis_window=50, nis_z=2.576)` with `.update(log_close: float, atr: float) -> Reading` and attributes `.A`, `.B`, `.suspended`, `.n`. `Reading` frozen dataclass with fields `level, velocity, S, sqrt_S_price, nis, nis_mean, lam_long, lam_short, crossed, state` where `crossed ∈ {"LONG","SHORT",""}` and `state ∈ {"WARMUP","OBSERVE","SUSPENDED"}`. Task 4 constructs one per symbol and reads `.crossed`, `.state`, `.sqrt_S_price`.
+- Produces: `KalmanDrift(warmup_bars=200, q_atr_frac=0.05, r_frac=1.0, alpha=0.05, beta=0.20, delta=0.40, nis_window=50, nis_z=2.576)` with `.update(log_close: float, atr: float) -> Reading` and attributes `.A`, `.B`, `.suspended`, `.n`. `Reading` frozen dataclass with fields `level, velocity, z, S, sqrt_S_price, nis, nis_mean, lam_long, lam_short, crossed, state` where `crossed ∈ {"LONG","SHORT",""}` and `state ∈ {"WARMUP","OBSERVE","SUSPENDED"}`. Task 4 constructs one per symbol and reads `.crossed`, `.state`, `.sqrt_S_price`, `.velocity`.
 
-Design notes the implementer must preserve (from the approved spec §5.1 and blueprint §14.2):
-- SPRT runs on the **whitened innovation** `u = ε/√S`, so it detects drift the filter has *not yet absorbed* — i.e., drift **onsets**. On a series that drifts from bar 1, the filter converges during warmup and the SPRT correctly stays quiet; tests must therefore use flat-then-drift series.
-- Wald boundaries: `A = ln((1−β)/α) ≈ 2.7726` at defaults, `B = ln(β/(1−α)) ≈ −1.5581`. A test reaching `B` resets to 0 (restart accumulation). A crossing resets **both** Λ to 0 (one decision at a time; strategy owns the cooldown).
-- NIS band on the rolling mean of `ε²/S` over `nis_window` bars: mean of W iid χ²₁ has mean 1, variance 2/W → band `1 ± nis_z·√(2/W)` (nis_z=2.576 ≈ 99% two-sided — pre-registered). Violation ⇒ `SUSPENDED`, Λs zeroed, NIS window cleared (re-warm: a fresh full in-band window resumes).
+Design notes (as-built — velocity-SPRT; supersede the pre-amendment bullets):
+- SPRT runs on the **standardized velocity** `z = v̂/√P_vel`; increment `Λ_long += δ·z − δ²/2` (short mirrors with `−z`). It detects **sustained** drift (persistent positive/negative velocity), entering early in a drift episode.
+- Wald boundaries: `A = ln((1−β)/α) ≈ 2.7726` at defaults, `B = ln(β/(1−α)) ≈ −1.5581`. A test reaching `B` resets to 0. A crossing resets **both** Λ to 0 (one decision at a time; strategy owns the cooldown).
+- `R = 0.5·var(returns)·r_frac` (structural 0.5 correction). NIS band on the rolling mean of `ε²/S` over `nis_window` bars: `1 ± nis_z·√(2/W)` (nis_z=2.576). `SUSPENDED` only after the mean is out of band for `nis_persist = nis_window` **consecutive** bars (rare failsafe; a drift onset never trips it); auto-resumes when back in band. No `_nis.clear()`.
 - No wall-clock, no randomness, no numpy — pure deterministic stdlib math.
 
 - [ ] **Step 1: Write the failing tests**

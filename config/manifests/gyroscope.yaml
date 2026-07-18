@@ -1,0 +1,10 @@
+# config/manifests/gyroscope.yaml
+id: gyroscope
+version: "1.0.0"
+class_path: "src.strategies.models.gyroscope:GyroscopeStrategy"
+family: stat
+timeframe: H1
+requires: []
+status: research
+priority: 60
+honors_htf_bias: false

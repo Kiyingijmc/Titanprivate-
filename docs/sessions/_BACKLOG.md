@@ -5,7 +5,7 @@
 |------|-------|--------|--------|-------|----------|-------|------|
 | commit-or-discard-the-untracked-test | ? | inbox | brainstorm |  |  | 2026-07-18 | commit or discard the untracked test tests/unit/test_check_bridge_ip.py |
 | wire-scripts-gui-demo-server-py | ? | inbox | brainstorm |  |  | 2026-07-18 | wire scripts/gui_demo_server.py into the frontend dev workflow or delete |
-| fix-plan-06-flake-test-research | ? | inbox | brainstorm |  |  | 2026-07-18 | fix Plan-06 flake: test_research_run spread/net_r global spec-state leak (order-dependent, pre-existing) |
+| fix-plan-06-flake-test-research | ? | inbox | brainstorm |  |  | 2026-07-18 | fix Plan-06 flake: test_research_run spread/net_r — SHARPENED DIAGNOSIS (S001 gate, 2026-07-19): fails deterministically in isolation in a worktree WITHOUT untracked data/specs.json but passed in isolation on main checkout WITH it => spec resolution reads data/specs.json; fix = hermetic spec fixture + tearDown reset. Related: commit-or-discard-untracked-data-specs |
 | commit-or-discard-untracked-data-specs | ? | inbox | brainstorm |  |  | 2026-07-18 | commit or discard untracked data/specs.json (broker spec cache from check_bridge session) |
 | featurebus-bar-index-single-counter-defect | ? | inbox | brainstorm |  |  | 2026-07-18 | FeatureBus _bar_index single-counter defect — REQUIRED fix before any M5 strategy (per v15 advisory) |
 | decide-fate-of-docs-trading-bot | ? | done | brainstorm |  |  | 2026-07-18 | DELIVERED 2026-07-18 (commit 3979ade): docs/trading-bot-brainstorm/ (00-05 + brainstorm-v2 passes 1-8 + INDEX.md) committed to main |

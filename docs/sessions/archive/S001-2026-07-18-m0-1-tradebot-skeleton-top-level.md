@@ -6,7 +6,7 @@ slug:          "m0-1-tradebot-skeleton-top-level"
 parent_session: "none"
 task_domain:   "models"
 spec_state:    "approved"
-status:        "DRAFT"
+status:        "DONE"
 ---
 
 # titan-ict-bot — Session S001 · 2026-07-18 · "m0-1-tradebot-skeleton-top-level"

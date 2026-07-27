@@ -25,18 +25,23 @@ Scope notes (deliberate, M0-3):
 * Snapshot payloads are caller-supplied. Real projection content (open
   positions, ledger totals, feature-state manifest id) arrives with
   ``core/projection.py`` in M0-4.
-* Sidecars and backups use stdlib ``gzip`` rather than the ``zstd`` named in
-  the design doc, to avoid adding a third-party dependency at M0.
+* Sidecars and backups use stdlib ``gzip``/``tarfile`` rather than the ``zstd``
+  named in the design doc, to avoid adding a third-party dependency at M0.
 * ``backup_and_verify`` writes to a local ``dest_dir``; shipping the verified
-  archive off-box is an ops concern, not this module's.
+  pair of artefacts off-box is an ops concern, not this module's. A backup is
+  *two* files — ``events-<stamp>.sqlite3.gz`` and its
+  ``events-<stamp>.snapshots.tar.gz`` sidecar bundle — and both must travel
+  together, because ``verify_backup`` proves the archive against the bundle,
+  never against the live snapshot directory.
 
-Known deviation, recorded rather than silently "fixed": ``row_hash`` covers
-exactly the fields the design specifies (``prev_hash ‖ seq ‖ schema ‖
-schema_version ‖ ts_event ‖ canonical_json(payload)``). ``actor``,
-``correlation_id``, ``parent_ids`` and ``idempotency_key`` are therefore
+Hash pre-image, recorded so nobody "fixes" a non-existent gap: ``row_hash``
+covers exactly the six fields the design specifies (pass3-systems.md:30 —
+``prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖
+canonical_json(payload)``), so this is spec-compliant. The consequence is that
+``actor``, ``correlation_id``, ``parent_ids`` and ``idempotency_key`` are
 stored but *not* chain-covered, so tampering with them is not detectable by
-:meth:`EventLog.verify_chain`. Widening the pre-image is a spec change and
-belongs to whoever owns §1.1, not to this session.
+:meth:`EventLog.verify_chain`. Widening the pre-image would be a breaking
+change to the hash format and a spec change owned by §1.1, not this session.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ import json
 import os
 import shutil
 import sqlite3
+import tarfile
 import tempfile
 import threading
 import zlib
@@ -89,6 +95,12 @@ _FIELD_SEP = b"\x1f"
 # gzip/zlib surface decompression damage through these three; EOFError is not
 # an OSError, so it has to be named explicitly.
 _DECOMPRESS_ERRORS = (OSError, EOFError, zlib.error)
+
+# A damaged sidecar bundle can fail as a tar problem or as a gzip one.
+_BUNDLE_ERRORS = (tarfile.TarError,) + _DECOMPRESS_ERRORS
+
+#: Suffix of the sidecar bundle that travels with every ``.sqlite3.gz`` backup.
+SNAPSHOT_BUNDLE_SUFFIX = ".snapshots.tar.gz"
 
 
 # ---------------------------------------------------------------------------
@@ -621,8 +633,9 @@ class EventLog:
         sidecar = payload.get("sidecar") if isinstance(payload, dict) else None
         if not sidecar:
             return
-        # Resolved by basename inside this instance's snapshot dir, so a
-        # restored backup can be verified against the live sidecars.
+        # Resolved by basename inside *this instance's* snapshot dir. A probe
+        # opened on a restored backup is given the sidecars extracted from that
+        # backup's own bundle, so it never reads the live directory.
         path = self._snapshot_dir / Path(str(sidecar.get("path", ""))).name
         if not path.exists():
             raise RecoveryRequired(f"snapshot sidecar missing: {path}", seq=seq)
@@ -747,6 +760,12 @@ class EventLog:
         ``snapshot_seq`` must name a retained snapshot at or before
         :meth:`archive_eligible_seq` — archiving past the second-newest
         snapshot would delete the events the retained snapshot needs.
+
+        The Parquet write and the SQLite delete cannot share a transaction, so
+        a crash between them leaves the rows archived *and* still live. That is
+        safe to retry: nothing was deleted, the chain still verifies, and
+        :func:`_write_parquet` drops rows already present in the target file
+        rather than duplicating them.
         """
         with self._lock:
             self.verify_chain()  # only a *verified* chain may be archived
@@ -810,7 +829,14 @@ class EventLog:
     # -- backup ------------------------------------------------------------
 
     def backup_and_verify(self, dest_dir: str | os.PathLike[str]) -> dict:
-        """``VACUUM INTO`` a dated copy, gzip it, then restore and prove it.
+        """``VACUUM INTO`` a dated copy, bundle its sidecars, then prove both.
+
+        Two artefacts are produced and they are one backup:
+        ``events-<stamp>.sqlite3.gz`` and ``events-<stamp>.snapshots.tar.gz``
+        (the snapshot sidecar payloads the chain references). Shipping only the
+        first off-box would leave every spilled snapshot unreconstructable, so
+        :meth:`verify_backup` proves the pair — never the live snapshot
+        directory.
 
         The verification is not optional: an archive that will not restore, or
         that restores to a chain that does not verify, raises
@@ -826,7 +852,8 @@ class EventLog:
             ).strftime("%Y%m%dT%H%M%SZ")
             plain = dest / f"events-{stamp}.sqlite3"
             archive = dest / f"events-{stamp}.sqlite3.gz"
-            for stale in (plain, archive):
+            bundle = dest / f"events-{stamp}{SNAPSHOT_BUNDLE_SUFFIX}"
+            for stale in (plain, archive, bundle):
                 if stale.exists():
                     stale.unlink()
 
@@ -838,6 +865,10 @@ class EventLog:
             finally:
                 plain.unlink(missing_ok=True)
 
+            # The lock is held, and this process is the sole writer, so no new
+            # sidecar can appear between the VACUUM and this bundle.
+            _bundle_sidecars(self._snapshot_dir, bundle)
+
             return self.verify_backup(
                 archive, expect_rows=self.count(), expect_head=self._head
             )
@@ -846,11 +877,25 @@ class EventLog:
         self,
         archive_path: str | os.PathLike[str],
         *,
+        snapshots_archive: str | os.PathLike[str] | None = None,
         expect_rows: int | None = None,
         expect_head: ChainHead | None = None,
     ) -> dict:
-        """Restore ``archive_path`` to a temp path and prove it end to end."""
+        """Restore ``archive_path`` to a temp path and prove it end to end.
+
+        Sidecars are restored from ``snapshots_archive`` (defaulting to the
+        bundle that sits beside ``archive_path``) into the same temp area, and
+        the probe reads *only* those. That is the whole point: a backup whose
+        bundle is missing, damaged, or short of a referenced sidecar must fail
+        here, exactly as it would on a real off-box restore — the live snapshot
+        directory is never consulted and so can never mask the gap.
+        """
         archive_path = Path(archive_path)
+        bundle = (
+            Path(snapshots_archive)
+            if snapshots_archive is not None
+            else _sidecar_bundle_path(archive_path)
+        )
         workdir = Path(tempfile.mkdtemp(prefix="tradebot-eventlog-verify-"))
         try:
             restored = workdir / "restored.sqlite3"
@@ -862,11 +907,26 @@ class EventLog:
                     f"backup {archive_path} could not be decompressed: {exc}"
                 ) from exc
 
+            # A missing bundle is not an error by itself — a log that never
+            # spilled a sidecar needs none. It becomes one below, as a plain
+            # "snapshot sidecar missing" RECOVERY_REQUIRED, the moment the
+            # restored chain actually references a sidecar.
+            restored_snapshots = workdir / "snapshots"
+            restored_snapshots.mkdir(parents=True, exist_ok=True)
+            sidecars = 0
+            if bundle.exists():
+                try:
+                    sidecars = _unbundle_sidecars(bundle, restored_snapshots)
+                except _BUNDLE_ERRORS as exc:
+                    raise BackupVerificationError(
+                        f"backup sidecar bundle {bundle} could not be read: {exc}"
+                    ) from exc
+
             try:
                 probe = EventLog(
                     restored,
                     self._clock,
-                    snapshot_dir=self._snapshot_dir,
+                    snapshot_dir=restored_snapshots,
                     busy_timeout_ms=self._busy_timeout_ms,
                 )
             except sqlite3.DatabaseError as exc:
@@ -899,7 +959,9 @@ class EventLog:
 
             return {
                 "archive": str(archive_path),
+                "snapshots_archive": str(bundle) if bundle.exists() else None,
                 "rows": rows,
+                "sidecars": sidecars,
                 "chain_head": head,
                 "verified": True,
             }
@@ -937,6 +999,64 @@ def _relative_path(path: Path, base: Path) -> str:
         return str(path)
 
 
+def _sidecar_bundle_path(archive_path: Path) -> Path:
+    """The ``…snapshots.tar.gz`` that belongs to a ``…sqlite3.gz`` backup."""
+    name = archive_path.name
+    for suffix in (".sqlite3.gz", ".sqlite3", ".gz"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return archive_path.with_name(name + SNAPSHOT_BUNDLE_SUFFIX)
+
+
+def _bundle_sidecars(snapshot_dir: Path, bundle: Path) -> int:
+    """Tar every snapshot sidecar into ``bundle``, flat, by basename.
+
+    Flat because :meth:`EventLog._verify_sidecar` resolves sidecars by
+    basename; the bundle therefore restores into any directory. Returns the
+    number of files bundled (0, and no file written, if there are none).
+    """
+    if not snapshot_dir.is_dir():
+        return 0
+    files = sorted(p for p in snapshot_dir.iterdir() if p.is_file())
+    if not files:
+        return 0
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    # mtime=0 keeps the gzip header timestamp out; sorted order keeps member
+    # order stable. (Per-member tar mtimes still come from the files.)
+    with open(bundle, "wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w") as tar:
+                for path in files:
+                    tar.add(path, arcname=path.name)
+    return len(files)
+
+
+def _unbundle_sidecars(bundle: Path, dest_dir: Path) -> int:
+    """Extract a sidecar bundle into ``dest_dir``, flat and by basename.
+
+    Members are read and rewritten by hand rather than via ``extractall`` so a
+    crafted bundle cannot write outside ``dest_dir`` (no absolute paths, no
+    ``..``, no symlinks/devices — regular files only).
+    """
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    extracted = 0
+    with tarfile.open(bundle, "r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            name = Path(member.name).name
+            if not name or name in (".", ".."):
+                continue
+            source = tar.extractfile(member)
+            if source is None:
+                continue
+            with source, open(dest_dir / name, "wb") as out:
+                shutil.copyfileobj(source, out)
+            extracted += 1
+    return extracted
+
+
 def _month_key(ts_event_ns: int) -> str:
     return datetime.fromtimestamp(ts_event_ns // 1_000_000_000, timezone.utc).strftime("%Y%m")
 
@@ -946,6 +1066,15 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
 
     Parquet cannot be appended to, so an existing month file is read back and
     rewritten with the new rows concatenated.
+
+    Idempotent under retry, because :meth:`EventLog.archive_before` cannot make
+    the Parquet write and the SQLite delete one transaction: a crash between
+    the two leaves the rows both archived *and* still live, and the next run
+    re-offers exactly the same rows. Rows whose ``seq`` is already in the file
+    are therefore dropped rather than concatenated (Parquet has no unique
+    constraint to lean on), and the result lands via a temp file + atomic
+    rename so a crash mid-write can never leave a half-written month file that
+    the retry would fail to read back.
     """
     try:
         import pyarrow as pa
@@ -976,7 +1105,14 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
     if path.exists():
         existing = pq.read_table(path).select(list(_EVENT_COLUMNS))
         existing = existing.cast(schema).replace_schema_metadata(None)
+        already = set(existing.column("seq").to_pylist())
+        if already:
+            fresh = pa.array([seq not in already for seq in columns["seq"]], type=pa.bool_())
+            table = table.filter(fresh)
         table = pa.concat_tables([existing, table.replace_schema_metadata(None)])
+        # A retry re-offers rows in the same order, but sorting makes the file
+        # deterministic no matter which run wrote which rows.
+        table = table.sort_by([("seq", "ascending")])
 
     seqs = table.column("seq").to_pylist()
     first_index = seqs.index(min(seqs))
@@ -991,4 +1127,10 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
             "source_db": source_db,
         }
     )
-    pq.write_table(table, path)
+    scratch = path.with_name(path.name + ".partial")
+    try:
+        pq.write_table(table, scratch)
+        os.replace(scratch, path)
+    finally:
+        if scratch.exists():
+            scratch.unlink()

@@ -9,6 +9,11 @@ The five drills are the M0 acceptance bar (pass8-synthesis.md:225a): truncate,
 payload bit-flip, row_hash bit-flip, row delete, sidecar corrupt — each must
 produce RECOVERY_REQUIRED, never a clean result.
 
+Two of these cases are RS004 regression guards, both for defects a passing
+suite did not catch: a restore proven with the live snapshots/ destroyed (the
+backup must carry its own sidecars), and an archive retried after a crash
+between the Parquet write and the SQLite delete (no duplicated rows).
+
 NOTE ON LOCATION: this file lives directly under tests/unit/ (flat, like every
 other test module here) rather than under tests/unit/tradebot/. A test package
 named `tradebot` would shadow the real top-level `tradebot` package during
@@ -20,7 +25,9 @@ precedent as tests/unit/test_tradebot_events.py, S003/M0-2.)
 import gzip
 import hashlib
 import json
+import shutil
 import sqlite3
+import tarfile
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -30,11 +37,13 @@ from tradebot.core.clock import SimClock
 from tradebot.core.event_log import (
     GENESIS_PREV_HASH,
     RECOVERY_REQUIRED,
+    SNAPSHOT_BUNDLE_SUFFIX,
     SNAPSHOT_SCHEMA,
     BackupVerificationError,
     ChainHead,
     EventLog,
     RecoveryRequired,
+    _write_parquet,
     compute_row_hash,
 )
 
@@ -474,6 +483,60 @@ class TestArchive(EventLogTestCase):
         with self.assertRaises(ValueError):
             log.archive_before(4)
 
+    def test_retry_after_a_crash_between_parquet_and_delete_does_not_duplicate(self):
+        """RS004 MAJOR: the two steps are not one transaction.
+
+        Reproduces the crash window exactly — step (a) wrote the month file,
+        step (b)'s DELETE never committed — then lets the nightly job retry.
+        """
+        import pyarrow.parquet as pq
+
+        log = self.build_archivable_log()
+        rows = self.raw().execute(
+            "SELECT * FROM events WHERE seq<8 ORDER BY seq ASC"
+        ).fetchall()
+
+        archive_dir = self.tmp / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        _write_parquet(
+            archive_dir / "events-202603.parquet",
+            rows,
+            archived_at_ns=BASE_TS,
+            source_db=str(self.db_path),
+        )
+
+        # SQLite still holds seq 1-7 and the chain still verifies, so the job
+        # runs again with the same boundary.
+        self.assertEqual(log.verify_chain().seq, 12)
+        result = log.archive_before(8)
+
+        table = pq.read_table(result["files"][0])
+        self.assertEqual(table.column("seq").to_pylist(), [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(table.schema.metadata[b"chain_last_seq"], b"7")
+
+    def test_a_second_archive_still_appends_genuinely_new_rows(self):
+        """Dedup must not turn into "never extend an existing month file"."""
+        import pyarrow.parquet as pq
+
+        log = self.build_archivable_log()
+        first = log.archive_before(8)
+
+        self.append_n(log, 3, start=9)   # seq 13-15, snapshot at 16
+        self.append_n(log, 3, start=12)  # seq 17-19, snapshot at 20
+        second = log.archive_before(16)
+
+        self.assertEqual(first["files"], second["files"])
+        table = pq.read_table(second["files"][0])
+        self.assertEqual(table.column("seq").to_pylist(), list(range(1, 16)))
+        self.assertEqual(table.schema.metadata[b"chain_last_seq"], b"15")
+
+    def test_no_partial_parquet_file_is_left_behind(self):
+        log = self.build_archivable_log()
+        result = log.archive_before(8)
+
+        leftovers = [p.name for p in Path(result["files"][0]).parent.iterdir()]
+        self.assertEqual(leftovers, ["events-202603.parquet"])
+
     def test_archived_prefix_cannot_be_faked_by_deleting_rows(self):
         log = self.build_archivable_log()
         log.archive_before(8)
@@ -500,11 +563,97 @@ class TestBackupAndRestore(EventLogTestCase):
         self.assertEqual(result["chain_head"], log.head())
         self.assertTrue(Path(result["archive"]).exists())
         self.assertTrue(Path(result["archive"]).name.endswith(".sqlite3.gz"))
-        # The uncompressed intermediate is not left lying around.
+        # Two artefacts, one backup: the DB dump and its sidecar bundle. The
+        # uncompressed intermediate is not left lying around.
         self.assertEqual(
             sorted(p.name for p in (self.tmp / "backups").iterdir()),
-            [Path(result["archive"]).name],
+            sorted([Path(result["archive"]).name, Path(result["snapshots_archive"]).name]),
         )
+        self.assertTrue(Path(result["snapshots_archive"]).name.endswith(SNAPSHOT_BUNDLE_SUFFIX))
+        self.assertEqual(result["sidecars"], 1)
+
+    def test_backup_bundles_the_sidecars_it_references(self):
+        log = self.build_log_with_a_sidecar()
+        result = log.backup_and_verify(self.tmp / "backups")
+
+        with tarfile.open(result["snapshots_archive"], "r:gz") as tar:
+            names = sorted(tar.getnames())
+        # Flat, by basename — the same name _verify_sidecar resolves.
+        self.assertEqual(names, ["4.json.gz"])
+
+    def test_restore_succeeds_with_the_live_snapshot_directory_destroyed(self):
+        """The disaster this job exists for: the primary host is gone.
+
+        Verification must prove the *archived* sidecars, so nothing may be read
+        out of the still-present local snapshots/ directory (RS004 CRITICAL).
+        """
+        log = self.build_log_with_a_sidecar()
+        archive = Path(log.backup_and_verify(self.tmp / "backups")["archive"])
+
+        shutil.rmtree(self.tmp / "snapshots")
+
+        result = log.verify_backup(archive)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["sidecars"], 1)
+
+    def test_backup_missing_its_sidecar_bundle_fails_loudly(self):
+        log = self.build_log_with_a_sidecar()
+        result = log.backup_and_verify(self.tmp / "backups")
+        Path(result["snapshots_archive"]).unlink()
+        # The live sidecar is untouched: only a check that reads the *backup*
+        # can notice, which is exactly the regression this guards.
+        self.assertTrue((self.tmp / "snapshots" / "4.json.gz").exists())
+
+        with self.assertRaises(BackupVerificationError) as caught:
+            log.verify_backup(result["archive"])
+        self.assertIn("sidecar missing", str(caught.exception))
+
+    def test_backup_with_a_tampered_sidecar_in_the_bundle_fails_loudly(self):
+        log = self.build_log_with_a_sidecar()
+        result = log.backup_and_verify(self.tmp / "backups")
+
+        bundle = Path(result["snapshots_archive"])
+        tampered = self.tmp / "4.json.gz"
+        with gzip.open(tampered, "wb") as handle:
+            handle.write(b'{"blob": "tampered"}')
+        with tarfile.open(bundle, "w:gz") as tar:
+            tar.add(tampered, arcname="4.json.gz")
+
+        with self.assertRaises(BackupVerificationError) as caught:
+            log.verify_backup(result["archive"])
+        self.assertIn("sha256 mismatch", str(caught.exception))
+
+    def test_backup_with_a_damaged_sidecar_bundle_fails_loudly(self):
+        log = self.build_log_with_a_sidecar()
+        result = log.backup_and_verify(self.tmp / "backups")
+        bundle = Path(result["snapshots_archive"])
+        intact = bundle.read_bytes()
+
+        # (a) not a readable container at all.
+        bundle.write_bytes(b"this is not a tar.gz")
+        with self.assertRaises(BackupVerificationError) as caught:
+            log.verify_backup(result["archive"])
+        self.assertIn("could not be read", str(caught.exception))
+
+        # (b) the container truncated mid-stream — whether that surfaces as an
+        # unreadable bundle or as a short sidecar that fails its hash, it must
+        # never verify.
+        bundle.write_bytes(intact[: len(intact) // 2])
+        with self.assertRaises(BackupVerificationError):
+            log.verify_backup(result["archive"])
+
+        bundle.write_bytes(intact)
+        self.assertTrue(log.verify_backup(result["archive"])["verified"])
+
+    def test_a_log_with_no_sidecars_needs_no_bundle(self):
+        log = self.make_log(snapshot_inline_limit=256 * 1024)
+        self.append_n(log, 2)
+        log.snapshot({"kind": "small"})
+
+        result = log.backup_and_verify(self.tmp / "backups")
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["sidecars"], 0)
+        self.assertIsNone(result["snapshots_archive"])
 
     def test_backup_with_a_tampered_row_fails_loudly(self):
         log = self.build_log_with_a_sidecar()
@@ -534,15 +683,16 @@ class TestBackupAndRestore(EventLogTestCase):
         with self.assertRaises(BackupVerificationError):
             log.verify_backup(archive, expect_rows=log.count() + 1)
 
-    def test_backup_of_a_log_whose_sidecar_is_corrupt_fails_loudly(self):
+    def test_backing_up_a_log_whose_live_sidecar_is_corrupt_fails_loudly(self):
+        """You cannot take a good backup of an already-broken log."""
         log = self.build_log_with_a_sidecar()
-        archive = Path(log.backup_and_verify(self.tmp / "backups")["archive"])
 
         with gzip.open(self.tmp / "snapshots" / "4.json.gz", "wb") as handle:
             handle.write(b'{"blob": "tampered"}')
 
-        with self.assertRaises(BackupVerificationError):
-            log.verify_backup(archive)
+        with self.assertRaises(BackupVerificationError) as caught:
+            log.backup_and_verify(self.tmp / "backups")
+        self.assertIn("sha256 mismatch", str(caught.exception))
 
     def _rewrite_inside_archive(self, archive, sql, params):
         """Decompress, tamper with the SQLite copy, recompress in place."""

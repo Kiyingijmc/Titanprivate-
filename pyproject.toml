@@ -13,5 +13,12 @@ dependencies = [
     "pyarrow>=15.0",
 ]
 
+[project.optional-dependencies]
+# Test-only. Deliberately NOT in [project] dependencies — nothing importing
+# tradebot at runtime needs a property-based testing library. Install with
+# `pip install -e .[test]`. pass3-systems.md §7.2 names this library for the
+# property tier; it is unittest-native, so no pytest is implied.
+test = ["hypothesis>=6,<7"]
+
 [tool.setuptools.packages.find]
 include = ["tradebot*"]

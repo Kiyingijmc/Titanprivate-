@@ -13,16 +13,23 @@ PR: ruff+mypy -> unit -> property (P1-P10) -> sim scenarios (§7.3)
     -> golden parity (pinned) -> build image
 ```
 
-`.github/workflows/ci.yml` implements the tiers whose subject matter exists
-today and declares the rest as named, commented placeholders. A tier that
-passes without asserting anything is worse than a missing tier — it reads as
-coverage the repo does not have.
+`scripts/run_pr_checks.sh` runs the tiers whose subject matter exists today and
+declares the rest as named, commented no-ops. A tier that passes without
+asserting anything is worse than a missing tier — it reads as coverage the repo
+does not have.
+
+**There is no hosted CI.** This repo has no git remote, so nothing runs on push;
+`run_pr_checks.sh` is invoked by hand (or by a future hook). "Blocking" below
+means the script exits non-zero — not that a service enforces it. Wiring a
+hosted runner is a separate decision that has to wait for a remote to exist;
+committing a workflow file before then would leave unrunnable config drifting
+out of date, unverified.
 
 | Tier | State | Blocked on |
 |---|---|---|
 | lint (ruff + mypy) | **not wired** | No lint config exists (`CLAUDE.md`: "There is no linter/build step configured"). Turning it on needs an agreed rule set plus a per-directory ratchet — `tradebot/` strict, inherited `src/` grandfathered — which is its own session. |
-| unit (§7.1) | **wired, blocking** | — Runs `.mig/config`'s `VERIFY_CMD` verbatim, so CI and the mig session gate cannot disagree about "green". |
-| property (§7.2) | **wired, blocking** | — P4–P8 + P11 groundwork. See §2. |
+| unit (§7.1) | **in the script, blocking** | — Runs `.mig/config`'s `VERIFY_CMD` verbatim, so the script and the mig session gate cannot disagree about "green". |
+| property (§7.2) | **in the script, blocking** | — P4–P8 + P11 groundwork. See §2. |
 | sim scenarios (§7.3) | not wired | The §5 kernel (M1) and the risk/execution machinery every row of that table asserts against (M2). |
 | golden parity (§5.6 / §7.5) | not wired | M1's frozen lake **and its committed manifest**. The v15 Plan-07 lesson applies directly: a gitignored manifest makes the parity job resolve nothing and pass. |
 | build image | not wired | No Dockerfile; deployment topology (§8.1(b)) is still an open human decision. |
@@ -82,31 +89,32 @@ below 1e-4, and therefore its `row_hash`. No stored log is affected — M0 is a
 skeleton with nothing deployed — but after M1 the same change would need a
 chain migration, not an edit.
 
-## 3 · Dependency decision: no `hypothesis`
+## 3 · Dependency decision: `hypothesis` pinned; the delivered tests are stdlib-seeded
 
 The M0-6 backlog line flagged this explicitly ("hypothesis lib decision needed:
 stdlib-only vs add hypothesis dep — flag at spec time per ask-before-new-deps
 rule"), and `pass3-systems.md` §7.2 is headed "Property-based (hypothesis lib)".
 
-**Decision: stdlib-only** — seeded `random.Random` plus `unittest.subTest`. No
-new dependency; `requirements.txt` is unchanged.
+It was resolved at spec time, as the rule requires: the approved S007 spec
+(2026-07-27) pins `hypothesis>=6,<7` in `requirements.txt` and as a
+`[project.optional-dependencies] test` extra in `pyproject.toml`. The pin
+settles the version question with the owner in the loop.
 
-Reasons, in order of weight:
+The tests in `tests/unit/test_tradebot_properties.py` nonetheless run on seeded
+`random.Random` plus `unittest.subTest` today, and import nothing from
+`hypothesis`:
 
-1. `CLAUDE.md` requires asking before adding a dependency, and this session ran
-   unattended. "Add a dep" is not a call an unattended session may make.
-2. Every runner in this repo is stdlib `unittest`. `hypothesis`'s real value is
-   shrinking and its `@given`/`@settings` decorators; its example database and
-   deadline machinery add run-to-run variability that the mig verify gate reads
-   as flake (this repo has already spent a session on one flake).
-3. Fixed seeds make a CI failure reproducible from the seed alone, with no
-   `.hypothesis` directory to ship or ignore.
+1. Fixed seeds make a failure reproducible from the seed alone, with no
+   `.hypothesis` example database to ship or ignore.
+2. `hypothesis`'s deadline/example-DB machinery adds run-to-run variability
+   that the mig verify gate reads as flake (this repo has already spent a
+   session on one flake). P4–P8 have small, well-understood input spaces where
+   shrinking — hypothesis's real value — is not yet earning its variance.
 
 **The cost, named:** no shrinking, so a counter-example arrives at full size;
-and coverage is only as good as the hand-written generators. Neither bites yet
-— P4–P8 have small, well-understood input spaces.
+and coverage is only as good as the hand-written generators.
 
-**Revisit at M1**, where P1 (incremental == batch across every feature node) is
-the invariant that genuinely wants shrinking over long random bar streams. If
-`hypothesis` is adopted then, adopt it as an ADR with the owner in the loop,
-not in passing.
+**Adopt `@given` at M1**, where P1 (incremental == batch across every feature
+node) genuinely wants shrinking over long random bar streams — the pinned
+version is already agreed, so that session starts from `@given`, not from
+re-opening the dependency question.

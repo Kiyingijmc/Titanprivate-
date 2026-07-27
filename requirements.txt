@@ -38,3 +38,10 @@ uvicorn>=0.30,<1.0
 # GET /api/state polling fallback survives). The Starlette TestClient masks
 # this because it implements WS in-process — a real uvicorn server needs it.
 websockets>=12,<16
+# Property-based test tier (pass3-systems.md §7.2 names this library; pinning it
+# was approved in the S007 spec, 2026-07-27). Test-only and unittest-native —
+# @given works on TestCase methods, so no pytest is pulled in. The current
+# tests/unit/test_tradebot_properties.py is still seeded-stdlib (no import yet);
+# the pin is here so the M1 property tier (P1 needs shrinking) starts from an
+# agreed version rather than re-opening the dependency question.
+hypothesis>=6,<7

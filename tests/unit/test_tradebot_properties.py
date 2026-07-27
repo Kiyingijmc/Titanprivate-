@@ -3,8 +3,8 @@
 The named invariant table is
 docs/trading-bot-brainstorm/brainstorm-v2/pass3-systems.md §7.2; P11 is
 pass6-accounting.md §6.3 (the rounding law of pass6-accounting.md:58). This
-module is the property tier of the CI pipeline (pass3 §8.6), wired in
-.github/workflows/ci.yml.
+module is the property tier of the PR checks (pass3 §8.6), run by
+scripts/run_pr_checks.sh — there is no hosted CI while the repo has no remote.
 
 Live here today
 ---------------
@@ -240,7 +240,14 @@ class TestP4PreImageBoundary(unittest.TestCase):
     which belongs to a session that can decide it.
     """
 
-    UNCHAINED = ("event_id", "correlation_id", "actor", "idempotency_key")
+    UNCHAINED = (
+        "event_id",
+        "ts_ingest",
+        "correlation_id",
+        "parent_ids",
+        "actor",
+        "idempotency_key",
+    )
 
     def test_columns_outside_the_documented_pre_image_are_not_chained(self):
         with tempfile.TemporaryDirectory() as name:
@@ -810,12 +817,47 @@ class TestP11PostingBalance(unittest.TestCase):
         self.assertEqual(round_posting([Decimal("1.5"), Decimal("-1.5")]), [2, -2])
         self.assertEqual(round_posting([Decimal("2.5"), Decimal("-2.5")]), [2, -2])
 
-    def test_the_law_is_deterministic(self):
+    def test_the_law_does_not_mutate_its_input(self):
+        """Re-rounding the same sequence yields the same answer.
+
+        NB this is a *non-mutation* check and nothing more: `list(lines)` is a
+        shallow copy in the same order, so it holds for any pure function of the
+        input. The determinism that actually matters -- which line absorbs the
+        residual when two are tied for largest -- is pinned by the test below.
+        """
         for index in range(CASES):
             rng = case_rng(index)
             lines = self._posting(rng)
             with self.subTest(seed=SEED + index):
                 self.assertEqual(round_posting(lines), round_posting(list(lines)))
+
+    def test_ties_for_largest_line_break_to_the_lowest_index(self):
+        """The residual lands on a *position*, not on whichever tied line the
+        iteration happened to reach first.
+
+        `round_posting`'s own comment claims "ties broken by lowest index so the
+        law is deterministic rather than dict/sort-order dependent" -- but no
+        assertion held it to that. Swap the tie-break to the highest index and
+        every other test in this class still passes, while M2 would inherit a
+        ledger whose residual lands somewhere else.
+
+        Both postings below have their largest magnitude (4.4) tied across
+        indices 0 and 1 and need a -1 residual absorbed, so the absorber is
+        observable in the output: it is the only line that moves off its own
+        half-even rounding.
+        """
+        lines = [Decimal("4.4"), Decimal("-4.4"), Decimal("0.5"), Decimal("0.5"), Decimal("-1")]
+        # 4.4 -> 4 half-even; index 0 absorbs the -1 residual, so 4 -> 5.
+        self.assertEqual(round_posting(lines), [5, -4, 0, 0, -1])
+
+        # Same tie, opposite signs on the tied pair. Index 0 still absorbs
+        # (-4 -> -3), proving the choice follows index, not sign or magnitude
+        # ordering. A highest-index tie-break would move it to index 1 here.
+        mirrored = [Decimal("-4.4"), Decimal("4.4"), Decimal("0.5"), Decimal("0.5"), Decimal("-1")]
+        self.assertEqual(round_posting(mirrored), [-3, 4, 0, 0, -1])
+
+        for result in (round_posting(lines), round_posting(mirrored)):
+            self.assertEqual(sum(result), 0, "a posting must still balance exactly")
 
     def test_a_posting_that_does_not_sum_to_zero_is_refused(self):
         with self.assertRaises(ValueError):

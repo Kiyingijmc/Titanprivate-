@@ -16,6 +16,7 @@ S001/M0-1.)
 
 import unittest
 
+from tradebot.core import events as events_module
 from tradebot.core.events import (
     Envelope,
     canonical_json,
@@ -112,6 +113,24 @@ class TestEnvelopeDeterminism(unittest.TestCase):
 
 
 class TestUpcasting(unittest.TestCase):
+    # The @register/@register_upcaster decorators below write into
+    # tradebot.core.events' module-global registries. Without a restore they
+    # leak `test.upcast_demo` into every later test module in the same
+    # `unittest discover` run (RS003 MINOR). Snapshot + restore in place, so
+    # the dicts other modules hold references to stay the same objects.
+    def setUp(self):
+        self._saved = {
+            name: dict(getattr(events_module, name))
+            for name in ("_REGISTRY", "_CURRENT_VERSION", "_UPCASTERS")
+        }
+        self.addCleanup(self._restore_registries)
+
+    def _restore_registries(self):
+        for name, saved in self._saved.items():
+            live = getattr(events_module, name)
+            live.clear()
+            live.update(saved)
+
     def test_v1_payload_upcasts_to_v2_shape_through_the_registry(self):
         schema = "test.upcast_demo"
 

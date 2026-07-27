@@ -5,7 +5,7 @@
 |------|-------|--------|--------|-------|----------|-------|------|
 | commit-or-discard-the-untracked-test | ? | inbox | brainstorm |  |  | 2026-07-18 | commit or discard the untracked test tests/unit/test_check_bridge_ip.py |
 | wire-scripts-gui-demo-server-py | ? | inbox | brainstorm |  |  | 2026-07-18 | wire scripts/gui_demo_server.py into the frontend dev workflow or delete |
-| fix-plan-06-flake-test-research | ? | inbox | brainstorm |  |  | 2026-07-18 | fix Plan-06 flake: test_research_run spread/net_r — SHARPENED DIAGNOSIS (S001 gate, 2026-07-19): fails deterministically in isolation in a worktree WITHOUT untracked data/specs.json but passed in isolation on main checkout WITH it => spec resolution reads data/specs.json; fix = hermetic spec fixture + tearDown reset. Related: commit-or-discard-untracked-data-specs |
+| fix-plan-06-flake-test-research | ? | promoted | brainstorm |  |  | 2026-07-18 | fix Plan-06 flake: test_research_run spread/net_r — SHARPENED DIAGNOSIS (S001 gate, 2026-07-19): fails deterministically in isolation in a worktree WITHOUT untracked data/specs.json but passed in isolation on main checkout WITH it => spec resolution reads data/specs.json; fix = hermetic spec fixture + tearDown reset. Related: commit-or-discard-untracked-data-specs |
 | commit-or-discard-untracked-data-specs | ? | inbox | brainstorm |  |  | 2026-07-18 | commit or discard untracked data/specs.json (broker spec cache from check_bridge session) |
 | featurebus-bar-index-single-counter-defect | ? | inbox | brainstorm |  |  | 2026-07-18 | FeatureBus _bar_index single-counter defect — REQUIRED fix before any M5 strategy (per v15 advisory) |
 | decide-fate-of-docs-trading-bot | ? | done | brainstorm |  |  | 2026-07-18 | DELIVERED 2026-07-18 (commit 3979ade): docs/trading-bot-brainstorm/ (00-05 + brainstorm-v2 passes 1-8 + INDEX.md) committed to main |
@@ -17,9 +17,11 @@
 | m0-4-tradebot-core-projection-py | S | inbox | brainstorm | m0-3-tradebot-core-event-log |  | 2026-07-18 | M0-4 tradebot core/projection.py (state=fold(events)) + core/recovery.py (verify_and_replay boot sequence) + sole-writer enforcement; acceptance = second-writer attempt fails a test, chain-head determinism. Spec: pass3 SS1.3-1.4 |
 | m0-5-tradebot-core-bus-py | S | inbox | brainstorm | m0-2-tradebot-core-clock-py |  | 2026-07-18 | M0-5 tradebot core/bus.py (ADAPT src/core/bus.py: keep sync deterministic delivery + stats; ADD critical-tier subscribers never circuit-broken, exception=halt+alert) + core/sta.py Signal Transition Actor skeleton. Spec: pass3 SS2.1 + SS6.1 |
 | m0-6-tradebot-ci-skeleton-property | S | inbox | brainstorm | m0-1-tradebot-skeleton-top-level |  | 2026-07-18 | M0-6 tradebot CI skeleton + property tests P4-P8 + P11 groundwork (hypothesis lib decision needed: stdlib-only vs add hypothesis dep — flag at spec time per ask-before-new-deps rule). Spec: pass3 SS7 |
+| mig-cannot-retire-backlog-rows-delivered | S | inbox | discovered |  |  | 2026-07-27 | mig cannot retire backlog rows delivered outside a session: _slug_delivered (mig:142) only recognises DONE sessions in _INDEX, and triage Cat-1 auto-retire (mig:1474) only deletes rows already status=done whose _row_cited_id matches a session id — commit SHAs never match, so the hand-set 'decide-fate-of-docs-trading-bot' row is permanently stuck. Needs a 'mig backlog done <slug> --by <sha>' path. Rows awaiting it: commit-or-discard-the-untracked-test + wire-scripts-gui-demo-server-py + commit-or-discard-untracked-data-specs (all delivered 2026-07-27 by 2ae4dbb/a9e678f/d05efd3) |
 <!-- /MIG-BACKLOG-TABLE -->
 
 ## Promoted
 <!-- MIG-PROMOTED-LOG -->
 - m0-1-tradebot-skeleton-top-level → minted S001 (2026-07-18)
+- fix-plan-06-flake-test-research → minted S002 (2026-07-19)
 <!-- /MIG-PROMOTED-LOG -->

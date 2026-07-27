@@ -190,11 +190,21 @@ class TestUnknownStrategyCleanError(_ResearchRunTestBase):
 
 class TestSpreadFlowsIntoNetR(_ResearchRunTestBase):
     def test_different_spreads_produce_different_expectancy(self):
+        # Pin BTCUSD's tick spec to a fixture file instead of falling through
+        # to the ambient (untracked, possibly-absent) data/specs.json, so the
+        # net-R math this test asserts on doesn't depend on workspace state.
+        specs_path = Path(self._tmpdir) / "specs.json"
+        specs_path.write_text(json.dumps({
+            "BTCUSD": {"tick_size": 1e-5, "tick_value": 1.0, "vol_step": 0.01},
+        }))
+
         rc1, _ = self._run(self._base_argv(**{
             "--spread-pips": "5", "--out": str(self.out_dir / "cheap"),
+            "--specs": str(specs_path),
         }))
         rc2, _ = self._run(self._base_argv(**{
             "--spread-pips": "500", "--out": str(self.out_dir / "expensive"),
+            "--specs": str(specs_path),
         }))
         self.assertEqual(rc1, 0)
         self.assertEqual(rc2, 0)

@@ -157,7 +157,7 @@ class Envelope:
     ts_event: int
     ts_ingest: int
     actor: str
-    payload: dict
+    payload: dict = field(hash=False)
     event_id: str = field(default_factory=uuid7)
     correlation_id: str | None = None
     parent_ids: tuple[str, ...] = ()

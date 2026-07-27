@@ -112,6 +112,45 @@ class TestEnvelopeDeterminism(unittest.TestCase):
         self.assertEqual(pass_one, [encode_envelope(e) for e in envelopes])
 
 
+class TestEnvelopeHashability(unittest.TestCase):
+    # RS003 MINOR: `Envelope` is `@dataclass(frozen=True)`, which auto-derives
+    # `__hash__` over every field including `payload: dict` — a dict is
+    # unhashable, so `hash(env)`/`{env}` raised TypeError for every envelope.
+    # Fixed at the source (`payload: dict = field(hash=False)`) rather than
+    # avoided by any one caller (core/bus.py's dedup path, M0-5).
+    @staticmethod
+    def _envelope(payload):
+        return Envelope(
+            schema="test.hashability",
+            schema_version=1,
+            ts_event=1,
+            ts_ingest=2,
+            actor="core",
+            payload=payload,
+        )
+
+    def test_hash_returns_an_int(self):
+        env = self._envelope({"a": 1})
+        self.assertIsInstance(hash(env), int)
+
+    def test_envelope_usable_in_a_set_and_as_a_dict_key(self):
+        env = self._envelope({"a": 1})
+        self.assertEqual({env}, {env})
+        self.assertEqual({env: "v"}[env], "v")
+
+    def test_envelopes_differing_only_in_payload_hash_equal_but_compare_unequal(self):
+        env_a = Envelope(
+            schema="test.hashability", schema_version=1, ts_event=1, ts_ingest=2,
+            actor="core", payload={"a": 1}, event_id="00000000-0000-7000-8000-000000000001",
+        )
+        env_b = Envelope(
+            schema="test.hashability", schema_version=1, ts_event=1, ts_ingest=2,
+            actor="core", payload={"a": 2}, event_id="00000000-0000-7000-8000-000000000001",
+        )
+        self.assertEqual(hash(env_a), hash(env_b))
+        self.assertNotEqual(env_a, env_b)
+
+
 class TestUpcasting(unittest.TestCase):
     # The @register/@register_upcaster decorators below write into
     # tradebot.core.events' module-global registries. Without a restore they

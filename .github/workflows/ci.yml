@@ -1,0 +1,117 @@
+# CI skeleton — PR tiers (M0-6).
+#
+# Implements the *PR row* of the pipeline in
+# docs/trading-bot-brainstorm/brainstorm-v2/pass3-systems.md §8.6:
+#
+#     PR: ruff+mypy -> unit -> property (P1-P10) -> sim scenarios (§7.3)
+#         -> golden parity (pinned) -> build image
+#
+# Only the tiers whose subject matter exists today are wired and blocking.
+# The rest are declared here as named, commented placeholders rather than
+# green no-op jobs, because a job that passes without asserting anything reads
+# as coverage the repo does not have (the S004 lesson: a green suite is not
+# evidence). Each placeholder names the milestone that turns it on.
+#
+# See docs/TRADEBOT_CI.md for the tier table and the stdlib-only decision on
+# the property tier.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same ref cancels the older run: these tiers are gates,
+# not history.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # pyproject.toml declares requires-python = ">=3.10"; CI pins one version so
+  # a tier failure is never "which interpreter?". Widen to a matrix when M1
+  # pins the lake's pyarrow/pandas versions.
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # -- Tier 2: unit (pass3 §7.1) ------------------------------------------
+  # The whole repo suite: Titan v14 (src/) + tradebot/ M0 modules. This is
+  # VERIFY_CMD from .mig/config, verbatim, so CI and the session gate cannot
+  # disagree about what "green" means.
+  unit:
+    name: unit (§7.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Unit suite
+        run: python -m unittest discover -s tests/unit -p 'test_*.py'
+
+  # -- Tier 3: property (pass3 §7.2) --------------------------------------
+  # Named invariants P1-P10 (+ P11-P15 as later passes land them). Runs as its
+  # own job so a property failure is legible in the checks list without
+  # reading a 600-test log, and so its seeds can be re-run alone.
+  #
+  # Live today: P4 P5 P6 P7 P8 + P11 groundwork (M0-6, this session).
+  # Deferred:   P1 P2 P3 P9 P10 (features/sizing/ledger/BarClock/reconcile do
+  #             not exist yet — M1/M2).
+  property:
+    name: property (§7.2 P4-P8, P11 groundwork)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Property invariants
+        run: python -m unittest discover -s tests/unit -p 'test_tradebot_properties.py' -v
+
+  # -- Tiers not yet wired -------------------------------------------------
+  #
+  # lint (ruff + mypy) — pass3 §8.6 tier 1.
+  #   Blocked on: no ruff/mypy configuration exists in this repo (CLAUDE.md:
+  #   "There is no linter/build step configured"), and the inherited src/ tree
+  #   would fail thousands of checks on day one. Turning this on means first
+  #   agreeing the rule set and a per-directory ratchet (tradebot/ strict,
+  #   src/ grandfathered). Own milestone, own session.
+  #
+  # sim-scenarios — pass3 §7.3 scenario library, run on the §5 kernel.
+  #   Blocked on: the kernel (M1) and the risk/execution machinery every row
+  #   of that table asserts against (M2). Nothing to drive yet.
+  #
+  # golden-parity — pass3 §5.6 / §7.5, zero-tolerance element-for-element diff
+  #   against a pinned golden fixture.
+  #   Blocked on: M1's frozen lake + COMMITTED manifest. The v15 Plan-07
+  #   pre-req applies: commit the frozen manifest before the gate dataset, or
+  #   CI resolves a gitignored path and silently passes on nothing.
+  #
+  # build-image — container build, the artifact main->staging deploys.
+  #   Blocked on: there is no Dockerfile; deployment topology (pass3 §8.1(b),
+  #   Linux core + Windows MT5 bridge) is an open human decision (errand H2).
+  #
+  # nightly (chaos §7.4 25 seeds, corruption drills, determinism, full golden)
+  #   is a separate workflow file, not this one: it is schedule-driven and
+  #   needs the docker-compose harness (core + simbroker + toxiproxy) that
+  #   M1 builds.

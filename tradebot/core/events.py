@@ -21,6 +21,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Callable
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,9 @@ def uuid7() -> str:
 # ---------------------------------------------------------------------------
 # Canonical JSON (F-038): sorted keys, NaN/Infinity forbidden, numerics
 # normalized (int-valued floats emitted as ints, no exponent notation,
-# -0 -> 0).
+# -0 -> 0). The normalization is deliberately many-to-one on *equivalent*
+# numbers (20 / 20.0 / -0.0 vs 0) and one-to-one on everything else --
+# property P7 (tests/unit/test_tradebot_properties.py) fuzzes both halves.
 # ---------------------------------------------------------------------------
 
 
@@ -88,8 +91,16 @@ def _encode_float(value: float) -> str:
     text = repr(value)
     if "e" not in text and "E" not in text:
         return text
-    text = f"{value:.17f}".rstrip("0")
-    return text if not text.endswith(".") else text + "0"
+    # repr fell back to exponent notation. Only the small side is reachable
+    # here: every float >= 2**53 is integral and returned above, so this
+    # branch means |value| < 1e-4.
+    #
+    # Decimal(value) is the *exact* binary value of the float, so formatting
+    # it with 'f' is lossless and injective. The previous f"{value:.17f}"
+    # was neither: it truncated at 17 decimal places, which collapsed every
+    # float below ~1e-17 onto the string "0.0" — two distinct params hashing
+    # identical, exactly the F-038 collision property P7 forbids.
+    return format(Decimal(value), "f")
 
 
 # ---------------------------------------------------------------------------

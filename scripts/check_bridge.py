@@ -12,29 +12,49 @@
 
 import asyncio
 import os
-import socket
+import re
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.execution.bridge_zmq import ZMQBridge
 
+_EA_IP_HINT = "<unknown: run `ip -4 addr show eth0`>"
 
-def _wsl_ip():
-    """Best-effort: the eth0 IP Windows should target in the EA's InpIP."""
+
+def _ea_target_ip(wslinfo_out, eth0_out):
+    """The IP the EA's InpIP must point at, from `wslinfo --networking-mode` and
+    `ip -4 addr show eth0` text.
+
+    Mirrored mode shares localhost across the Windows/WSL boundary, so the EA
+    connects to 127.0.0.1 — the eth0 address there is the host's own LAN IP and
+    does NOT hairpin back. NAT mode needs WSL's eth0 address. When wslinfo is
+    unavailable, fall back to the 172.x NAT heuristic broker._pick_host uses.
+    """
+    addrs = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", eth0_out)
+    mode = wslinfo_out.strip().lower()
+    is_nat = mode == "nat" if mode else any(a.startswith("172.") for a in addrs)
+    if not is_nat:
+        return "127.0.0.1"
+    return addrs[0] if addrs else _EA_IP_HINT
+
+
+def _probe(cmd):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "<run: ip -4 addr show eth0>"
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3).stdout
+    except Exception:  # noqa: BLE001 — best-effort detection
+        return ""
+
+
+def _detect_ea_target_ip():
+    return _ea_target_ip(_probe(["wslinfo", "--networking-mode"]),
+                         _probe(["ip", "-4", "addr", "show", "eth0"]))
 
 
 async def _run(attempts):
     bridge = ZMQBridge()
-    print(f"[CHECK] Python is listening. Point the EA's InpIP at this WSL IP: {_wsl_ip()}")
+    print(f"[CHECK] Python is listening. Point the EA's InpIP at: {_detect_ea_target_ip()}")
     print("[CHECK] Pinging the EA over the REQ/REP handshake socket (port 32770)...")
     for i in range(1, attempts + 1):
         # A bound REQ socket blocks on send until a peer exists, so bound each
@@ -48,7 +68,7 @@ async def _run(attempts):
         print(f"[CHECK] attempt {i}/{attempts}: no reply yet...")
         await asyncio.sleep(1.0)
     print("[CHECK] ❌ No PONG. Verify: EA attached + AutoTrading on, 'Allow DLL imports' enabled,")
-    print("        libzmq.dll present in MQL5/Libraries, and InpIP set to the WSL IP above.")
+    print("        libzmq.dll present in MQL5/Libraries, and InpIP set to the IP above.")
     return 1
 
 

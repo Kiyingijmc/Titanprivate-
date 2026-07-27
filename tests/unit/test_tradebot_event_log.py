@@ -410,6 +410,76 @@ class TestArchive(EventLogTestCase):
         self.append_n(log, 3, start=6)  # seq 9-11, snapshot at 12
         return log
 
+    def build_history(self, db_name, marker):
+        """An archivable log whose payloads carry `marker`, on its own DB file.
+
+        Same seqs and same calendar month as any other history built this way,
+        so both bucket into the same events-YYYYMM.parquet.
+        """
+        log = self.make_log(
+            db_path=self.tmp / db_name,
+            clock=SimClock(BASE_TS),
+            snapshot_every=3,
+            snapshot_payload={"kind": "synthetic"},
+        )
+        for i in range(9):
+            log.append(
+                "market.candle_closed",
+                1,
+                BASE_TS + i * 1_000_000_000,
+                "core",
+                {"instrument": "EURUSD", "bar_index": i, "history": marker},
+            )
+        return log
+
+    def test_archive_refuses_when_the_target_file_holds_a_different_history(self):
+        """RS004 MAJOR regression — a silent, unrecoverable data-loss path.
+
+        `_write_parquet` deduped colliding seqs on `seq` ALONE, so a target file
+        holding a *different* history at those seqs made every new row get
+        filtered away — while `archive_before`'s DELETE removed them from SQLite
+        regardless. The rows ended up in neither place, and the call reported
+        success. Reachable whenever two logs share an archive dir — including the
+        obvious operator response to RECOVERY_REQUIRED (move the broken DB aside
+        and start fresh; `archive/` is a sibling of the DB and survives).
+
+        A live chain and an archive that disagree at the same seq is exactly the
+        "not provably intact" condition this module exists to announce.
+        """
+        shared_archive = self.tmp / "shared-archive"
+
+        old = self.build_history("old.sqlite3", "OLD")
+        old.archive_before(old.archive_eligible_seq(), archive_dir=shared_archive)
+
+        new = self.build_history("new.sqlite3", "NEW")
+        live_before = [e.seq for e in new.read()]
+
+        with self.assertRaises(RecoveryRequired):
+            new.archive_before(new.archive_eligible_seq(), archive_dir=shared_archive)
+
+        # Nothing may have been deleted: refusing must leave the log intact.
+        self.assertEqual([e.seq for e in new.read()], live_before)
+        self.assertEqual(new.verify_chain().seq, live_before[-1])
+
+    def test_archive_reports_how_many_rows_it_actually_wrote(self):
+        """A no-op write must be distinguishable from a real archive.
+
+        `rows` counts what was *offered*; a run that wrote nothing still
+        reported a full archive, which is why the loss above was invisible to
+        the caller. `rows_written` reports what actually reached Parquet.
+        """
+        log = self.build_archivable_log()
+        result = log.archive_before(log.archive_eligible_seq())
+        self.assertEqual(result["rows"], 7)
+        self.assertEqual(result["rows_written"], 7)
+
+        # Offering nothing writes nothing, and says so.
+        target = Path(result["files"][0])
+        self.assertEqual(
+            _write_parquet(target, [], archived_at_ns=BASE_TS, source_db=str(log.db_path)),
+            0,
+        )
+
     def test_archive_boundary_is_the_second_newest_snapshot(self):
         log = self.build_archivable_log()
         self.assertEqual(log.snapshot_seqs(), [4, 8, 12])

@@ -765,7 +765,13 @@ class EventLog:
         a crash between them leaves the rows archived *and* still live. That is
         safe to retry: nothing was deleted, the chain still verifies, and
         :func:`_write_parquet` drops rows already present in the target file
-        rather than duplicating them.
+        rather than duplicating them — but only when the stored ``row_hash``
+        matches. A colliding ``seq`` with a *different* hash means the live
+        chain and the archive disagree, and raises :class:`RecoveryRequired`
+        before anything is deleted.
+
+        Returns ``rows`` (offered) and ``rows_written`` (actually archived);
+        they differ on a retry, and only the second proves work was done.
         """
         with self._lock:
             self.verify_chain()  # only a *verified* chain may be archived
@@ -791,7 +797,12 @@ class EventLog:
                 f"{_SELECT_ALL} WHERE seq<? ORDER BY seq ASC", (snapshot_seq,)
             ).fetchall()
             if not rows:
-                return {"rows": 0, "files": [], "archived_through_seq": self._archived_through}
+                return {
+                    "rows": 0,
+                    "rows_written": 0,
+                    "files": [],
+                    "archived_through_seq": self._archived_through,
+                }
 
             target_dir.mkdir(parents=True, exist_ok=True)
             by_month: dict[str, list[sqlite3.Row]] = {}
@@ -799,10 +810,16 @@ class EventLog:
                 by_month.setdefault(_month_key(row["ts_event"]), []).append(row)
 
             files = []
+            rows_written = 0
             for month, month_rows in sorted(by_month.items()):
                 path = target_dir / f"events-{month}.parquet"
-                _write_parquet(path, month_rows, archived_at_ns=self._clock.now_ns(),
-                               source_db=str(self.db_path))
+                # Raises RecoveryRequired if the target already holds a
+                # *different* event at any of these seqs — the DELETE below is
+                # unconditional, so a silent drop there would lose the rows.
+                rows_written += _write_parquet(
+                    path, month_rows, archived_at_ns=self._clock.now_ns(),
+                    source_db=str(self.db_path),
+                )
                 files.append(str(path))
 
             archived_through = rows[-1]["seq"]
@@ -821,7 +838,8 @@ class EventLog:
             self.checkpoint()
 
             return {
-                "rows": len(rows),
+                "rows": len(rows),           # offered
+                "rows_written": rows_written,  # actually reached Parquet
                 "files": files,
                 "archived_through_seq": archived_through,
             }
@@ -1061,8 +1079,11 @@ def _month_key(ts_event_ns: int) -> str:
     return datetime.fromtimestamp(ts_event_ns // 1_000_000_000, timezone.utc).strftime("%Y%m")
 
 
-def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: str) -> None:
+def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: str) -> int:
     """Write/extend ``events-YYYYMM.parquet``, chain columns and metadata intact.
+
+    Returns the number of rows actually written, so a caller can tell a real
+    archive from a no-op — ``len(rows)`` offered is not the same number.
 
     Parquet cannot be appended to, so an existing month file is read back and
     rewritten with the new rows concatenated.
@@ -1070,11 +1091,18 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
     Idempotent under retry, because :meth:`EventLog.archive_before` cannot make
     the Parquet write and the SQLite delete one transaction: a crash between
     the two leaves the rows both archived *and* still live, and the next run
-    re-offers exactly the same rows. Rows whose ``seq`` is already in the file
-    are therefore dropped rather than concatenated (Parquet has no unique
-    constraint to lean on), and the result lands via a temp file + atomic
-    rename so a crash mid-write can never leave a half-written month file that
-    the retry would fail to read back.
+    re-offers exactly the same rows. A row whose ``seq`` is already in the file
+    is therefore dropped rather than concatenated (Parquet has no unique
+    constraint to lean on) — but ONLY when its ``row_hash`` matches the stored
+    one. A colliding ``seq`` carrying a *different* ``row_hash`` is not a retry:
+    it means the live chain and this archive disagree about what happened at
+    that point in history, which is exactly the "not provably intact" condition
+    this module exists to announce, so it raises :class:`RecoveryRequired`.
+    Dropping it instead would delete live rows that were never archived (the
+    caller's DELETE runs regardless) — silent, unrecoverable loss.
+
+    The result lands via a temp file + atomic rename so a crash mid-write can
+    never leave a half-written month file that the retry would fail to read.
     """
     try:
         import pyarrow as pa
@@ -1105,16 +1133,40 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
     if path.exists():
         existing = pq.read_table(path).select(list(_EVENT_COLUMNS))
         existing = existing.cast(schema).replace_schema_metadata(None)
-        already = set(existing.column("seq").to_pylist())
+        already = dict(
+            zip(
+                existing.column("seq").to_pylist(),
+                existing.column("row_hash").to_pylist(),
+            )
+        )
         if already:
-            fresh = pa.array([seq not in already for seq in columns["seq"]], type=pa.bool_())
-            table = table.filter(fresh)
+            keep = []
+            for seq, row_hash in zip(columns["seq"], columns["row_hash"]):
+                stored = already.get(seq)
+                if stored is None:
+                    keep.append(True)
+                elif stored == row_hash:
+                    keep.append(False)  # genuine retry — already archived
+                else:
+                    raise RecoveryRequired(
+                        f"{path.name} already holds a different event at seq {seq} "
+                        f"(archived row_hash {stored}, live row_hash {row_hash}); "
+                        "the live chain and this archive disagree — refusing to "
+                        "archive, because deleting these rows would lose them"
+                    )
+            table = table.filter(pa.array(keep, type=pa.bool_()))
         table = pa.concat_tables([existing, table.replace_schema_metadata(None)])
         # A retry re-offers rows in the same order, but sorting makes the file
         # deterministic no matter which run wrote which rows.
         table = table.sort_by([("seq", "ascending")])
+        written = table.num_rows - existing.num_rows
+    else:
+        written = table.num_rows
 
     seqs = table.column("seq").to_pylist()
+    if not seqs:
+        # Nothing offered and nothing stored: no file to write, nothing written.
+        return 0
     first_index = seqs.index(min(seqs))
     last_index = seqs.index(max(seqs))
     table = table.replace_schema_metadata(
@@ -1134,3 +1186,4 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
     finally:
         if scratch.exists():
             scratch.unlink()
+    return written

@@ -189,14 +189,34 @@ class TestUnknownStrategyCleanError(_ResearchRunTestBase):
 
 
 class TestSpreadFlowsIntoNetR(_ResearchRunTestBase):
+    # Crypto-shaped tick spec for BTCUSD, matching what a real FBS
+    # data/specs.json carries (0.01 price granularity, 1 BTC per lot -> $0.01
+    # per tick). NOT _DEFAULT_SPEC's forex tick_size=1e-5: test_data.csv is
+    # BTCUSD around $91,000, so a 1e-5 tick makes stop_ticks >= 1e7,
+    # money_per_lot >= 1e5, and trade_dollars floors lots to 0.0 -- which
+    # zeroes spread_cost *and* commission and makes net R identical for every
+    # spread, silently defeating this test.
+    BTCUSD_SPEC = {"tick_size": 0.01, "tick_value": 0.01, "vol_step": 0.01}
+
     def test_different_spreads_produce_different_expectancy(self):
         # Pin BTCUSD's tick spec to a fixture file instead of falling through
         # to the ambient (untracked, possibly-absent) data/specs.json, so the
         # net-R math this test asserts on doesn't depend on workspace state.
         specs_path = Path(self._tmpdir) / "specs.json"
-        specs_path.write_text(json.dumps({
-            "BTCUSD": {"tick_size": 1e-5, "tick_value": 1.0, "vol_step": 0.01},
-        }))
+        specs_path.write_text(json.dumps({"BTCUSD": self.BTCUSD_SPEC}))
+
+        # Guard the degeneracy above directly, so a bad spec fails loudly here
+        # rather than as an inscrutable "two expectancies are equal" further
+        # down. 500 points of stop at $0.01/tick -> $500/lot -> 2.0 lots at
+        # the $1000 risk basis research_run sizes from.
+        probe = bt.trade_dollars(
+            -1.0, 91000.0, 90500.0, self.BTCUSD_SPEC,
+            spread_points=5.0, commission_per_lot=7.0, risk_dollars=1000.0,
+        )
+        self.assertGreater(
+            probe["lots"], 0.0,
+            "spec sizes to zero lots -- spread/commission cannot reach net R",
+        )
 
         rc1, _ = self._run(self._base_argv(**{
             "--spread-pips": "5", "--out": str(self.out_dir / "cheap"),
@@ -218,6 +238,9 @@ class TestSpreadFlowsIntoNetR(_ResearchRunTestBase):
         expensive_card = json.loads((expensive_dirs[0] / "run.json").read_text())
 
         self.assertGreater(cheap_card["n_signals"], 0)
+        # An empty IS split would make both expectancies 0.0 and turn the
+        # assertion below into a false negative.
+        self.assertGreater(cheap_card["metrics"]["is"]["trades"], 0)
         self.assertNotEqual(
             cheap_card["metrics"]["is"]["expectancy"],
             expensive_card["metrics"]["is"]["expectancy"],

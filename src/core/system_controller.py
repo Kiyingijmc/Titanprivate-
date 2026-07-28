@@ -754,7 +754,7 @@ class SystemController:
             # TTL aging — tracks real elapsed bars rather than only bars that
             # happened to carry a signal.
             open_positions = getattr(self, 'current_open_positions', None) or []
-            approved = arb.resolve(open_positions, bar_key=own_token)
+            approved = arb.resolve(open_positions, bar_key=own_token, timeframe=tf)
             for intent in approved:
                 meta = pending_meta.get(id(intent))
                 if meta is None:

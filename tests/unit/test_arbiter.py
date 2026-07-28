@@ -209,6 +209,158 @@ class TestBarKeyAging(unittest.TestCase):
         self.assertEqual(arb.resolve(open_positions=[], bar_key="k3"), [t3])
 
 
+class TestTimeframeScopedAging(unittest.TestCase):
+    """v15 Advisory C: thesis aging is denominated in bars of the thesis's OWN
+    timeframe. A single global bar counter conflates them — once any M5
+    strategy runs, ~12 M5 closes per hour would age an H1 thesis out in one
+    hour instead of `thesis_ttl_bars` hours."""
+
+    def test_m5_bar_advances_do_not_age_an_h1_thesis(self):
+        """THE DEFECT. An H1 thesis seen at H1 bar 1 must still be replay-blocked
+        on H1 bar 2, no matter how many M5 bars closed in between."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 12}, publish=pub)
+
+        # H1 thesis T first seen on H1 bar h1.
+        t1 = make_intent(thesis_id="T")
+        arb.submit(t1)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h1", timeframe="H1"), [t1])
+
+        # An M5 strategy runs: 12 M5 closes elapse within that same hour.
+        for i in range(12):
+            arb.resolve(open_positions=[], bar_key=f"m5-{i}", timeframe="M5")
+
+        # Next H1 bar: only ONE H1 bar has elapsed, so T is still a replay.
+        t2 = make_intent(thesis_id="T")
+        arb.submit(t2)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h2", timeframe="H1"), [])
+        blocked = pub.of_type(IntentBlocked)
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0].rule, "thesis_dedup")
+
+    def test_h1_advances_do_not_age_an_m5_thesis(self):
+        """The symmetric case: an H1 counter tick must not age an M5 thesis."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 3}, publish=pub)
+
+        m1 = make_intent(thesis_id="M")
+        arb.submit(m1)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="m1", timeframe="M5"), [m1])
+
+        # Three H1 bars elapse (>= ttl) but zero further M5 bars.
+        for i in range(3):
+            arb.resolve(open_positions=[], bar_key=f"h-{i}", timeframe="H1")
+
+        # Next M5 bar: age is 1 M5 bar (< ttl=3) -> still blocked.
+        m2 = make_intent(thesis_id="M")
+        arb.submit(m2)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="m2", timeframe="M5"), [])
+        self.assertEqual(pub.of_type(IntentBlocked)[0].rule, "thesis_dedup")
+
+    def test_h1_only_aging_expires_at_exactly_ttl_advances(self):
+        """No off-by-one drift from the per-timeframe refactor: with ttl=3 the
+        thesis is blocked at ages 1 and 2 and allowed at exactly age 3."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 3}, publish=pub)
+
+        seed = make_intent(thesis_id="T")
+        arb.submit(seed)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h1", timeframe="H1"), [seed])
+
+        for age, key in ((1, "h2"), (2, "h3")):
+            replay = make_intent(thesis_id="T")
+            arb.submit(replay)
+            self.assertEqual(
+                arb.resolve(open_positions=[], bar_key=key, timeframe="H1"), [],
+                f"thesis must still be blocked at age {age} (< ttl=3)",
+            )
+
+        allowed = make_intent(thesis_id="T")
+        arb.submit(allowed)
+        self.assertEqual(
+            arb.resolve(open_positions=[], bar_key="h4", timeframe="H1"), [allowed],
+            "thesis must be allowed again at exactly age 3 (== ttl)",
+        )
+
+    def test_blocked_replay_does_not_refresh_its_stored_index(self):
+        """A spam sequence must not keep resetting its own TTL clock: the
+        blocked replay's sighting is NOT recorded, so the block still expires."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 2}, publish=pub)
+
+        seed = make_intent(thesis_id="T")
+        arb.submit(seed)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h1", timeframe="H1"), [seed])
+
+        # Spam the same thesis on the next bar -> blocked, index NOT refreshed.
+        spam = make_intent(thesis_id="T")
+        arb.submit(spam)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h2", timeframe="H1"), [])
+
+        # If the block had refreshed the index, this would still be blocked.
+        allowed = make_intent(thesis_id="T")
+        arb.submit(allowed)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h3", timeframe="H1"), [allowed])
+
+    def test_same_bar_key_does_not_double_age_within_a_timeframe(self):
+        """The per-timeframe counter keeps the 'distinct bar_key' rule: repeated
+        resolves on one timeframe's same bar_key never advance that counter."""
+        arb = Arbiter(config={"thesis_ttl_bars": 2})
+
+        t1 = make_intent(thesis_id="T")
+        arb.submit(t1)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h1", timeframe="H1"), [t1])
+
+        for _ in range(5):
+            arb.resolve(open_positions=[], bar_key="h2", timeframe="H1")
+
+        # Only one distinct H1 key elapsed -> age 1 (< ttl=2) -> blocked.
+        t2 = make_intent(thesis_id="T")
+        arb.submit(t2)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h2", timeframe="H1"), [])
+
+    def test_thesis_memory_is_bounded_per_timeframe(self):
+        """Memory stays bounded: each timeframe's entries purge within its own
+        trailing TTL window, independently of the other timeframe's traffic."""
+        arb = Arbiter(config={"thesis_ttl_bars": 2})
+
+        arb.submit(make_intent(thesis_id="H"))
+        arb.resolve(open_positions=[], bar_key="h1", timeframe="H1")
+        arb.submit(make_intent(thesis_id="M"))
+        arb.resolve(open_positions=[], bar_key="m1", timeframe="M5")
+        self.assertEqual(set(arb._thesis_memory), {"H", "M"})
+
+        # Two M5 bars elapse: the M5 entry ages out, the H1 entry does NOT.
+        arb.resolve(open_positions=[], bar_key="m2", timeframe="M5")
+        arb.resolve(open_positions=[], bar_key="m3", timeframe="M5")
+        self.assertEqual(set(arb._thesis_memory), {"H"})
+
+        # Two H1 bars elapse: the H1 entry ages out too.
+        arb.resolve(open_positions=[], bar_key="h2", timeframe="H1")
+        arb.resolve(open_positions=[], bar_key="h3", timeframe="H1")
+        self.assertEqual(set(arb._thesis_memory), set())
+
+    def test_default_timeframe_keeps_every_caller_in_one_bucket(self):
+        """Byte-compatibility: callers that omit `timeframe` (every pre-existing
+        fixture, and the whole SB-H1-only live path before it passes one) all
+        share a single counter — exactly the old behavior."""
+        arb = Arbiter(config={"thesis_ttl_bars": 2})
+
+        t1 = make_intent(thesis_id="T")
+        arb.submit(t1)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="b1"), [t1])
+
+        arb.resolve(open_positions=[], bar_key="b2")
+
+        t2 = make_intent(thesis_id="T")
+        arb.submit(t2)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="b2"), [])
+
+        t3 = make_intent(thesis_id="T")
+        arb.submit(t3)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="b3"), [t3])
+
+
 class TestSymbolCap(unittest.TestCase):
     def test_symbol_cap_blocks_when_open_position_exists(self):
         pub = RecordingPublisher()

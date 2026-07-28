@@ -2,7 +2,7 @@
 submission and execution.
 
 Strategies never execute; they call `submit(intent)`. Once per bar cycle the
-controller calls `resolve(open_positions, bar_key)`, which runs a fixed,
+controller calls `resolve(open_positions, bar_key, timeframe)`, which runs a fixed,
 five-rule pipeline over the cycle's submissions and returns the approved
 Intents (the SAME objects that were submitted — no copying, no rebuilding,
 so a lone intent is provably untouched). Every drop is journaled as an
@@ -34,17 +34,35 @@ Pipeline (fixed order)
 5. Total cap — vs total open positions (all symbols) plus intents already
    approved earlier in this same resolve() call.
 
-Thesis aging (bounded memory, no clock)
-----------------------------------------
-The Arbiter tracks a monotonic `_bar_index`: it increments once per
-resolve() call in which `bar_key` differs from the previous call's
-`bar_key` (so re-resolving the same bar never ages anything). Each
-thesis's most recent *passing* sighting is stored as
-`_thesis_memory[thesis] = bar_index`. On the next new bar_key, before any
-rule runs, every entry whose age (`current_index - stored_index`) has
-reached `thesis_ttl_bars` is purged — this is the sole memory bound: the
-dict can only ever hold theses seen within the trailing TTL window. A
-thesis that is *itself* blocked as a replay does NOT refresh its stored
+Thesis aging (per-timeframe, bounded memory, no clock)
+-------------------------------------------------------
+Aging is scoped BY TIMEFRAME. The Arbiter tracks one monotonic bar counter
+per timeframe in `_bar_index[timeframe]`: it increments once per resolve()
+call in which `bar_key` differs from that timeframe's previous `bar_key`
+(so re-resolving the same bar never ages anything). Each thesis's most
+recent *passing* sighting is stored as
+`_thesis_memory[thesis] = (timeframe, bar_index)`, and a thesis is aged
+ONLY against the counter of the timeframe it was seen on. `thesis_ttl_bars`
+therefore means "bars of the thesis's OWN timeframe" — a TTL of 12 is 12
+H1 bars for an H1 thesis and 12 M5 bars for an M5 thesis.
+
+This scoping is what makes mixed-timeframe operation correct (v15 Advisory
+C). With a single global counter, an M5 strategy's ~12 closes per hour
+would advance the same counter that ages H1 theses, expiring a 12-bar H1
+thesis in one hour instead of twelve. `resolve()`'s `timeframe` keyword
+defaults to `""`, so any caller that omits it lands in one shared bucket —
+which is exactly the old single-counter behavior.
+
+On each new bar_key for a timeframe, before any rule runs, that
+timeframe's entries whose age (`current_index - stored_index`) have
+reached `thesis_ttl_bars` are purged — this is the sole memory bound: the
+dict can only ever hold theses seen within each timeframe's trailing TTL
+window. Accepted edge: purging is driven by arrivals, so entries belonging
+to a timeframe that STOPS arriving linger until that timeframe ticks
+again. The set of live timeframes is small and fixed, so this is bounded
+by (timeframes x theses-per-TTL-window), not unbounded growth.
+
+A thesis that is *itself* blocked as a replay does NOT refresh its stored
 index (otherwise a spam sequence could keep resetting its own clock and
 the block would never expire).
 """
@@ -66,9 +84,11 @@ class Arbiter:
         self._publish = publish
 
         self._cycle = []
+        # thesis -> (timeframe, bar_index_of_that_timeframe)
         self._thesis_memory = {}
-        self._bar_index = -1
-        self._last_bar_key = _UNSET
+        # timeframe -> monotonic bar counter / last seen bar_key
+        self._bar_index = {}
+        self._last_bar_key = {}
 
         self._submitted = 0
         self._approved = 0
@@ -104,7 +124,7 @@ class Arbiter:
         ))
         self._cycle.append(intent)
 
-    def resolve(self, open_positions, bar_key=""):
+    def resolve(self, open_positions, bar_key="", timeframe=""):
         submissions, self._cycle = self._cycle, []
         open_positions = open_positions or []
 
@@ -112,9 +132,9 @@ class Arbiter:
             key=lambda i: (-grade_rank(i.grade), i.priority, i.strategy_id, i.symbol)
         )
 
-        self._advance_bar(bar_key)
+        self._advance_bar(bar_key, timeframe)
 
-        survivors = self._apply_thesis_dedup(submissions)
+        survivors = self._apply_thesis_dedup(submissions, timeframe)
         survivors = self._apply_symbol_direction_dedup(survivors)
         survivors = self._apply_opposition(survivors)
         approved = self._apply_caps(survivors, open_positions)
@@ -131,32 +151,41 @@ class Arbiter:
 
     # -- pipeline rules --------------------------------------------------
 
-    def _advance_bar(self, bar_key):
-        if bar_key == self._last_bar_key:
+    def _advance_bar(self, bar_key, timeframe):
+        """Advance ONLY this timeframe's counter, and purge only the theses
+        aged out on it — see "Thesis aging" in the module docstring."""
+        if self._last_bar_key.get(timeframe, _UNSET) == bar_key:
             return
-        self._bar_index += 1
-        self._last_bar_key = bar_key
+        current = self._bar_index.get(timeframe, -1) + 1
+        self._bar_index[timeframe] = current
+        self._last_bar_key[timeframe] = bar_key
         stale = [
-            thesis for thesis, idx in self._thesis_memory.items()
-            if self._bar_index - idx >= self.thesis_ttl_bars
+            thesis for thesis, (tf, idx) in self._thesis_memory.items()
+            if tf == timeframe and current - idx >= self.thesis_ttl_bars
         ]
         for thesis in stale:
             del self._thesis_memory[thesis]
 
-    def _apply_thesis_dedup(self, submissions):
+    def _apply_thesis_dedup(self, submissions, timeframe):
+        current = self._bar_index[timeframe]
         survivors = []
         for intent in submissions:
             thesis = intent.effective_thesis()
-            last_idx = self._thesis_memory.get(thesis)
-            if last_idx is not None and (self._bar_index - last_idx) < self.thesis_ttl_bars:
-                age = self._bar_index - last_idx
-                self._block(
-                    intent, "thesis_dedup",
-                    f"thesis '{thesis}' replayed within {self.thesis_ttl_bars} bars "
-                    f"(last seen {age} bar(s) ago)",
-                )
-                continue
-            self._thesis_memory[thesis] = self._bar_index
+            seen = self._thesis_memory.get(thesis)
+            if seen is not None:
+                # Age against the counter of the timeframe the thesis was
+                # SEEN on, not the one resolving now — a TTL is always
+                # denominated in the thesis's own bars.
+                seen_tf, last_idx = seen
+                age = self._bar_index[seen_tf] - last_idx
+                if age < self.thesis_ttl_bars:
+                    self._block(
+                        intent, "thesis_dedup",
+                        f"thesis '{thesis}' replayed within {self.thesis_ttl_bars} bars "
+                        f"(last seen {age} bar(s) ago)",
+                    )
+                    continue
+            self._thesis_memory[thesis] = (timeframe, current)
             survivors.append(intent)
         return survivors
 

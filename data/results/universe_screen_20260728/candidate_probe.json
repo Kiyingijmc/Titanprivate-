@@ -1,0 +1,378 @@
+{
+  "USDCHF": {
+    "broker_name": "USDCHF",
+    "info": {
+      "contract_size": 100000.0,
+      "digits": 5,
+      "name": "USDCHF",
+      "point": 1e-05,
+      "spread_points": 9,
+      "tick_size": 1e-05,
+      "tick_value": 1.2215083184716486,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 0.81858,
+        "ask": 0.81867,
+        "spread": 9.00000000000345e-05
+      },
+      {
+        "bid": 0.8186,
+        "ask": 0.81869,
+        "spread": 9.00000000000345e-05
+      },
+      {
+        "bid": 0.81865,
+        "ask": 0.81874,
+        "spread": 9.00000000000345e-05
+      },
+      {
+        "bid": 0.81864,
+        "ask": 0.81873,
+        "spread": 8.999999999992347e-05
+      },
+      {
+        "bid": 0.81863,
+        "ask": 0.81873,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.8186,
+        "ask": 0.81869,
+        "spread": 9.00000000000345e-05
+      }
+    ]
+  },
+  "NZDUSD": {
+    "broker_name": "NZDUSD",
+    "info": {
+      "contract_size": 100000.0,
+      "digits": 5,
+      "name": "NZDUSD",
+      "point": 1e-05,
+      "spread_points": 12,
+      "tick_size": 1e-05,
+      "tick_value": 1.0,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 0.57868,
+        "ask": 0.5788,
+        "spread": 0.00012000000000000899
+      },
+      {
+        "bid": 0.57869,
+        "ask": 0.57881,
+        "spread": 0.00012000000000000899
+      },
+      {
+        "bid": 0.57865,
+        "ask": 0.57877,
+        "spread": 0.00012000000000000899
+      },
+      {
+        "bid": 0.57867,
+        "ask": 0.57879,
+        "spread": 0.00012000000000000899
+      },
+      {
+        "bid": 0.57867,
+        "ask": 0.57879,
+        "spread": 0.00012000000000000899
+      },
+      {
+        "bid": 0.57868,
+        "ask": 0.5788,
+        "spread": 0.00012000000000000899
+      }
+    ]
+  },
+  "EURJPY": {
+    "broker_name": "EURJPY",
+    "info": {
+      "contract_size": 100000.0,
+      "digits": 3,
+      "name": "EURJPY",
+      "point": 0.001,
+      "spread_points": 13,
+      "tick_size": 0.001,
+      "tick_value": 0.6104298036247322,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 186.568,
+        "ask": 186.581,
+        "spread": 0.012999999999976808
+      },
+      {
+        "bid": 186.56,
+        "ask": 186.573,
+        "spread": 0.01300000000000523
+      },
+      {
+        "bid": 186.556,
+        "ask": 186.569,
+        "spread": 0.012999999999976808
+      },
+      {
+        "bid": 186.563,
+        "ask": 186.576,
+        "spread": 0.01300000000000523
+      },
+      {
+        "bid": 186.559,
+        "ask": 186.571,
+        "spread": 0.012000000000000455
+      },
+      {
+        "bid": 186.558,
+        "ask": 186.572,
+        "spread": 0.014000000000010004
+      }
+    ]
+  },
+  "EURGBP": {
+    "broker_name": "EURGBP",
+    "info": {
+      "contract_size": 100000.0,
+      "digits": 5,
+      "name": "EURGBP",
+      "point": 1e-05,
+      "spread_points": 10,
+      "tick_size": 1e-05,
+      "tick_value": 1.3292000000000002,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 0.85683,
+        "ask": 0.85693,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.85682,
+        "ask": 0.85692,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.85679,
+        "ask": 0.85689,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.8568,
+        "ask": 0.8569,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.85679,
+        "ask": 0.85689,
+        "spread": 9.999999999998899e-05
+      },
+      {
+        "bid": 0.8568,
+        "ask": 0.8569,
+        "spread": 9.999999999998899e-05
+      }
+    ]
+  },
+  "XAGUSD": {
+    "broker_name": "XAGUSD",
+    "info": {
+      "contract_size": 5000.0,
+      "digits": 3,
+      "name": "XAGUSD",
+      "point": 0.001,
+      "spread_points": 33,
+      "tick_size": 0.001,
+      "tick_value": 5.0,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 57.077,
+        "ask": 57.11,
+        "spread": 0.03300000000000125
+      },
+      {
+        "bid": 57.08,
+        "ask": 57.116,
+        "spread": 0.036000000000001364
+      },
+      {
+        "bid": 57.079,
+        "ask": 57.109,
+        "spread": 0.030000000000001137
+      },
+      {
+        "bid": 57.081,
+        "ask": 57.114,
+        "spread": 0.032999999999994145
+      },
+      {
+        "bid": 57.088,
+        "ask": 57.119,
+        "spread": 0.030999999999998806
+      },
+      {
+        "bid": 57.089,
+        "ask": 57.124,
+        "spread": 0.035000000000003695
+      }
+    ]
+  },
+  "US100": {
+    "broker_name": "US100",
+    "info": {
+      "contract_size": 10.0,
+      "digits": 2,
+      "name": "US100",
+      "point": 0.01,
+      "spread_points": 200,
+      "tick_size": 0.01,
+      "tick_value": 0.1,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 27807.35,
+        "ask": 27809.35,
+        "spread": 2.0
+      },
+      {
+        "bid": 27813.1,
+        "ask": 27815.1,
+        "spread": 2.0
+      },
+      {
+        "bid": 27812.6,
+        "ask": 27814.6,
+        "spread": 2.0
+      },
+      {
+        "bid": 27811.35,
+        "ask": 27813.35,
+        "spread": 2.0
+      },
+      {
+        "bid": 27812.6,
+        "ask": 27814.6,
+        "spread": 2.0
+      },
+      {
+        "bid": 27812.85,
+        "ask": 27814.85,
+        "spread": 2.0
+      }
+    ]
+  },
+  "ETHUSD": {
+    "broker_name": "ETHUSD",
+    "info": {
+      "contract_size": 10.0,
+      "digits": 2,
+      "name": "ETHUSD",
+      "point": 0.01,
+      "spread_points": 193,
+      "tick_size": 0.01,
+      "tick_value": 0.1,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 1898.34,
+        "ask": 1900.27,
+        "spread": 1.9300000000000637
+      },
+      {
+        "bid": 1898.43,
+        "ask": 1900.36,
+        "spread": 1.9299999999998363
+      },
+      {
+        "bid": 1898.52,
+        "ask": 1900.45,
+        "spread": 1.9300000000000637
+      },
+      {
+        "bid": 1897.99,
+        "ask": 1899.92,
+        "spread": 1.9300000000000637
+      },
+      {
+        "bid": 1898.31,
+        "ask": 1900.24,
+        "spread": 1.9300000000000637
+      },
+      {
+        "bid": 1898.48,
+        "ask": 1900.41,
+        "spread": 1.9300000000000637
+      }
+    ]
+  },
+  "USOIL": {
+    "broker_name": "XTIUSD",
+    "info": {
+      "contract_size": 1000.0,
+      "digits": 2,
+      "name": "XTIUSD",
+      "point": 0.01,
+      "spread_points": 2,
+      "tick_size": 0.01,
+      "tick_value": 10.0,
+      "volume_max": 500.0,
+      "volume_min": 0.01,
+      "volume_step": 0.01
+    },
+    "spreads_raw": [
+      {
+        "bid": 78.7,
+        "ask": 78.72,
+        "spread": 0.01999999999999602
+      },
+      {
+        "bid": 78.69,
+        "ask": 78.71,
+        "spread": 0.01999999999999602
+      },
+      {
+        "bid": 78.68,
+        "ask": 78.7,
+        "spread": 0.01999999999999602
+      },
+      {
+        "bid": 78.68,
+        "ask": 78.7,
+        "spread": 0.01999999999999602
+      },
+      {
+        "bid": 78.68,
+        "ask": 78.7,
+        "spread": 0.01999999999999602
+      },
+      {
+        "bid": 78.68,
+        "ask": 78.7,
+        "spread": 0.01999999999999602
+      }
+    ]
+  }
+}

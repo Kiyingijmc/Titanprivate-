@@ -82,8 +82,8 @@ trade_management:
     # Arm C (validated 2026-07-11, docs/research/2026-07-11-pullback-monetizer-overlay-results.md):
     # once a runner pullback gives back >= giveback_frac of the trail distance from its
     # high-water mark, tighten the trail from 0.268x to tight_trail_frac x range (one-way).
-    # Ships OFF — enable for the FBS demo-forward-test before going live.
-    tighten_on_giveback: false
+    # Enabled 2026-07-28 for the FBS demo-forward-test (was shipped OFF).
+    tighten_on_giveback: true
     giveback_frac: 0.75
     tight_trail_frac: 0.10
 
@@ -101,8 +101,11 @@ strategies:
     risk_reward: 2.0
     # Cost-viable universe (median round-trip cost ≤ 0.25R at the 1.0-ATR stop);
     # GBPCAD/XBRUSD excluded — spreads too wide for the stop size.
+    # US100/ETHUSD added 2026-07-28 (owner-ratified expansion screen,
+    # docs/research/2026-07-28-universe-expansion-screen.md); XTIUSD passed too
+    # but is held pending a liquid-hours spread re-measure.
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-            "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
+            "GBPJPY", "XAUUSD", "US30", "BTCUSD", "US100", "ETHUSD"]
 
   # 2. Gyroscope (Kalman drift + SPRT, H1) — arsenal #1, Plan 07.
   # status: research in config/manifests/gyroscope.yaml is the live gate

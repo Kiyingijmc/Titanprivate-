@@ -19,7 +19,7 @@
 | m0-6-tradebot-ci-skeleton-property | S | promoted | brainstorm | m0-1-tradebot-skeleton-top-level |  | 2026-07-18 | M0-6 tradebot CI skeleton + property tests P4-P8 + P11 groundwork (hypothesis lib decision needed: stdlib-only vs add hypothesis dep — flag at spec time per ask-before-new-deps rule). Spec: pass3 SS7 |
 | mig-cannot-retire-backlog-rows-delivered | S | inbox | discovered |  |  | 2026-07-27 | mig cannot retire backlog rows delivered outside a session: _slug_delivered (mig:142) only recognises DONE sessions in _INDEX, and triage Cat-1 auto-retire (mig:1474) only deletes rows already status=done whose _row_cited_id matches a session id — commit SHAs never match, so the hand-set 'decide-fate-of-docs-trading-bot' row is permanently stuck. Needs a 'mig backlog done <slug> --by <sha>' path. Rows awaiting it: commit-or-discard-the-untracked-test + wire-scripts-gui-demo-server-py + commit-or-discard-untracked-data-specs (all delivered 2026-07-27 by 2ae4dbb/a9e678f/d05efd3) |
 | hash-anchor-the-archive-live-seam | S | promoted | review-carry |  |  | 2026-07-27 | hash-anchor the archive<->live seam in event_log.verify_chain: _write_parquet stores chain_last_row_hash in the Parquet metadata and NOTHING ever reads it, so after an archive the retained log is anchored on a seq watermark only. RS004 MINOR. This is why the S004 MAJOR (archive holding a different history at the same seqs) was undetectable rather than merely refusable — the row_hash check added in e012d6e refuses at write time, but a verify_chain() after archiving still cannot prove the retained chain continues the archived one. Fenced out of m0-4/S005 because that spec forbids touching event_log.py. |
-| chain-protect-or-explicitly-adr-the | S | inbox | review-carry |  |  | 2026-07-28 | chain-protect or explicitly ADR the unchained actor column before M2 command-audit — RS007 carry: actor sits outside the §1.1 row_hash pre-image, so who-issued-a-command is rewritable in events.sqlite3 without verify_chain noticing; widening the pre-image is a schema-version + upcaster decision (pass3 §8.5 logs the commanding actor for every interface→core command) |
+| chain-protect-or-explicitly-adr-the | S | promoted | review-carry |  |  | 2026-07-28 | chain-protect or explicitly ADR the unchained actor column before M2 command-audit — RS007 carry: actor sits outside the §1.1 row_hash pre-image, so who-issued-a-command is rewritable in events.sqlite3 without verify_chain noticing; widening the pre-image is a schema-version + upcaster decision (pass3 §8.5 logs the commanding actor for every interface→core command) |
 <!-- /MIG-BACKLOG-TABLE -->
 
 ## Promoted
@@ -32,4 +32,5 @@
 - m0-5-tradebot-core-bus-py → minted S006 (2026-07-27)
 - m0-6-tradebot-ci-skeleton-property → minted S007 (2026-07-27)
 - hash-anchor-the-archive-live-seam → minted S008 (2026-07-28)
+- chain-protect-or-explicitly-adr-the → minted S009 (2026-07-28)
 <!-- /MIG-PROMOTED-LOG -->

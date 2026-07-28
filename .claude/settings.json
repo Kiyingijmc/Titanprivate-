@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/kiyingijmc/projects/Titan_ICT_Bot_v14_3pro/.venv/bin/python *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}

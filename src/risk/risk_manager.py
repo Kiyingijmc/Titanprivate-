@@ -244,6 +244,44 @@ class RiskManager:
         except (TypeError, ValueError, ZeroDivisionError):
             return 0.0
 
+    def aggregate_open_risk(self, open_positions):
+        """Total account-currency risk-to-stop across every open position.
+
+        Feeds the portfolio-wide cap (ExposureManager.check_total_risk). Each
+        heartbeat row carries `s`/`p`/`sl`/`vol` (Titan_Gateway.mq5:194), so a
+        position's risk is money_for_move(s, abs(p - sl), vol).
+
+        Returns None -- "un-computable", callers must BLOCK -- when any single
+        position's risk is unknown, following the same fail-safe discipline as
+        calculate_lot_size (never guess a risk number):
+          * sl == 0: a stopless position (e.g. opened outside Titan) has no
+            defined risk-to-stop, and skipping it would understate the book.
+          * money_for_move returns its 0.0 'no specs' sentinel: counting that
+            as $0 of risk would silently hide a real position.
+
+        Note this is deliberately conservative for ratcheted trades: abs()
+        means a stop moved past entry (BE+) reads as risk rather than as
+        locked-in profit, so the aggregate over-states rather than under-states.
+        """
+        total = 0.0
+        for pos in open_positions or []:
+            symbol = pos.get('s', '')
+            try:
+                entry = float(pos.get('p', 0.0) or 0.0)
+                sl = float(pos.get('sl', 0.0) or 0.0)
+                lots = float(pos.get('vol', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return None
+
+            if sl == 0.0 or entry == 0.0 or lots == 0.0:
+                return None
+
+            risk = self.money_for_move(symbol, abs(entry - sl), lots)
+            if risk <= 0.0:
+                return None
+            total += risk
+        return total
+
     def reset_daily_metrics(self):
         """New trading day: reset range trackers and re-anchor the daily DD."""
         self.equity_max = self.current_equity

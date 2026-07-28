@@ -36,7 +36,18 @@ risk:
     # AUDIT NOTE: Although named 'pct', the ExposureManager treats this as an INTEGER COUNT.
     # Logic: Maximum total number of simultaneous open positions allowed.
     max_global_exposure_pct: 6.0 # e.g., Max 6 trades at once
-    
+
+    # v15 Plan 10 Advisory A: portfolio-wide ceiling on TOTAL open risk-to-stop
+    # (this one really is a percent of live equity, unlike the count above).
+    # Summed across every open position plus the trade being proposed; over the
+    # cap, the trade is blocked at _execute_signal. At the shipped 1%/trade the
+    # count gate alone would permit 6% of equity at risk simultaneously, so 5.0
+    # binds one trade earlier. Conservative starting value -- tune post-deploy.
+    # Note the sum is deliberately over-stated for ratcheted trades: a stop
+    # moved past entry counts as risk, not as locked-in profit.
+    max_total_open_risk_pct: 5.0
+
+
   trade:
     risk_per_trade_pct: 1.0     # Risk 1% of Equity per trade
     hard_max_lots: 5.0          # Absolute Cap to prevent fat-finger errors

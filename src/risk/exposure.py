@@ -30,9 +30,50 @@ class ExposureManager:
         raw_val = self.config.get('max_global_exposure_pct', 6.0)
         self.max_total_positions = int(raw_val)
         
-        self.max_currency_saturation = 2 
-        
+        self.max_currency_saturation = 2
+
+        # v15 Plan 10 Advisory A: portfolio-wide aggregate open-risk ceiling,
+        # as a percentage of live equity. Unlike max_global_exposure_pct (a
+        # position COUNT) this one really is a percent. See check_total_risk.
+        self.max_total_open_risk_pct = float(
+            self.config.get('max_total_open_risk_pct', 5.0)
+        )
+
         self.correlation = CorrelationManager(market_data_store)
+
+    def check_total_risk(self, aggregate_open_risk, proposed_risk, current_equity):
+        """Portfolio-wide aggregate open-risk cap.
+
+        The count gate above gladly allows N positions that each pass their own
+        1%-of-equity sizing; nothing summed the book's $ risk before this. Here
+        we do: (open risk + this trade's risk) / equity must stay at or under
+        `risk.account.max_total_open_risk_pct`.
+
+        Args:
+            aggregate_open_risk: $ risk-to-stop across open positions, or None
+                when un-computable (see RiskManager.aggregate_open_risk).
+            proposed_risk: $ risk-to-stop of the trade being considered; the
+                0.0 sentinel from money_for_move means un-computable.
+            current_equity: live account equity; <= 0 means no heartbeat yet.
+
+        Returns: (Bool is_allowed, String reason)
+        """
+        # Fail safe on every un-computable input rather than guessing a number
+        # or dividing by zero -- an unknown book is not a safe book.
+        if current_equity is None or current_equity <= 0:
+            return False, "Total Open Risk un-computable (no equity snapshot)"
+        if aggregate_open_risk is None:
+            return False, ("Total Open Risk un-computable "
+                           "(open position without a stop, or missing broker specs)")
+        if proposed_risk is None or proposed_risk <= 0:
+            return False, "Total Open Risk un-computable (proposed trade risk unknown)"
+
+        total_pct = (aggregate_open_risk + proposed_risk) / current_equity * 100.0
+        if total_pct > self.max_total_open_risk_pct:
+            return False, (f"Total Open Risk {total_pct:.2f}% exceeds cap "
+                           f"{self.max_total_open_risk_pct:.2f}%")
+
+        return True, "Safe"
 
     def check_exposure(self, proposed_symbol, active_positions_list):
         """

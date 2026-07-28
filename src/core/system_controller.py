@@ -384,6 +384,18 @@ class SystemController:
             self.logger.log_event("RISK", "EXPOSURE", f"Block {symbol}: {reason}")
             return
 
+        # v15 Plan 10 Advisory A: the count/correlation gate above never summed
+        # the book's $ risk, so N individually-sized trades could stack past the
+        # account's intended total exposure. Cap the aggregate here.
+        allowed, reason = self.exposure_manager.check_total_risk(
+            self.risk_manager.aggregate_open_risk(self.current_open_positions),
+            self.risk_manager.money_for_move(symbol, abs(p - sl), lot),
+            self.risk_manager.current_equity,
+        )
+        if not allowed:
+            self.logger.log_event("RISK", "EXPOSURE", f"Block {symbol}: {reason}")
+            return
+
         payload = {
             "action": "TRADE", "symbol": symbol, "cmd": cmd, "side": decision['signal'],
             "price": float(p), "p": float(p), "entry": float(p),

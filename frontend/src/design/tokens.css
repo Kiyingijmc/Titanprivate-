@@ -1,0 +1,32 @@
+/* Titan design tokens — ROLE-based. Brand board replaces these values (only). */
+:root {
+  /* surfaces */
+  --bg: 222 47% 9%;            /* app background (deeper than v1 #0F172A for more depth) */
+  --surface-1: 222 24% 14%;    /* cards/panels */
+  --surface-2: 222 26% 18%;    /* muted rows / inputs / table header */
+  --elevated: 222 22% 21%;     /* popovers / command palette / dialogs */
+  /* lines + text */
+  --border: 215 22% 26%;
+  --border-strong: 215 20% 34%;
+  --text-primary: 210 40% 98%;
+  --text-secondary: 215 18% 72%;
+  --text-muted: 215 16% 55%;
+  /* signature accent (placeholder: refined indigo — swap for brand) + states */
+  --accent: 245 72% 63%;
+  --accent-hover: 245 72% 68%;
+  --accent-active: 245 72% 58%;
+  --accent-subtle: 245 60% 22%;
+  --focus-ring: 245 72% 63%;
+  --on-accent: 0 0% 100%;
+  /* reserved semantic — signature accent NEVER used for P&L */
+  --profit: 142 71% 45%;
+  --loss: 0 84% 60%;
+  --warning: 38 92% 50%;
+  --info: 199 92% 60%;
+  --blocked: 255 92% 76%;
+  /* radius / elevation / motion */
+  --radius-lg: 10px; --radius-md: 8px; --radius-sm: 6px;
+  --shadow-1: 0 1px 2px 0 hsl(222 47% 4% / 0.4);
+  --shadow-2: 0 8px 24px -6px hsl(222 47% 4% / 0.5);
+  --motion-fast: 150ms; --motion-base: 220ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+}

@@ -257,6 +257,57 @@ class TestTimeframeScopedAging(unittest.TestCase):
         self.assertEqual(arb.resolve(open_positions=[], bar_key="m2", timeframe="M5"), [])
         self.assertEqual(pub.of_type(IntentBlocked)[0].rule, "thesis_dedup")
 
+    def test_identical_bar_key_on_two_timeframes_advances_both_counters(self):
+        """`_last_bar_key` must be per-timeframe, not one scalar. Live, the
+        bar_key is just the bar timestamp (`own_token` in
+        system_controller._run_strategies), so at the top of every hour the M5
+        bar and the H1 bar produce the IDENTICAL string. With a single shared
+        `_last_bar_key`, the second timeframe's resolve() returns early as
+        'same bar', never seeds its counter, and `_apply_thesis_dedup` raises
+        KeyError on `_bar_index[timeframe]` -- once an hour, on the live M5
+        path. Both counters must advance on a colliding token."""
+        arb = Arbiter(config={"thesis_ttl_bars": 12})
+
+        token = "2026-01-05 10:00:00"   # the H1 bar and the M5 bar both open here
+        h = make_intent(thesis_id="H")
+        arb.submit(h)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key=token, timeframe="H1"), [h])
+        m = make_intent(thesis_id="M")
+        arb.submit(m)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key=token, timeframe="M5"), [m])
+        self.assertEqual(arb._bar_index, {"H1": 0, "M5": 0})
+
+        # Next collision an hour later: each counter advances once, independently.
+        token2 = "2026-01-05 11:00:00"
+        arb.resolve(open_positions=[], bar_key=token2, timeframe="H1")
+        arb.resolve(open_positions=[], bar_key=token2, timeframe="M5")
+        self.assertEqual(arb._bar_index, {"H1": 1, "M5": 1})
+
+    def test_thesis_is_aged_against_the_timeframe_it_was_seen_on(self):
+        """A thesis is aged against the counter of the timeframe it was SEEN
+        on, not the one resolving now -- a TTL is always denominated in the
+        thesis's own bars. An H1-seen thesis replayed ON M5 must be judged by
+        elapsed H1 bars (0 here), so the M5 traffic that has piled up since
+        cannot expire it."""
+        pub = RecordingPublisher()
+        arb = Arbiter(config={"thesis_ttl_bars": 3}, publish=pub)
+
+        seed = make_intent(thesis_id="T")
+        arb.submit(seed)
+        self.assertEqual(arb.resolve(open_positions=[], bar_key="h1", timeframe="H1"), [seed])
+
+        # Well past the TTL in M5 bars, but zero H1 bars have elapsed.
+        for i in range(4):
+            arb.resolve(open_positions=[], bar_key=f"m5-{i}", timeframe="M5")
+
+        replay = make_intent(thesis_id="T")
+        arb.submit(replay)
+        self.assertEqual(
+            arb.resolve(open_positions=[], bar_key="m5-4", timeframe="M5"), [],
+            "an H1-seen thesis must be aged in H1 bars even when replayed on M5",
+        )
+        self.assertEqual(pub.of_type(IntentBlocked)[0].rule, "thesis_dedup")
+
     def test_h1_only_aging_expires_at_exactly_ttl_advances(self):
         """No off-by-one drift from the per-timeframe refactor: with ttl=3 the
         thesis is blocked at ages 1 and 2 and allowed at exactly age 3."""

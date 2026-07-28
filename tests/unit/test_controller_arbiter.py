@@ -118,6 +118,52 @@ def make_controller(strategies, grade_by_name=None, default_grade="A+",
     return c, captured, published
 
 
+class RecordingArbiter:
+    """Arbiter stand-in that records the exact kwargs resolve() was called
+    with (and otherwise mirrors its drain-and-return-the-same-objects
+    contract), so the controller seam can be asserted directly."""
+    def __init__(self):
+        self.calls = []
+        self._cycle = []
+
+    def submit(self, intent):
+        self._cycle.append(intent)
+
+    def resolve(self, open_positions, **kwargs):
+        submissions, self._cycle = self._cycle, []
+        self.calls.append({"open_positions": open_positions, "kwargs": kwargs})
+        return submissions
+
+
+class TestArbiterTimeframeSeam(unittest.TestCase):
+    """v15 Advisory C: _run_strategies must tell the Arbiter WHICH timeframe
+    closed. Drop `timeframe=tf` and every close falls back into one shared
+    bucket -- the exact single-counter defect the fix exists to remove -- and
+    no other test notices, because every controller-driven fixture is H1-only
+    and for a single timeframe the "" bucket and the "H1" bucket are
+    isomorphic."""
+
+    def _resolve_kwargs(self, tf):
+        strat = FakeStrategy("Strat" + tf, _decision(), timeframe=tf)
+        c, captured, _ = make_controller([strat])
+        arb = RecordingArbiter()
+        c.arbiter = arb
+
+        run(c._run_strategies("EURUSD", _bar_df(), tf=tf))
+
+        self.assertEqual(len(arb.calls), 1, "resolve() must run once per cycle")
+        self.assertEqual(len(captured), 1, "the approved intent must still execute")
+        return arb.calls[0]["kwargs"]
+
+    def test_resolve_receives_the_closing_timeframe(self):
+        for tf in ("H1", "M5"):
+            with self.subTest(tf=tf):
+                kwargs = self._resolve_kwargs(tf)
+                self.assertEqual(kwargs.get("timeframe"), tf)
+                # bar_key stays the bar's own token (unchanged by the fix).
+                self.assertEqual(kwargs.get("bar_key"), "bar-1")
+
+
 class TestTransparency(unittest.TestCase):
     """A single decision must reach _execute_signal with IDENTICAL args to
     the pre-Plan-05 direct-execute call -- the arbiter must be provably

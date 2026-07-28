@@ -24,10 +24,12 @@ One envelope wraps every payload written to the event log or published on the bu
 | `correlation_id` | uuid | yes | Root of the causal chain — `signal_id` for the whole signal→order→position→close chain; config-change id for config chains. |
 | `parent_ids` | [uuid] | no (may be empty) | Direct causal parents (e.g. a `exec.fill` lists the `exec.order_submitted` event and the `market.tick` batch that triggered it where known). |
 | `idempotency_key` | str | yes | Present on externally-effectful events (order submits, Telegram sends, commands). Writer enforces uniqueness: a second append with the same key is dropped + counted. |
-| `actor` | str enum-pattern | no | `core`, `child:<child_id>`, `risk`, `exec`, `reconciler`, `timer:<name>`, `human:gui:<user>`, `human:tg:<chat_id>`, `config`, `breaker`, `broker`. Commands additionally carry HMAC (§8.5, F-031). |
+| `actor` | str enum-pattern | no | `core`, `child:<child_id>`, `risk`, `exec`, `reconciler`, `timer:<name>`, `human:gui:<user>`, `human:tg:<chat_id>`, `config`, `breaker`, `broker`. Commands additionally carry HMAC (§8.5, F-031). **Chain-covered** (inside `row_hash`) — rewriting it breaks the chain. |
 | `payload` | JSON (typed per schema) | no | Canonical JSON: sorted keys, `NaN` forbidden, numerics normalized (int-valued floats emitted as ints) — same canonicalization as `params_hash` (F-038). |
 | `prev_hash` | bytes32 hex | no | Hash chain (F-004): `row_hash` of `seq−1`. Genesis row uses 32 zero bytes. |
-| `row_hash` | bytes32 hex | no | `SHA-256(prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖ canonical_json(payload))`. Computed by the writer inside the same transaction. |
+| `row_hash` | bytes32 hex | no | `SHA-256(prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖ actor ‖ canonical_json(payload))`. Computed by the writer inside the same transaction. |
+
+> **Amended 2026-07-28, S009, owner-ratified — `actor` chained.** `row_hash` was originally defined over six fields, leaving `actor` stored but unchained, so `verify_chain` could not detect a rewritten commanding principal (RS007 finding 4) — the exact provenance §8.5's command audit is built on. Widened to the seven-field pre-image above while no `events.sqlite3` existed anywhere (no deployed, committed, or otherwise load-bearing log; no pinned golden chain hash), so the change carried zero migration cost. No `chain_format_version`/upcaster machinery was added: with no prior logs there is nothing to version against. The other five envelope columns (`event_id`, `ts_ingest`, `correlation_id`, `parent_ids`, `idempotency_key`) deliberately remain unchained. Rationale and blast-radius evidence: `docs/decisions/0001-widen-row-hash-preimage-actor.md`.
 
 ### 1.2 Event families (typed payload schemas)
 

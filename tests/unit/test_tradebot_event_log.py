@@ -117,7 +117,7 @@ class TestAppendAndChain(EventLogTestCase):
         self.assertEqual(
             row["row_hash"],
             compute_row_hash(
-                GENESIS_PREV_HASH, 1, "market.candle_closed", 1, BASE_TS, row["payload"]
+                GENESIS_PREV_HASH, 1, "market.candle_closed", 1, BASE_TS, "core", row["payload"]
             ),
         )
 
@@ -719,6 +719,7 @@ class TestArchive(EventLogTestCase):
                 "market.candle_closed",
                 1,
                 BASE_TS + seq * 1_000_000_000,
+                "core",
                 payload_json,
             ),
         }

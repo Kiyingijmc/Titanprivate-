@@ -35,13 +35,17 @@ Scope notes (deliberate, M0-3):
   never against the live snapshot directory.
 
 Hash pre-image, recorded so nobody "fixes" a non-existent gap: ``row_hash``
-covers exactly the six fields the design specifies (pass3-systems.md:30 —
-``prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖
-canonical_json(payload)``), so this is spec-compliant. The consequence is that
-``actor``, ``correlation_id``, ``parent_ids`` and ``idempotency_key`` are
-stored but *not* chain-covered, so tampering with them is not detectable by
-:meth:`EventLog.verify_chain`. Widening the pre-image would be a breaking
-change to the hash format and a spec change owned by §1.1, not this session.
+covers exactly the seven fields the design specifies (pass3-systems.md:30, as
+amended 2026-07-28 — ``prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖
+actor ‖ canonical_json(payload)``), so this is spec-compliant. ``actor`` was
+added to the pre-image in S009, pre-deployment, so that rewriting *who* issued
+an event breaks the chain (docs/decisions/0001-widen-row-hash-preimage-actor.md).
+The remaining envelope columns — ``event_id``, ``ts_ingest``,
+``correlation_id``, ``parent_ids`` and ``idempotency_key`` — are stored but
+*not* chain-covered by deliberate choice (delivery/bookkeeping metadata, not
+audit substance), so tampering with them is not detectable by
+:meth:`EventLog.verify_chain`. Widening the pre-image further would be a
+breaking change to the hash format and a spec change owned by §1.1.
 """
 
 from __future__ import annotations
@@ -153,17 +157,22 @@ def compute_row_hash(
     schema: str,
     schema_version: int,
     ts_event: int,
+    actor: str,
     payload_json: str,
 ) -> str:
-    """``SHA-256(prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖ payload)``.
+    """``SHA-256(prev_hash ‖ seq ‖ schema ‖ schema_version ‖ ts_event ‖ actor ‖ payload)``.
 
     ``prev_hash`` enters the pre-image as the raw 32 bytes it denotes (the
     design types it ``bytes32``); everything after it is UTF-8, separated by
     ``\\x1f``. ``payload_json`` must already be canonical JSON.
+
+    ``actor`` joined the pre-image in S009 (pass3-systems.md §1.1, amended
+    2026-07-28) so that rewriting *who* issued an event breaks the chain; see
+    docs/decisions/0001-widen-row-hash-preimage-actor.md.
     """
     digest = hashlib.sha256()
     digest.update(bytes.fromhex(prev_hash))
-    for part in (str(seq), schema, str(schema_version), str(ts_event), payload_json):
+    for part in (str(seq), schema, str(schema_version), str(ts_event), actor, payload_json):
         digest.update(_FIELD_SEP)
         digest.update(part.encode("utf-8"))
     return digest.hexdigest()
@@ -480,7 +489,7 @@ class EventLog:
                 seq=seq,
             )
             row_hash = compute_row_hash(
-                head.row_hash, seq, schema, schema_version, ts_event, payload_json
+                head.row_hash, seq, schema, schema_version, ts_event, actor, payload_json
             )
             self._conn.execute(
                 'INSERT INTO events(seq, event_id, "schema", schema_version, ts_event, '
@@ -557,8 +566,8 @@ class EventLog:
         with self._lock:
             try:
                 rows = self._conn.execute(
-                    'SELECT seq, "schema", schema_version, ts_event, payload, prev_hash, '
-                    "row_hash FROM events WHERE seq>=? ORDER BY seq ASC",
+                    'SELECT seq, "schema", schema_version, ts_event, actor, payload, '
+                    "prev_hash, row_hash FROM events WHERE seq>=? ORDER BY seq ASC",
                     (from_seq,),
                 ).fetchall()
                 marker = self._marker()
@@ -622,6 +631,7 @@ class EventLog:
                         row["schema"],
                         row["schema_version"],
                         row["ts_event"],
+                        row["actor"],
                         payload_json,
                     )
                 except ValueError as exc:

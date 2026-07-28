@@ -132,7 +132,7 @@ class TestP4HashChainDetectsAnyMutation(unittest.TestCase):
     """
 
     #: Only the columns inside the pass3 §1.1 pre-image
-    #: ``SHA-256(prev_hash | seq | schema | schema_version | ts_event |
+    #: ``SHA-256(prev_hash | seq | schema | schema_version | ts_event | actor |
     #: canonical_json(payload))`` plus the structural damage kinds. See
     #: :class:`TestP4PreImageBoundary` for the columns deliberately outside it.
     KINDS = (
@@ -142,6 +142,7 @@ class TestP4HashChainDetectsAnyMutation(unittest.TestCase):
         "ts_event",
         "schema_version",
         "schema",
+        "actor",
         "delete_row",
         "truncate_tail",
     )
@@ -222,6 +223,13 @@ class TestP4HashChainDetectsAnyMutation(unittest.TestCase):
             raw.execute(
                 'UPDATE events SET "schema"=? WHERE seq=?', ("market.candle_reopened", target)
             )
+        elif kind == "actor":
+            # Reassign the event to a different principal. Rows are written by
+            # "core"; any other value must break the chain (S009).
+            raw.execute(
+                "UPDATE events SET actor=? WHERE seq=?",
+                (rng.choice(("risk", "exec", "human:tg:1337", "breaker")), target),
+            )
         else:  # pragma: no cover - guards a typo in KINDS
             raise AssertionError(f"unhandled damage kind {kind!r}")
 
@@ -229,14 +237,20 @@ class TestP4HashChainDetectsAnyMutation(unittest.TestCase):
 class TestP4PreImageBoundary(unittest.TestCase):
     """What the chain does *not* cover, asserted so it cannot drift silently.
 
-    pass3-systems.md:30 defines ``row_hash`` over exactly six fields. The other
-    envelope columns -- ``event_id``, ``ts_ingest``, ``correlation_id``,
-    ``parent_ids``, ``actor``, ``idempotency_key`` -- are stored but unchained,
-    so editing them in the database is undetectable by ``verify_chain``. That
-    is the design as written, not a defect found here; it is pinned because
-    ``actor`` is security-relevant (pass3 §8.5 event-logs the commanding actor)
-    and widening the pre-image is a schema-version change with an upcaster,
-    which belongs to a session that can decide it.
+    pass3-systems.md:30 (as amended 2026-07-28) defines ``row_hash`` over seven
+    fields. The remaining envelope columns -- ``event_id``, ``ts_ingest``,
+    ``correlation_id``, ``parent_ids``, ``idempotency_key`` -- are stored but
+    unchained, so editing them in the database is undetectable by
+    ``verify_chain``. That is the design as written, not a defect found here:
+    all five are delivery/bookkeeping metadata rather than audit substance,
+    and widening the pre-image further is a spec change owned by §1.1.
+
+    ``actor`` used to sit in this list. It was moved into the pre-image in
+    S009 because §8.5 event-logs the commanding actor and M2's command audit
+    is built on that provenance -- see
+    docs/decisions/0001-widen-row-hash-preimage-actor.md. Its detection is
+    asserted by ``TestP4HashChainDetectsAnyMutation`` (the ``actor`` damage
+    kind) and by ``test_rewritten_actor_is_refused``.
     """
 
     UNCHAINED = (
@@ -244,7 +258,6 @@ class TestP4PreImageBoundary(unittest.TestCase):
         "ts_ingest",
         "correlation_id",
         "parent_ids",
-        "actor",
         "idempotency_key",
     )
 

@@ -62,13 +62,18 @@ Two boundary notes worth carrying forward:
   copy arriving pre-broken. It is a *test* importing `src/`; no module under
   `tradebot/` does, so the M0 fence holds.
 * **P4 is bounded by the §1.1 pre-image.** `row_hash` covers exactly
-  `prev_hash | seq | schema | schema_version | ts_event | canonical_json(payload)`
-  (`pass3-systems.md`:30). `event_id`, `ts_ingest`, `correlation_id`,
-  `parent_ids`, `actor` and `idempotency_key` are stored but **unchained**, so
-  editing them in the database is undetectable. `TestP4PreImageBoundary` pins
-  that as the current design rather than leaving it implicit — it matters
-  because §8.5 event-logs the commanding `actor`, and widening the pre-image is
-  a schema-version change with an upcaster, which needs its own decision.
+  `prev_hash | seq | schema | schema_version | ts_event | actor | canonical_json(payload)`
+  (`pass3-systems.md`:30, amended 2026-07-28 by S009). `event_id`, `ts_ingest`,
+  `correlation_id`, `parent_ids` and `idempotency_key` are stored but
+  **unchained**, so editing them in the database is undetectable.
+  `TestP4PreImageBoundary` pins that as the current design rather than leaving
+  it implicit; all five are delivery/bookkeeping metadata rather than audit
+  substance, and widening the pre-image further is a spec change owned by §1.1.
+  `actor` was in that unchained list until S009 moved it inside the pre-image —
+  it is security-relevant (§8.5 event-logs the commanding actor, and M2's
+  command audit builds provenance on it), and with no deployed log to migrate
+  the change cost nothing. It is now fuzz-covered as the `actor` damage kind.
+  See `docs/decisions/0001-widen-row-hash-preimage-actor.md`.
 
 ### F-038 defect found and fixed by P7
 

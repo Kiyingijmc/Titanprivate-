@@ -6,6 +6,7 @@ description: Drive the mig session-chain orchestrator in titan-ict-bot — backl
 
 Idea → build, two human gates (spec approve + merge gate):
   mig idea "<desc>" [--track T]     add to the backlog
+  mig backlog done <slug> --by <sha>  mark a row delivered by a plain commit (no session); triage retires it
   mig triage · mig digest           ranked board / founder analytics
   mig auto <track>                  promote top-ranked + model-draft its spec
   mig spec <ID> · mig approve <ID>  draft / human-approve §2+§4

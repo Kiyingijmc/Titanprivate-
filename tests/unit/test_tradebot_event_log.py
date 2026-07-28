@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tradebot.core.clock import SimClock
+from tradebot.core.events import canonical_json
 from tradebot.core.event_log import (
     GENESIS_PREV_HASH,
     RECOVERY_REQUIRED,
@@ -615,6 +616,102 @@ class TestArchive(EventLogTestCase):
 
         with self.assertRaises(RecoveryRequired):
             log.verify_chain()
+
+    def test_archive_persists_the_archived_through_row_hash_in_log_meta(self):
+        log = self.build_archivable_log()
+        last_archived_row = self.raw().execute(
+            "SELECT row_hash FROM events WHERE seq=7"
+        ).fetchone()
+
+        log.archive_before(8)
+
+        meta_row = self.raw().execute(
+            "SELECT value FROM log_meta WHERE key='archived_through_row_hash'"
+        ).fetchone()
+        self.assertIsNotNone(meta_row)
+        self.assertEqual(meta_row["value"], last_archived_row["row_hash"])
+
+    def test_verify_chain_catches_a_tampered_archived_through_row_hash(self):
+        """RS004 MINOR regression — the archive/live seam was never hash-anchored.
+
+        `verify_chain` previously anchored continuity across an archive on the
+        ``archived_through`` *seq* watermark alone; it never checked the first
+        retained row's ``prev_hash`` against the row that was actually
+        archived. A mismatched or tampered boundary — the same
+        disagreeing-history shape as
+        `test_archive_refuses_when_the_target_file_holds_a_different_history`,
+        but on the live side of the seam rather than the Parquet side — passed
+        verification undetected. Tampering only ``archived_through_row_hash``
+        (not any row) isolates that exact gap: every retained row is still
+        internally self-consistent, so only the new boundary check can catch
+        this.
+        """
+        log = self.build_archivable_log()
+        log.archive_before(8)
+        self.assertEqual(log.verify_chain().seq, 12)  # sanity: verifies before tampering
+
+        self.raw().execute(
+            "UPDATE log_meta SET value=? WHERE key='archived_through_row_hash'",
+            (GENESIS_PREV_HASH,),
+        )
+
+        with self.assertRaises(RecoveryRequired):
+            log.verify_chain()
+
+    def test_verify_chain_requires_the_archived_through_row_hash_when_archived(self):
+        """A log_meta row from before this fix (seq watermark, no hash) must
+        not be silently trusted — the whole point is that a missing anchor is
+        exactly as unproven as a wrong one."""
+        log = self.build_archivable_log()
+        log.archive_before(8)
+
+        self.raw().execute("DELETE FROM log_meta WHERE key='archived_through_row_hash'")
+
+        with self.assertRaises(RecoveryRequired):
+            log.verify_chain()
+
+    def test_write_parquet_refuses_new_rows_that_do_not_chain_from_the_stored_tail(self):
+        """Same seam, checked on the Parquet side: rows offered as an
+        extension to an existing archive file must actually chain from that
+        file's ``chain_last_row_hash`` — not merely avoid colliding on
+        ``seq``. A foreign row at a *new* seq (no collision, so the existing
+        seq/row_hash dedup never sees it) previously slipped straight into
+        the file.
+        """
+        log = self.build_archivable_log()
+        result = log.archive_before(8)  # writes events-202603.parquet, seq 1-7
+        target = Path(result["files"][0])
+
+        seq = 8
+        payload_json = canonical_json({"instrument": "EURUSD", "bar_index": seq})
+        foreign_prev_hash = GENESIS_PREV_HASH  # does not chain from seq 7's row_hash
+        foreign_row = {
+            "seq": seq,
+            "event_id": "evt-foreign-8",
+            "schema": "market.candle_closed",
+            "schema_version": 1,
+            "ts_event": BASE_TS + seq * 1_000_000_000,
+            "ts_ingest": BASE_TS + seq * 1_000_000_000,
+            "correlation_id": None,
+            "parent_ids": "[]",
+            "idempotency_key": None,
+            "actor": "core",
+            "payload": payload_json,
+            "prev_hash": foreign_prev_hash,
+            "row_hash": compute_row_hash(
+                foreign_prev_hash,
+                seq,
+                "market.candle_closed",
+                1,
+                BASE_TS + seq * 1_000_000_000,
+                payload_json,
+            ),
+        }
+
+        with self.assertRaises(RecoveryRequired):
+            _write_parquet(
+                target, [foreign_row], archived_at_ns=BASE_TS, source_db=str(log.db_path)
+            )
 
 
 class TestBackupAndRestore(EventLogTestCase):

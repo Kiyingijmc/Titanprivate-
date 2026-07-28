@@ -85,6 +85,7 @@ DEFAULT_BUSY_TIMEOUT_MS = 5_000
 _META_HEAD_SEQ = "chain_head_seq"
 _META_HEAD_HASH = "chain_head_hash"
 _META_ARCHIVED_THROUGH = "archived_through_seq"
+_META_ARCHIVED_THROUGH_HASH = "archived_through_row_hash"
 _META_LAST_SNAPSHOT_SEQ = "last_snapshot_seq"
 _META_LAST_SNAPSHOT_TS = "last_snapshot_ts_ns"
 
@@ -583,8 +584,23 @@ class EventLog:
                             f"missing rows before seq {seq} (expected first seq {expected_first})",
                             seq=seq,
                         )
-                    if seq == 1 and row["prev_hash"] != GENESIS_PREV_HASH:
-                        raise RecoveryRequired("genesis row prev_hash is not zero", seq=seq)
+                    if seq == 1:
+                        if row["prev_hash"] != GENESIS_PREV_HASH:
+                            raise RecoveryRequired("genesis row prev_hash is not zero", seq=seq)
+                    elif archived_through > 0 and seq == archived_through + 1:
+                        archived_hash = self._meta_get(_META_ARCHIVED_THROUGH_HASH)
+                        if archived_hash is None:
+                            raise RecoveryRequired(
+                                "archived_through_row_hash is missing from log_meta though "
+                                "rows are recorded as archived",
+                                seq=seq,
+                            )
+                        if row["prev_hash"] != archived_hash:
+                            raise RecoveryRequired(
+                                "first retained row's prev_hash does not match the "
+                                "archived chain's tail (archive/live history disagree)",
+                                seq=seq,
+                            )
                 else:
                     if seq != previous["seq"] + 1:
                         raise RecoveryRequired(
@@ -823,10 +839,12 @@ class EventLog:
                 files.append(str(path))
 
             archived_through = rows[-1]["seq"]
+            archived_through_row_hash = rows[-1]["row_hash"]
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.execute("DELETE FROM events WHERE seq<?", (snapshot_seq,))
                 self._meta_set(_META_ARCHIVED_THROUGH, str(archived_through))
+                self._meta_set(_META_ARCHIVED_THROUGH_HASH, archived_through_row_hash)
                 self._conn.execute("COMMIT")
             except BaseException:
                 try:
@@ -1131,7 +1149,12 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
     table = pa.Table.from_pydict(columns, schema=schema)
 
     if path.exists():
-        existing = pq.read_table(path).select(list(_EVENT_COLUMNS))
+        existing_raw = pq.read_table(path)
+        existing_metadata = existing_raw.schema.metadata or {}
+        existing_chain_last_hash = existing_metadata.get(b"chain_last_row_hash")
+        if existing_chain_last_hash is not None:
+            existing_chain_last_hash = existing_chain_last_hash.decode()
+        existing = existing_raw.select(list(_EVENT_COLUMNS))
         existing = existing.cast(schema).replace_schema_metadata(None)
         already = dict(
             zip(
@@ -1155,6 +1178,22 @@ def _write_parquet(path: Path, rows: list, *, archived_at_ns: int, source_db: st
                         "archive, because deleting these rows would lose them"
                     )
             table = table.filter(pa.array(keep, type=pa.bool_()))
+        # Rows surviving the dedup above are genuinely new to this file; they
+        # must chain from its stored tail, or the file's history and the
+        # incoming rows disagree about what came before (the same silent-loss
+        # shape as the seq/row_hash check above, but at the file's boundary
+        # rather than mid-file).
+        if existing_chain_last_hash is not None and table.num_rows > 0:
+            new_seqs = table.column("seq").to_pylist()
+            new_prev_hashes = table.column("prev_hash").to_pylist()
+            first_index = new_seqs.index(min(new_seqs))
+            if new_prev_hashes[first_index] != existing_chain_last_hash:
+                raise RecoveryRequired(
+                    f"{path.name} chain does not continue from its stored tail "
+                    f"(expected prev_hash {existing_chain_last_hash} at seq "
+                    f"{new_seqs[first_index]}, found {new_prev_hashes[first_index]}); "
+                    "the live chain and this archive disagree — refusing to archive"
+                )
         table = pa.concat_tables([existing, table.replace_schema_metadata(None)])
         # A retry re-offers rows in the same order, but sorting makes the file
         # deterministic no matter which run wrote which rows.

@@ -39,12 +39,18 @@ risk:
 
     # v15 Plan 10 Advisory A: portfolio-wide ceiling on TOTAL open risk-to-stop
     # (this one really is a percent of live equity, unlike the count above).
-    # Summed across every open position plus the trade being proposed; over the
-    # cap, the trade is blocked at _execute_signal. At the shipped 1%/trade the
-    # count gate alone would permit 6% of equity at risk simultaneously, so 5.0
-    # binds one trade earlier. Conservative starting value -- tune post-deploy.
-    # Note the sum is deliberately over-stated for ratcheted trades: a stop
-    # moved past entry counts as risk, not as locked-in profit.
+    # Summed across every COMMITTED entry -- open positions, resting LIMIT/STOP
+    # orders, and anything dispatched earlier in the same bar sweep -- plus the
+    # trade being proposed; over the cap, the trade is blocked at
+    # _execute_signal. At the shipped 1%/trade the count gate alone would permit
+    # 6% of equity at risk simultaneously, so 5.0 binds one trade earlier.
+    # Conservative starting value -- tune post-deploy.
+    # The sum is deliberately over-stated for ratcheted trades (a stop moved
+    # past entry counts as risk, not as locked-in profit) and includes
+    # commission, matching the net-risk basis the position sizer uses.
+    # FAILS CLOSED, BOOK-WIDE: if any single committed row's risk is unknown
+    # (a stopless position, or a symbol whose broker specs never loaded) the
+    # gate blocks EVERY symbol until it clears, and Telegrams the operator.
     max_total_open_risk_pct: 5.0
 
 

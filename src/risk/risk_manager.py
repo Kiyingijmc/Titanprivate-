@@ -244,15 +244,67 @@ class RiskManager:
         except (TypeError, ValueError, ZeroDivisionError):
             return 0.0
 
-    def aggregate_open_risk(self, open_positions):
-        """Total account-currency risk-to-stop across every open position.
+    def risk_to_stop(self, symbol, price_distance, lots) -> float:
+        """Risk-to-stop of `lots` over `price_distance`, NET of commission drag.
 
-        Feeds the portfolio-wide cap (ExposureManager.check_total_risk). Each
-        heartbeat row carries `s`/`p`/`sl`/`vol` (Titan_Gateway.mq5:194), so a
-        position's risk is money_for_move(s, abs(p - sl), vol).
+        money_for_move is gross P/L only, but calculate_lot_size sizes each
+        trade net of commission (the 2-step solver above). Comparing gross
+        figures against a cap derived from net-risk sizing would let the
+        portfolio gate admit `lots x comm_per_lot` more true risk than
+        configured on every row -- a systematic bias in the permissive
+        direction, in the one component whose job is to be conservative. Adding
+        the commission back keeps the cap and the sizer in the same units.
+
+        Returns money_for_move's 0.0 'unknown' sentinel when specs are missing.
+        """
+        gross = self.money_for_move(symbol, price_distance, lots)
+        if gross <= 0.0:
+            return 0.0
+        try:
+            return gross + abs(float(lots)) * self.comm_per_lot
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _row_risk(self, symbol, entry, sl, lots):
+        """Risk-to-stop for one book row, or None when un-computable."""
+        try:
+            entry = float(entry or 0.0)
+            sl = float(sl or 0.0)
+            lots = float(lots or 0.0)
+        except (TypeError, ValueError):
+            return None
+
+        if entry == 0.0 or sl == 0.0 or lots == 0.0:
+            return None
+
+        risk = self.risk_to_stop(symbol, abs(entry - sl), lots)
+        return None if risk <= 0.0 else risk
+
+    def aggregate_open_risk(self, open_positions, pending_orders=None):
+        """Total account-currency risk-to-stop across the whole committed book.
+
+        Feeds the portfolio-wide cap (ExposureManager.check_total_risk). Two
+        sources, because an order is committed risk long before it fills:
+
+          * `open_positions` -- heartbeat rows carrying `t`/`s`/`p`/`sl`/`vol`
+            (Titan_Gateway.mq5:194).
+          * `pending_orders` -- StateManager.get_pending_orders() rows for
+            resting LIMIT/STOP entries, carrying `ticket_id`/`symbol`/
+            `initial_entry`/`initial_sl`/`lots`. These MUST be counted: the only
+            approved strategy (SilverBullet) enters on LIMIT, and a resting
+            limit lives up to 12 bars of its timeframe before ghost cleanup
+            cancels it, so the normal state of the live book is "several limits
+            resting, none filled yet" -- exactly the state in which a
+            positions-only aggregate reads 0.0 and waves everything through.
+            (The heartbeat's own `orders` rows are NOT a usable source: the EA
+            emits them as `t,s,p,type,vol` with no `sl`, Titan_Gateway.mq5:225.)
+
+        Rows are de-duplicated by ticket: between a limit filling and the next
+        heartbeat's backfill flipping the DB row PENDING->ACTIVE, the same trade
+        appears in both lists, and counting it twice would over-block.
 
         Returns None -- "un-computable", callers must BLOCK -- when any single
-        position's risk is unknown, following the same fail-safe discipline as
+        row's risk is unknown, following the same fail-safe discipline as
         calculate_lot_size (never guess a risk number):
           * sl == 0: a stopless position (e.g. opened outside Titan) has no
             defined risk-to-stop, and skipping it would understate the book.
@@ -264,22 +316,36 @@ class RiskManager:
         locked-in profit, so the aggregate over-states rather than under-states.
         """
         total = 0.0
+        open_tickets = set()
+
         for pos in open_positions or []:
-            symbol = pos.get('s', '')
             try:
-                entry = float(pos.get('p', 0.0) or 0.0)
-                sl = float(pos.get('sl', 0.0) or 0.0)
-                lots = float(pos.get('vol', 0.0) or 0.0)
+                ticket = int(pos.get('t', 0) or 0)
             except (TypeError, ValueError):
-                return None
+                ticket = 0
+            if ticket:
+                open_tickets.add(ticket)
 
-            if sl == 0.0 or entry == 0.0 or lots == 0.0:
-                return None
-
-            risk = self.money_for_move(symbol, abs(entry - sl), lots)
-            if risk <= 0.0:
+            risk = self._row_risk(pos.get('s', ''), pos.get('p'),
+                                  pos.get('sl'), pos.get('vol'))
+            if risk is None:
                 return None
             total += risk
+
+        for row in pending_orders or []:
+            try:
+                ticket = int(row.get('ticket_id', 0) or 0)
+            except (TypeError, ValueError):
+                ticket = 0
+            if ticket and ticket in open_tickets:
+                continue  # already counted above as the filled position
+
+            risk = self._row_risk(row.get('symbol', ''), row.get('initial_entry'),
+                                  row.get('initial_sl'), row.get('lots'))
+            if risk is None:
+                return None
+            total += risk
+
         return total
 
     def reset_daily_metrics(self):

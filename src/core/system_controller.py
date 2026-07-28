@@ -78,6 +78,13 @@ class SystemController:
     - FIX: Sending Integer history counts to satisfy MQL5 JSON parser.
     - RETAINED: All v14.3 architectural components.
     """
+
+    # An order that got a handshake-OK but never showed up in the book (broker
+    # rejection after the ack) must not hold a risk reservation forever.
+    RESERVED_RISK_TTL_S = 300
+    # Throttle on the "total risk un-computable, everything is blocked" alarm.
+    UNCOMPUTABLE_ALERT_INTERVAL_S = 1800
+
     def __init__(self):
         # 1. Path Robustness
         self.root_dir = Path(__file__).resolve().parent.parent.parent
@@ -148,7 +155,19 @@ class SystemController:
         # time so EXECUTION:OPENED can journal the full trade record (the EA's
         # OPENED message carries no prices).
         self.pending_signal_meta = {}
-        
+
+        # v15 Plan 10 Advisory A: $ risk of orders already dispatched but not
+        # yet visible in the book (heartbeat positions / DB pending rows),
+        # keyed symbol -> (risk, sent_at). current_open_positions is rebound
+        # only on HEARTBEAT, so without this every signal in one bar sweep is
+        # measured against the same pre-sweep snapshot and N trades each
+        # individually under the cap all pass -- the same in-cycle blind spot
+        # the Arbiter's COUNT cap already closes by counting approved intents
+        # (arbiter.py _apply_caps). Entries clear once the broker reports the
+        # trade, or age out after RESERVED_RISK_TTL_S.
+        self._reserved_risk = {}
+        self._uncomputable_alert_at = None
+
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
         
@@ -387,13 +406,26 @@ class SystemController:
         # v15 Plan 10 Advisory A: the count/correlation gate above never summed
         # the book's $ risk, so N individually-sized trades could stack past the
         # account's intended total exposure. Cap the aggregate here.
+        #
+        # The aggregate must see everything already committed, not just filled
+        # positions: resting LIMIT/STOP orders from the DB (SilverBullet enters
+        # on LIMIT, so these are the normal state of the book) plus anything
+        # dispatched earlier in this same bar sweep, which no heartbeat has
+        # reported yet.
+        sm = getattr(self, 'state_manager', None)
+        resting = sm.get_pending_orders() if sm is not None else []
+        book_risk = self.risk_manager.aggregate_open_risk(self.current_open_positions, resting)
+        if book_risk is not None:
+            self._uncomputable_alert_at = None  # book computable again: re-arm
+            book_risk += self._reserved_risk_total()
+
+        proposed_risk = self.risk_manager.risk_to_stop(symbol, abs(p - sl), lot)
         allowed, reason = self.exposure_manager.check_total_risk(
-            self.risk_manager.aggregate_open_risk(self.current_open_positions),
-            self.risk_manager.money_for_move(symbol, abs(p - sl), lot),
-            self.risk_manager.current_equity,
+            book_risk, proposed_risk, self.risk_manager.current_equity,
         )
         if not allowed:
             self.logger.log_event("RISK", "EXPOSURE", f"Block {symbol}: {reason}")
+            await self._alert_uncomputable_book(book_risk, reason)
             return
 
         payload = {
@@ -407,6 +439,9 @@ class SystemController:
         success = await self.bridge.send_order_reliable(payload)
 
         if success:
+            # Reserve this trade's risk so the NEXT signal of the same sweep
+            # sees it; the heartbeat that would reveal it is ticks away.
+            self._reserve_risk(symbol, proposed_risk)
             # Remember what we sent so EXECUTION:OPENED can journal the full
             # trade record (the EA's OPENED notification carries no prices).
             self.pending_signal_meta[symbol] = {
@@ -417,6 +452,82 @@ class SystemController:
             self.logger.log_event("EXEC", "SENT", f"Order {cmd} {symbol} [{grade}] sent. Handshake OK.")
         else:
             self.logger.log_event("ERROR", "EXECUTION", f"Order handshake FAILED for {symbol}")
+
+    def _reserve_risk(self, symbol, risk):
+        """Record $ risk dispatched but not yet visible in the book.
+
+        Accumulates per symbol rather than overwriting: the Arbiter normally
+        approves at most one intent per symbol per cycle, but if two ever get
+        through, adding is the conservative reading and replacing would silently
+        drop the first.
+        """
+        if not risk or risk <= 0:
+            return
+        reserved = getattr(self, '_reserved_risk', None)
+        if reserved is None:
+            reserved = self._reserved_risk = {}
+        prior, _ = reserved.get(symbol, (0.0, 0.0))
+        reserved[symbol] = (prior + float(risk), datetime.now().timestamp())
+
+    def _reserved_risk_total(self):
+        """In-flight risk to add to the book aggregate (see __init__).
+
+        Reservations that outlive RESERVED_RISK_TTL_S are dropped: an order the
+        EA acked but the broker never opened would otherwise hold risk against
+        the cap forever. Until they expire they over-state, which is the safe
+        direction.
+        """
+        reserved = getattr(self, '_reserved_risk', None)
+        if not reserved:
+            return 0.0
+        cutoff = datetime.now().timestamp() - self.RESERVED_RISK_TTL_S
+        for sym, (_, sent_at) in list(reserved.items()):
+            if sent_at < cutoff:
+                del reserved[sym]
+        return sum(r for r, _ in reserved.values())
+
+    def _release_reserved_risk(self):
+        """Drop reservations for symbols the broker now reports.
+
+        From that point the real position (or its DB PENDING row) carries the
+        risk, so keeping the reservation would double-count it.
+        """
+        reserved = getattr(self, '_reserved_risk', None)
+        if not reserved:
+            return
+        visible = {p.get('s', '') for p in (self.current_open_positions or [])}
+        sm = getattr(self, 'state_manager', None)
+        if sm is not None:
+            visible |= {r.get('symbol', '') for r in sm.get_pending_orders()}
+        for sym in list(reserved):
+            if sym in visible:
+                del reserved[sym]
+
+    async def _alert_uncomputable_book(self, book_risk, reason):
+        """Operator alarm when the $ cap goes book-wide un-computable.
+
+        aggregate_open_risk fails closed on ONE bad row -- a manually opened
+        stopless position, a symbol whose specs never loaded, a symbol dropped
+        from `pairs` while still open -- and unlike calculate_lot_size's
+        per-symbol fail-safe that blocks EVERY symbol, indefinitely. Failing
+        closed is right; failing closed silently is not: on an unattended
+        forward test a multi-day total trading stop looks exactly like a quiet
+        market, and the only trace today is an audit-log line. Throttled to one
+        Telegram per UNCOMPUTABLE_ALERT_INTERVAL_S, re-armed in _execute_signal
+        as soon as the book is computable again.
+        """
+        if book_risk is not None:
+            return  # a plain over-cap block, not an outage
+        now = datetime.now().timestamp()
+        last = getattr(self, '_uncomputable_alert_at', None)
+        if last is not None and (now - last) < self.UNCOMPUTABLE_ALERT_INTERVAL_S:
+            return
+        self._uncomputable_alert_at = now
+        await self.telemetry.send_message(
+            "🛑 **Risk Gate Halted**\nTotal open risk is un-computable, so **all "
+            f"symbols are blocked** until it clears.\nReason: `{reason}`\n"
+            "Usual cause: an open position with no stop-loss, or a symbol whose "
+            "broker specs never loaded.", parse_mode="Markdown")
 
     async def _dispatch_mgmt_command(self, c):
         """
@@ -599,6 +710,10 @@ class SystemController:
                         self.state_manager.backfill_position_state(
                             tid, entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
                         )
+
+            # The book snapshot just refreshed: anything it now shows is
+            # counted from the real row, so its in-flight reservation goes.
+            self._release_reserved_risk()
 
     async def _cleanup_ghost_orders(self):
         pending = self.state_manager.get_pending_orders()

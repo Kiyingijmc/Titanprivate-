@@ -46,14 +46,21 @@ class ExposureManager:
 
         The count gate above gladly allows N positions that each pass their own
         1%-of-equity sizing; nothing summed the book's $ risk before this. Here
-        we do: (open risk + this trade's risk) / equity must stay at or under
-        `risk.account.max_total_open_risk_pct`.
+        we do: (committed risk + this trade's risk) / equity must stay at or
+        under `risk.account.max_total_open_risk_pct`.
 
         Args:
-            aggregate_open_risk: $ risk-to-stop across open positions, or None
-                when un-computable (see RiskManager.aggregate_open_risk).
-            proposed_risk: $ risk-to-stop of the trade being considered; the
-                0.0 sentinel from money_for_move means un-computable.
+            aggregate_open_risk: $ risk-to-stop across everything already
+                committed -- open positions AND resting pending orders
+                (RiskManager.aggregate_open_risk) plus anything dispatched
+                earlier in the same bar sweep that no heartbeat has reported yet
+                (SystemController._reserved_risk_total) -- or None when
+                un-computable. A positions-only figure is NOT sufficient: the
+                only approved strategy enters on LIMIT, so it would read 0.0
+                exactly when the cap needs to bite.
+            proposed_risk: $ risk-to-stop of the trade being considered
+                (RiskManager.risk_to_stop); its 0.0 sentinel means
+                un-computable.
             current_equity: live account equity; <= 0 means no heartbeat yet.
 
         Returns: (Bool is_allowed, String reason)

@@ -40,22 +40,21 @@ reference (:func:`round_posting`) whose properties are fuzzed now; M2 replaces
 the reference with an import of the real ``tradebot/money/`` implementation and
 keeps the assertions.
 
-Why no ``hypothesis``
----------------------
-The M0-6 backlog line flagged the dependency decision explicitly ("stdlib-only
-vs add hypothesis dep -- flag at spec time per ask-before-new-deps rule").
-Decision: **stdlib-only**, via seeded ``random.Random`` + ``subTest``. Reasons,
-in order of weight: (a) CLAUDE.md requires asking before adding a dependency
-and this session runs unattended, so "add a dep" is not a call it may make;
-(b) every runner in this repo is stdlib ``unittest`` -- ``hypothesis``'s value
-is concentrated in shrinking and its ``@given``/``@settings`` decorators, and
-its database/deadline machinery introduces run-to-run variability that the
-mig verify gate reads as flake; (c) fixed seeds make a CI failure reproducible
-by seed alone, with no ``.hypothesis`` directory to ship. The cost is real and
-named: no shrinking, so a counter-example arrives at full size, and coverage
-is only as good as the generators below. Revisit at M1, where P1
+Why this module does not import ``hypothesis``
+----------------------------------------------
+The dependency itself is decided: the approved S007 spec (2026-07-27) pins
+``hypothesis>=6,<7`` in ``requirements.txt`` and as the ``[test]`` extra in
+``pyproject.toml`` -- the authoritative record is ``docs/TRADEBOT_CI.md`` §3.
+These tests nonetheless run on seeded ``random.Random`` + ``subTest``:
+(a) fixed seeds make a failure reproducible by seed alone, with no
+``.hypothesis`` example database to ship or ignore; (b) hypothesis's
+database/deadline machinery introduces run-to-run variability that the mig
+verify gate reads as flake, and P4-P8's small, well-understood input spaces
+don't yet earn that variance. The cost is real and named: no shrinking, so a
+counter-example arrives at full size, and coverage is only as good as the
+generators below. ``@given`` adoption lands at M1, where P1
 (incremental == batch across every feature node) is the invariant that
-genuinely wants shrinking -- and revisit it as an ADR, not in passing.
+genuinely wants shrinking -- starting from the already-pinned version.
 
 NOTE ON LOCATION: flat under tests/unit/ like every other module here. A test
 package named ``tradebot`` would shadow the real top-level package during

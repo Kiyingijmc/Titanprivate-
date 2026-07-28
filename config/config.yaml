@@ -60,6 +60,9 @@ arbiter:
   opposition_policy: "higher_grade_wins"   # or "block_both"
   max_positions_per_symbol: 1
   max_total_positions: 6
+  # Counted in bars of the thesis's OWN timeframe (v15 Advisory C): 12 here
+  # means 12 H1 bars for an H1 thesis and 12 M5 bars for an M5 one -- not 12
+  # ticks of a single shared counter. Matters once an M5 strategy activates.
   thesis_ttl_bars: 12
 
 # v14.4: Confluence grading. Every signal is scored 0-100 (HTF bias alignment,

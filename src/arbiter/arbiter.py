@@ -59,8 +59,13 @@ reached `thesis_ttl_bars` are purged — this is the sole memory bound: the
 dict can only ever hold theses seen within each timeframe's trailing TTL
 window. Accepted edge: purging is driven by arrivals, so entries belonging
 to a timeframe that STOPS arriving linger until that timeframe ticks
-again. The set of live timeframes is small and fixed, so this is bounded
-by (timeframes x theses-per-TTL-window), not unbounded growth.
+again — and because they linger, they keep BLOCKING: a quiet timeframe
+freezes its theses rather than merely retaining them. The set of live
+timeframes is small and fixed, so this is bounded by (timeframes x
+theses-per-TTL-window), not unbounded growth. Unreachable today (every
+timeframe is driven off the same tick stream, so they go quiet together);
+it becomes reachable if a strategy set is ever changed at runtime such
+that one timeframe stops resolving.
 
 A thesis that is *itself* blocked as a replay does NOT refresh its stored
 index (otherwise a spam sequence could keep resetting its own clock and
@@ -178,6 +183,12 @@ class Arbiter:
                 # denominated in the thesis's own bars.
                 seen_tf, last_idx = seen
                 age = self._bar_index[seen_tf] - last_idx
+                # Defence in depth: _advance_bar purges an entry the moment
+                # its own timeframe's counter reaches idx + ttl, so every
+                # SURVIVING entry already has age < ttl and this guard is
+                # always true. Kept because it makes the rule readable on
+                # its own; a mutant that flips it is therefore equivalent,
+                # not an uncovered branch.
                 if age < self.thesis_ttl_bars:
                     self._block(
                         intent, "thesis_dedup",

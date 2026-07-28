@@ -8,6 +8,7 @@
 | S004 | 2026-07-27 | m0-3-tradebot-core-event-log | DONE | data | finalized via mig (review CHANGES) | parent: none |
 | S005 | 2026-07-27 | m0-4-tradebot-core-projection-py | DONE | data | finalized via mig (review PASS) | parent: none |
 | S006 | 2026-07-27 | m0-5-tradebot-core-bus-py | DONE | infra | finalized via mig (review PASS) | parent: none |
+| S007 | 2026-07-28 | m0-6-tradebot-ci-skeleton-property | DONE | infra | finalized via mig (review PASS) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -19,4 +20,5 @@
 | RS004 | 2026-07-27 | S004 (m0-3-tradebot-core-event-log) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS004.md](../session-reviews/RS004.md) |
 | RS005 | 2026-07-27 | S005 (m0-4-tradebot-core-projection-py) | DONE | PASS (mig orchestrator in-session independent review) | [RS005.md](../session-reviews/RS005.md) |
 | RS006 | 2026-07-27 | S006 (m0-5-tradebot-core-bus-py) | DONE | PASS (mig orchestrator in-session independent review) | [RS006.md](../session-reviews/RS006.md) |
+| RS007 | 2026-07-28 | S007 (m0-6-tradebot-ci-skeleton-property) | DONE | PASS (mig orchestrator in-session independent review) | [RS007.md](../session-reviews/RS007.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

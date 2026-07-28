@@ -331,6 +331,21 @@ class TestCorruptionDrills(EventLogTestCase):
 
         self.assert_recovery_required(log, contains="undecodable payload")
 
+    def test_rewritten_actor_is_refused(self):
+        """S009: `actor` is inside the pre-image, so rewriting *who* issued an
+        event is detectable.
+
+        Under the original six-field pre-image this row verified clean, which
+        meant an attacker with write access to `events.sqlite3` could reassign
+        any command to a different principal without breaking the chain — the
+        exact provenance M2's command audit (pass3 §8.5) is built on.
+        """
+        log = self.make_log()
+        self.append_n(log, 3)
+        self.raw().execute("UPDATE events SET actor='tampered' WHERE seq=1")
+
+        self.assert_recovery_required(log, contains="row_hash does not match")
+
 
 class TestSnapshots(EventLogTestCase):
     def test_cadence_fires_on_the_event_count_threshold(self):

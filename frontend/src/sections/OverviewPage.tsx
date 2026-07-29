@@ -3,6 +3,9 @@ import { Panel, type PanelStatus } from "@/components/shell/Panel";
 import { StatTiles } from "@/components/StatTiles";
 import { EquitySparkline } from "@/components/EquitySparkline";
 import { Controls } from "@/components/Controls";
+import { MarketSessions } from "@/components/market/MarketSessions";
+import { LocalityClock } from "@/components/market/LocalityClock";
+import { DollarBias } from "@/components/market/DollarBias";
 import { Badge } from "@/components/ui/badge";
 import { useController } from "@/context/ControllerContext";
 import { useReadOnly } from "@/context/ReadOnlyContext";
@@ -93,6 +96,14 @@ export default function OverviewPage() {
 
   return (
     <div className="grid gap-4">
+      {/* Market Context strip (Task 12): always-on session timeline + local
+          clock + USD bias, above the account KPIs. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <MarketSessions />
+        <LocalityClock />
+        <DollarBias data={snapshot?.dollar} />
+      </div>
+
       <Panel status={baseStatus} title="Overview">
         {snapshot && (
           <StatTiles

@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
-import { Wifi, WifiOff, Loader2, CloudOff, Clock, Pause, Gauge, Command } from "lucide-react";
+import { Wifi, WifiOff, Loader2, CloudOff, Clock, Pause, Gauge, Command, ArrowUp, ArrowDown, Minus } from "lucide-react";
 import type { ConnectionState, ConnectionStatus } from "@/lib/connection";
 import type { Snapshot } from "@/lib/types";
 import { money } from "@/lib/format";
+import { sessionStates } from "@/lib/sessions";
+import { useNow } from "@/lib/useNow";
 import { cn } from "@/lib/utils";
 
 type Tone = "profit" | "warning" | "loss" | "muted" | "accent";
@@ -34,6 +36,79 @@ const CONNECTION_PRESENTATION: Record<
   offline: { tone: "loss", label: "Offline", icon: <WifiOff className="size-4" aria-hidden /> },
   connecting: { tone: "muted", label: "Connecting", icon: <Loader2 className="size-4 animate-spin" aria-hidden /> },
 };
+
+function fmtCountdown(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+/**
+ * Condensed, always-visible market context: the active session name(s) plus a
+ * mini next-open countdown, and a compact dollar-bias pill. Reads its own clock
+ * via useNow (kept OUT of the aria-live status cluster — the countdown ticks
+ * every second and would make a screen reader noisy). Collapses on narrow
+ * widths so the bar never overflows.
+ */
+function CondensedMarketContext({ snapshot }: { snapshot: Snapshot | null }) {
+  const now = useNow();
+  const { sessions, weekendClosed } = sessionStates(now);
+  const open = sessions.filter((s) => s.open);
+  const nextOpen = sessions
+    .filter((s) => !s.open)
+    .sort((a, b) => a.countdownMin - b.countdownMin)[0];
+
+  const dollar = snapshot?.dollar;
+  const showDollar = dollar != null && dollar.source !== "unavailable";
+  const dir = showDollar ? (dollar.bias > 0 ? "up" : dollar.bias < 0 ? "down" : "flat") : "flat";
+  const DirIcon = dir === "up" ? ArrowUp : dir === "down" ? ArrowDown : Minus;
+
+  return (
+    <div className="hidden items-center gap-3 lg:flex">
+      <span
+        data-testid="statusbar-sessions"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
+      >
+        <Clock className="size-4" aria-hidden />
+        {weekendClosed ? (
+          <span>Markets closed</span>
+        ) : open.length > 0 ? (
+          <span>
+            <span className="font-medium text-secondary-foreground">
+              {open.map((s) => s.label).join(" + ")}
+            </span>
+          </span>
+        ) : (
+          <span>
+            No session
+            {nextOpen && (
+              <span className="text-muted-foreground">
+                {" "}
+                &middot; {nextOpen.label} in{" "}
+                <span className="font-mono tabnum">{fmtCountdown(nextOpen.countdownMin)}</span>
+              </span>
+            )}
+          </span>
+        )}
+      </span>
+
+      {showDollar && (
+        <span
+          data-testid="statusbar-dollar"
+          className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-sm text-muted-foreground"
+          title="USD bias"
+        >
+          <span className="text-xs uppercase tracking-wide">USD</span>
+          <DirIcon className="size-3.5" aria-hidden />
+          <span className="font-mono tabnum text-secondary-foreground">
+            {dollar.bias > 0 ? "+" : ""}
+            {dollar.bias.toFixed(0)}
+          </span>
+        </span>
+      )}
+    </div>
+  );
+}
 
 export interface StatusBarProps {
   connection: ConnectionState;
@@ -71,6 +146,8 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
         </StatusChip>
       )}
       </div>
+
+      <CondensedMarketContext snapshot={snapshot} />
 
       <div className="ml-auto flex items-center gap-4">
         <div className="flex items-center gap-3 font-mono tabnum text-sm text-secondary-foreground">

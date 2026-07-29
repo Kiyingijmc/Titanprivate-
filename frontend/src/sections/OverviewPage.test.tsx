@@ -8,6 +8,10 @@ import type { Snapshot, FeedEvent } from "@/lib/types";
 import type { Api } from "@/lib/api";
 import OverviewPage from "./OverviewPage";
 
+// Freeze the clock the market widgets read. 2026-07-29 13:00 UTC (Wednesday,
+// not a weekend) has London + New York open, so session chips render.
+vi.mock("@/lib/useNow", () => ({ useNow: () => new Date("2026-07-29T13:00:00Z") }));
+
 function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     health: { bridge_connected: true, last_heartbeat_age_s: 2, paused: false, last_error: null },
@@ -121,5 +125,18 @@ describe("OverviewPage", () => {
   it("shows loading state before the first snapshot arrives", () => {
     renderOverview({ snapshot: null });
     expect(screen.getAllByTestId("skeleton").length).toBeGreaterThan(0);
+  });
+
+  it("renders the top Market Context strip with sessions and the dollar bias", async () => {
+    renderOverview({
+      snapshot: makeSnapshot({
+        dollar: { source: "computed", value: null, bias: 33, trend: [10, 20, 33], contributors: [] },
+      }),
+    });
+    // Full MarketSessions renders session labels; London is open at the mocked instant.
+    expect(await screen.findByText("London")).toBeInTheDocument();
+    // Full DollarBias widget renders on the page.
+    expect(screen.getAllByTestId("dollar-bias").length).toBeGreaterThan(0);
+    expect(screen.getByText(/33/)).toBeInTheDocument();
   });
 });

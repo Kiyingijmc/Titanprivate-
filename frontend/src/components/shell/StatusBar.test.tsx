@@ -5,6 +5,10 @@ import { StatusBar } from "./StatusBar";
 import type { Snapshot } from "@/lib/types";
 import type { ConnectionState } from "@/lib/connection";
 
+// Freeze the clock the StatusBar reads for its condensed market-session cluster.
+// 2026-07-29 13:00 UTC (a Wednesday) sits inside the London<->New York overlap.
+vi.mock("@/lib/useNow", () => ({ useNow: () => new Date("2026-07-29T13:00:00Z") }));
+
 function makeSnapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     health: { bridge_connected: true, last_heartbeat_age_s: 2, paused: false, last_error: null },
@@ -77,5 +81,42 @@ describe("StatusBar", () => {
   it("renders without throwing when snapshot is null, and still shows the connection pill", () => {
     render(<StatusBar connection={liveConn} snapshot={null} onOpenPalette={() => {}} />);
     expect(screen.getByText(/live/i)).toBeInTheDocument();
+  });
+
+  it("shows the active market session in the condensed cluster", () => {
+    render(<StatusBar connection={liveConn} snapshot={makeSnapshot()} onOpenPalette={() => {}} />);
+    // At the mocked instant London + New York are open.
+    expect(screen.getByTestId("statusbar-sessions")).toHaveTextContent(/London|New York/i);
+  });
+
+  it("shows the condensed dollar-bias pill with the bias value", () => {
+    render(
+      <StatusBar
+        connection={liveConn}
+        snapshot={makeSnapshot({
+          dollar: { source: "computed", value: null, bias: 42, trend: [], contributors: [] },
+        })}
+        onOpenPalette={() => {}}
+      />
+    );
+    expect(screen.getByTestId("statusbar-dollar")).toHaveTextContent(/42/);
+  });
+
+  it("hides the dollar-bias pill when snapshot.dollar is undefined", () => {
+    render(<StatusBar connection={liveConn} snapshot={makeSnapshot()} onOpenPalette={() => {}} />);
+    expect(screen.queryByTestId("statusbar-dollar")).not.toBeInTheDocument();
+  });
+
+  it("hides the dollar-bias pill when the source is unavailable", () => {
+    render(
+      <StatusBar
+        connection={liveConn}
+        snapshot={makeSnapshot({
+          dollar: { source: "unavailable", value: null, bias: 0, trend: [], contributors: [] },
+        })}
+        onOpenPalette={() => {}}
+      />
+    );
+    expect(screen.queryByTestId("statusbar-dollar")).not.toBeInTheDocument();
   });
 });

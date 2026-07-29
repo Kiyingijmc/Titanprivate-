@@ -70,13 +70,15 @@ describe("App", () => {
     expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1");
   });
 
-  it("navigates to the Positions stub when the Positions nav link is clicked", async () => {
+  it("navigates to the real Positions page when the Positions nav link is clicked", async () => {
     await connect();
     await screen.findByRole("navigation", { name: "Sections" });
 
     await userEvent.click(sidebar().getByRole("link", { name: "Positions" }));
 
-    expect(await screen.findByText(/positions.*coming in plan 2/i)).toBeInTheDocument();
+    // The real Positions page (Plan 2 Task 3) renders its filter bar (symbol filter),
+    // not the old stub text.
+    expect(await screen.findByLabelText(/symbol/i)).toBeInTheDocument();
   });
 
   it("opens the command palette on Ctrl/Cmd+K", async () => {

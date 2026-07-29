@@ -50,5 +50,5 @@ Bring these values into the repo so they become the redesign's design tokens:
 - [ ] UI sans + monospace family names (self-hostable — the app is CSP/offline, no font CDN)
 - [ ] The chosen tagline/descriptor (if any)
 
-These replace the placeholder tokens in
-`docs/superpowers/specs/2026-07-14-control-gui-frontend-design-system.md` §2–§3 for the GUI redesign.
+These replace the placeholder tokens in the GUI redesign design system
+(`docs/superpowers/specs/2026-07-15-titan-gui-redesign-design.md` §7).

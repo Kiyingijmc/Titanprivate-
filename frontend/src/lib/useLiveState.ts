@@ -8,6 +8,7 @@ interface Opts {
   pollMs?: number;             // default 2000; snapshot refresh cadence
   maxEvents?: number;          // default 200
   base?: string;               // default "" (same-origin)
+  onAuthError?: () => void;    // token rejected (WS close 1008 / REST 401); fires once
 }
 
 export function useLiveState(token: string | null, opts: Opts = {}) {
@@ -24,10 +25,21 @@ export function useLiveState(token: string | null, opts: Opts = {}) {
   const pollOkRef = useRef(false);
   const reconnectingRef = useRef(false);
   const snapshotRef = useRef<Snapshot | null>(null);
+  const authNotifiedRef = useRef(false);
 
   useEffect(() => {
     if (!token || !WS) return;
     stopped.current = false;
+    authNotifiedRef.current = false;   // fresh token ⇒ fresh auth attempt
+
+    // Signal a rejected token exactly once, then stop retrying — the consumer
+    // (TokenGate via App) tears this hook down and returns to the token gate,
+    // so we must not keep hammering the socket with a known-bad credential.
+    const notifyAuthError = () => {
+      if (authNotifiedRef.current) return;
+      authNotifiedRef.current = true;
+      opts.onAuthError?.();
+    };
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -60,9 +72,10 @@ export function useLiveState(token: string | null, opts: Opts = {}) {
         }
         else if (msg.type === "event") { const { type, ...ev } = msg; setEvents(prev => [...prev, ev as FeedEvent].slice(-maxEvents)); }
       };
-      ws.onclose = () => {
+      ws.onclose = (ev?: CloseEvent) => {
         connectedRef.current = false; reconnectingRef.current = true;
         setConnected(false); refreshStatus();
+        if (ev && ev.code === 1008) { notifyAuthError(); return; }  // auth rejected ⇒ don't reconnect
         scheduleReconnect();
       };
       ws.onerror = () => { try { ws?.close(); } catch { /* ignore */ } };
@@ -87,6 +100,7 @@ export function useLiveState(token: string | null, opts: Opts = {}) {
       poll = setInterval(async () => {
         try {
           const r = await fetch(`${opts.base ?? ""}/api/state`, { headers: { Authorization: `Bearer ${token}` } });
+          if (r.status === 401) { notifyAuthError(); return; }   // token rejected by REST too
           if (r.ok) {
             const snap = await r.json();
             snapshotRef.current = snap;

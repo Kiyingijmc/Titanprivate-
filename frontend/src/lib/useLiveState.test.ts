@@ -6,7 +6,7 @@ class FakeWS {
   static last: FakeWS | null = null;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((ev?: { code?: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: string[] = [];
   readyState = 0;
@@ -69,6 +69,41 @@ describe("useLiveState", () => {
       expect(fetchSpy).toHaveBeenCalled();                                         // poll DID fire while connected
       expect(result.current.snapshot?.positions.length).toBe(2);                  // snapshot refreshed live
       expect(result.current.connectionStatus.status).toBe("live");               // still live, not degraded
+    } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
+  it("fires onAuthError exactly once when the WS closes with code 1008 (token rejected)", async () => {
+    const onAuthError = vi.fn();
+    renderHook(() =>
+      useLiveState("bad", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, pollFallback: false, onAuthError }));
+    act(() => { FakeWS.last!.open(); });                 // opens, sends token
+    act(() => { FakeWS.last!.onclose?.({ code: 1008 } as CloseEvent); }); // server rejects the token
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+    // A subsequent close must not fire it again (consumer is tearing the hook down).
+    act(() => { FakeWS.last!.onclose?.({ code: 1008 } as CloseEvent); });
+    expect(onAuthError).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire onAuthError for a normal (non-1008) socket close", () => {
+    const onAuthError = vi.fn();
+    renderHook(() =>
+      useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, pollFallback: false, onAuthError }));
+    act(() => { FakeWS.last!.open(); });
+    act(() => { FakeWS.last!.close(); });                // code-less close (transient drop)
+    expect(onAuthError).not.toHaveBeenCalled();
+  });
+
+  it("fires onAuthError when the REST poll returns 401", async () => {
+    const onAuthError = vi.fn();
+    const fetchSpy = vi.fn().mockResolvedValue({ status: 401, ok: false });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.useFakeTimers();
+    try {
+      renderHook(() =>
+        useLiveState("bad", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, base: "", pollFallback: true, pollMs: 1000, onAuthError }));
+      // deliberately do NOT open the WS — the poll path must catch the bad token
+      await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+      expect(onAuthError).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
 

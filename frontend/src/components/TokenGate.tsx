@@ -3,10 +3,40 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 
-export function TokenGate({ children }: { children: (token: string) => ReactNode }) {
+/**
+ * Access-token gate. `children` receives the confirmed token AND an `onInvalid`
+ * callback: when the live layer discovers the token was rejected (WS close 1008
+ * / REST 401), it calls onInvalid, which returns the user to this gate with a
+ * message — instead of leaving them stranded on a "Reconnecting" shell with no
+ * data and no way to re-enter the token.
+ */
+export function TokenGate({
+  children,
+}: {
+  children: (token: string, onInvalid: (message?: string) => void) => ReactNode;
+}) {
   const [token, setToken] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
-  if (token) return <>{children(token)}</>;
+  const [error, setError] = useState<string | null>(null);
+
+  if (token) {
+    return (
+      <>
+        {children(token, (message) => {
+          setToken(null);
+          setDraft("");
+          setError(message ?? "Disconnected — please re-enter your access token.");
+        })}
+      </>
+    );
+  }
+
+  const submit = () => {
+    if (!draft) return;
+    setError(null);
+    setToken(draft);
+  };
+
   return (
     <div className="min-h-dvh grid place-items-center">
       <Card className="p-6 w-80 space-y-4">
@@ -20,10 +50,15 @@ export function TokenGate({ children }: { children: (token: string) => ReactNode
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && draft) setToken(draft);
+            if (e.key === "Enter") submit();
           }}
         />
-        <Button className="w-full" disabled={!draft} onClick={() => setToken(draft)}>
+        {error && (
+          <p role="alert" className="text-sm text-loss">
+            {error}
+          </p>
+        )}
+        <Button className="w-full" disabled={!draft} onClick={submit}>
           Connect
         </Button>
       </Card>

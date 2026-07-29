@@ -62,7 +62,8 @@ export function EventFeed({ events }: { events: FeedEvent[] }) {
   );
 }
 
-function EventRow({ event }: { event: FeedEvent }) {
+/** Exported so ActivityPage can reuse the same row rendering under virtualization. */
+export function EventRow({ event }: { event: FeedEvent }) {
   const { topic, ts, ...rest } = event;
 
   if (topic === "IntentBlocked") {

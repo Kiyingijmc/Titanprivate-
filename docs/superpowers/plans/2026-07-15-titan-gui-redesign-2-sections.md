@@ -152,3 +152,63 @@
 **Spec coverage (§5/§6):** Overview §5 → T2; Positions §5 (+filter/sort) → T3; Strategies §5 → T4; Activity §5 (+virtualization/filter) → T5; Settings §5 (+group/search) → T6; ⌘K real actions §4.3 → T7; read-only-403 flip → T1 (useMutate) applied across T2/T3/T5/T7; Panel state matrix §6.2 → every section task; responsive phone-glance §6.3 → verified in T8 (BottomTabs + read-only already from Plan 1); a11y §6.5 → aria-live in Activity (T5), disabled controls, focus (inherited). Virtualization §6.4 → T5 (Activity); Positions virtualization deferred (small counts, noted in T3).
 **Placeholder scan:** each task reuses a named tested component + specifies the composition + a test; no TBDs. Where a reused component needs a small prop (StrategiesTab `onReadOnly`, SettingsTab grouping/search or an extracted row), the task names the exact minimal change and keeps the 422/tier/promote logic single-sourced.
 **Type consistency:** `useController()` shape, `Api`, `ApiError`, `PaletteAction`, `ConnectionState`, `<Panel status>` union — all consumed as defined in Plan 1; `useMutate` (T1) consumed by T2/T3/T5/T7; `buildCommandActions` signature stable T7→AppShell.
+
+---
+
+## Market Context Addendum (2026-07-15, owner request)
+
+Adds a **Market Sessions** widget (3 sessions + locality clock, intelligent/dynamic) and a **Dollar Bias** indicator. Placement: a **condensed, always-visible** version in the top **StatusBar** (every section) + **full** widgets on the Overview top strip. DXY data: **broker index symbol if available, else computed from the tracked USD pairs** (no external API — CSP/offline). Sessions are pure client-time (DST-correct via IANA zones); the locality clock is static-state (just local time).
+
+### Task 9: Session engine (pure, DST-correct)
+
+**Files:** Create `frontend/src/lib/sessions.ts`, `frontend/src/lib/sessions.test.ts`.
+
+**Interfaces:**
+- Produces:
+  - `interface MarketSession { id: "sydney"|"tokyo"|"london"|"newyork"; label: string; zone: string; openLocalH: number; closeLocalH: number }` and a `SESSIONS` constant: Sydney (Australia/Sydney 07–16 local), Tokyo (Asia/Tokyo 09–18), London (Europe/London 08–17), New York (America/New_York 08–17). (Local trading hours per zone; DST handled by the zone.)
+  - `zoneOffsetMinutes(zone: string, at: Date): number` — the UTC offset (minutes) for an IANA zone at instant `at`, via `Intl.DateTimeFormat` (handles DST). Pure/injectable `at`.
+  - `sessionStates(nowUtc: Date): { sessions: Array<{ id; label; open: boolean; localTime: string; statusLabel: string; countdownMin: number; startUtcMin: number; endUtcMin: number }>; overlaps: Array<{ ids: [string,string]; active: boolean }>; activeIds: string[]; weekendClosed: boolean }` — for each session compute today's UTC open/close window (from local hours + `zoneOffsetMinutes`), whether `nowUtc` is inside it (open), the session's own local time string, a `statusLabel` ("Open · closes in 47m" / "Opens in 2h 14m"), and `countdownMin` to the next boundary. Overlaps = pairs of sessions open at the same time (flag London↔NewYork, Tokyo↔London). `weekendClosed` = FX closed (Fri ~22:00 UTC → Sun ~22:00 UTC).
+
+- [ ] **Step 1: failing test** — `sessions.test.ts`: with a fixed `nowUtc` during the London↔NY overlap (e.g. 2026-07-15T14:00:00Z, a Wednesday), assert london+newyork are `open`, the overlap {ids:[london,newyork]} is `active`, `activeIds` includes both, and `weekendClosed` is false; with a Saturday `nowUtc`, `weekendClosed` true; with a `nowUtc` before London open, london `open:false` and its `statusLabel` starts "Opens in". Use injected `nowUtc` (no Date.now). Keep DST-tolerance in mind: assert on open/closed booleans + overlap, not exact minute strings that DST could shift.
+- [ ] **Step 2–4:** fail → implement (use `Intl.DateTimeFormat(zone,{timeZoneName:...})` / the `formatToParts` offset trick for `zoneOffsetMinutes`) → pass.
+- [ ] **Step 5: Commit** — `feat(gui-fe2): market-session engine (open/overlap/countdown, DST-correct)` (+trailer).
+
+### Task 10: MarketSessions widget (full — Overview) + LocalityClock
+
+**Files:** Create `frontend/src/components/market/MarketSessions.tsx`, `frontend/src/components/market/LocalityClock.tsx`, tests.
+
+**Interfaces:**
+- Consumes: `sessionStates` (T9), a ticking `nowUtc` (a `useNow()` hook: `setInterval` 1s, cleared on unmount; reduced-motion → still ticks but no animated sweep).
+- Produces:
+  - `<LocalityClock />` — your local time (large, JetBrains Mono), date, and timezone label (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Static-state (no session logic).
+  - `<MarketSessions />` — a 24h **timeline** (linear track) with the 3 session bands positioned by their UTC windows, **overlap zones** highlighted (accent for London↔NY), a live **now marker**; below/beside it, a digital clock + status chip per session (Open pulse / countdown) from `sessionStates`. Weekend-closed → a "Markets closed — opens Sun" state. Uses role tokens; profit-green for "Open", muted for closed, accent for overlaps.
+
+- [ ] **Step 1: failing test** — `MarketSessions.test.tsx`: mock/inject a fixed now (pass `now` as a prop or mock `useNow`) during the London↔NY overlap → both show "Open" and the overlap band is present; a session before open shows "Opens in". `LocalityClock.test.tsx`: renders a time + the resolved timezone label.
+- [ ] **Step 2–4:** fail → implement → pass.
+- [ ] **Step 5: Commit** — `feat(gui-fe2): MarketSessions timeline widget + LocalityClock` (+trailer).
+
+### Task 11: Dollar bias — backend field + DollarBias widget
+
+**Files:** Modify `src/ops/web/state_view.py` (add `dollar` to `build_snapshot`), `src/ops/web/fake_controller.py` (synthesize) and `scripts/gui_demo_server.py` (moving demo values); Modify `frontend/src/lib/types.ts` (add `DollarBias`), Create `frontend/src/components/market/DollarBias.tsx`, tests (`tests/unit/test_gui_dollar.py` + `DollarBias.test.tsx`).
+
+**Interfaces:**
+- Backend `build_snapshot(controller).dollar` = `{ source: "index"|"computed"|"unavailable", value: float|null, bias: float, trend: float[], contributors: {symbol: float}[] }` where `bias` ∈ [-100,100] (USD strength). Sourcing: if `controller` exposes a DXY/USDX symbol price → `source:"index"`, `value`=index, `bias` from its recent delta; ELSE compute from the tracked USD pairs' latest mids (invert XXXUSD contributions, normalize/average recent % change) → `source:"computed"`; if no price data at all → `source:"unavailable"` (widget shows a degraded/empty state — NEVER crash). Read controller price data defensively (getattr guards); the LIVE price wiring is best-effort — if the controller attr isn't present yet, return `"unavailable"` (a follow-up wires the real source). Fake_controller + demo provide full synthetic `dollar` (a slowly-moving bias + trend + a few contributors).
+- Frontend `<DollarBias data />` — a gauge (−100…+100, needle/arc) with the bias + direction arrow (green USD-strong / red USD-weak — but this is USD strength, not P&L; use a neutral/duo tone, NOT the reserved profit/loss unless it reads clearly), a short **trend sparkline** (Recharts, reuse EquitySparkline pattern), and the top contributors; `source` badge (LIVE index vs computed); `unavailable` → empty state.
+
+- [ ] **Step 1: failing tests** — Python `tests/unit/test_gui_dollar.py`: `build_snapshot` returns a `dollar` block with the keys; a fake controller with no price data → `source:"unavailable"` (no crash). Frontend `DollarBias.test.tsx`: renders the bias value + source badge; `source:"unavailable"` → empty state.
+- [ ] **Step 2–4:** fail → implement (Python: extend build_snapshot defensively + fake_controller + demo; TS: the widget) → pass. Run the Python GUI suite (`.venv/bin/python -m unittest discover -s tests/unit -p 'test_gui_*.py'`) FOREGROUND — stays green (this is the ONE backend-touching task; keep it additive).
+- [ ] **Step 5: Commit** — `feat(gui): dollar-bias snapshot field (index|computed|unavailable) + DollarBias widget` (+trailer).
+
+### Task 12: Persistent market context in StatusBar + full on Overview
+
+**Files:** Modify `frontend/src/components/shell/StatusBar.tsx` (condensed market context), `frontend/src/sections/OverviewPage.tsx` (mount full widgets + DollarBias); tests updated.
+
+**Interfaces:**
+- StatusBar gains a **condensed** market-context cluster (between the status chips and the account): the active session name(s) + a mini "next in Xm", and a compact dollar-bias pill (bias value + direction). Consumes `sessionStates(useNow())` + `snapshot.dollar`. Collapses/hides gracefully on narrow widths.
+- OverviewPage mounts the **full** `<MarketSessions/>` + `<LocalityClock/>` + `<DollarBias data={snapshot.dollar}/>` in the top **Market Context strip** (above the KPIs).
+
+- [ ] **Step 1: failing test** — StatusBar.test: with an injected/mocked overlap now + a `snapshot.dollar`, the condensed cluster shows an active session + the dollar bias. OverviewPage.test: the full MarketSessions + DollarBias render on the page.
+- [ ] **Step 2–4:** fail → implement → pass.
+- [ ] **Step 5: Commit** — `feat(gui-fe2): persistent market context in StatusBar + full sessions/dollar on Overview` (+trailer).
+
+> Verification (Task 8) extends to cover the market widgets: live-drive shows the session timeline (with the current overlap), the locality clock, and the dollar-bias gauge updating; design-review the market strip.

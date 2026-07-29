@@ -60,7 +60,7 @@ export function AppShell() {
         <StatusBar
           connection={connectionStatus}
           snapshot={snapshot}
-          onOpenPalette={() => setPaletteOpen(true)}
+          onOpenPalette={() => setPaletteOpen((open) => !open)}
         />
         <main
           ref={mainRef}

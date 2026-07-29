@@ -45,11 +45,10 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
   const conn = CONNECTION_PRESENTATION[connection.status];
 
   return (
-    <div
-      className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-surface-1 px-4"
-      role="status"
-      aria-label="System status"
-    >
+    <div className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-surface-1 px-4">
+      {/* Scoped live region: only the system-status cluster is announced — NOT the
+          account figures, which change every tick and would make a screen reader noisy. */}
+      <div className="flex items-center gap-4" role="status" aria-live="polite" aria-label="System status">
       <StatusChip tone={conn.tone} icon={conn.icon}>
         {conn.label}
       </StatusChip>
@@ -71,6 +70,7 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
           Throttle &times;<span className="font-mono tabnum">{snapshot.arbiter.throttle.current_mult}</span>
         </StatusChip>
       )}
+      </div>
 
       <div className="ml-auto flex items-center gap-4">
         <div className="flex items-center gap-3 font-mono tabnum text-sm text-secondary-foreground">

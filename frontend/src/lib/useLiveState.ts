@@ -47,6 +47,7 @@ export function useLiveState(token: string | null, opts: Opts = {}) {
       ws.onopen = () => {
         ws!.send(token); retry.current = 0;   // FIRST frame = token
         connectedRef.current = true; everConnectedRef.current = true; reconnectingRef.current = false;
+        pollOkRef.current = false;   // reset: a fresh live session hasn't proven polling this cycle
         refreshStatus();
       };
       ws.onmessage = (e: MessageEvent) => {

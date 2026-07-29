@@ -1,0 +1,961 @@
+# Passive-Entry Session 1: Fill-Model Correction Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Correct the research engine's pending-order fill model so a BUY LIMIT no longer fills one whole spread too easily, then re-baseline the v14.4.2 SilverBullet study on the corrected model and report whether the adopted `+0.19R/trade` figure moves.
+
+**Architecture:** Three surgical changes to offline research code, none of which touch `src/` live trading paths. (1) A single canonical spread table replaces two duplicated copies and gains the three newest pairs. (2) `resolve_trade`'s fill block becomes direction- and order-type-aware, taking an optional per-signal `spread` in price units. (3) `research_run.py` threads that spread in and fails closed on a missing broker tick spec instead of silently substituting EURUSD's. Then a measurement pass produces the re-baselined numbers.
+
+**Tech Stack:** Python ≥3.10, pandas, stdlib `unittest` (there is no pytest in this repo), virtualenv at `.venv`.
+
+## Global Constraints
+
+- Python ≥ 3.10. Virtualenv is `.venv` and ships without pip; if pip is missing bootstrap with `curl -sSL https://bootstrap.pypa.io/get-pip.py | .venv/bin/python -`.
+- Tests are stdlib `unittest`. **There is no pytest.** Full-suite command, verbatim: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'`
+- Work on a feature branch. `main` holds the inherited baseline. Do not commit to `main`.
+- Commit forward-only, by explicit path. Never `git add -A`.
+- **No `src/` live-trading file is modified by this plan.** If a task appears to require one, stop and report — that is a scope error, not a licence to widen.
+- Bars in the research engine are **BID** OHLC throughout. Every spread argument is in **price units**, never ticks, unless the identifier ends in `_ticks`.
+- Spread tables are denominated in **broker ticks**; convert with `price = ticks * tick_size` at the point of use.
+- Do not change `trade_dollars`. Its single-crossing charge is correct — see the "Why the cost model is untouched" note below.
+
+### Why the cost model is untouched
+
+In bid-space OHLC accounting every trade pays exactly one spread `s`, whatever the entry type:
+
+- Long market: buys at `ask = B + s`, while SL/TP resolve against bid → pays `s`.
+- Long limit at `P`: fills at `ask = P`, i.e. when `bid = P − s`, so its bid-space entry is `s` worse than nominal → pays `s`.
+- Short: sells at bid (the data), buys back at `ask` on exit → pays `s`.
+
+`spread_cost = spread_points * tick_value * lots` already charges exactly one crossing. Adding an entry-leg charge would double-count the same `s` that the corrected fill trigger accounts for. **Only the trigger side changes in this plan.**
+
+---
+
+## File Structure
+
+| File | Responsibility | Action |
+|---|---|---|
+| `src/research/costs.py` | Canonical FBS spread table (ticks) + fail-closed accessor. Sole source of truth. | **Create** |
+| `tests/unit/test_research_costs.py` | Tests for the table and accessor. | **Create** |
+| `tests/backtest/backtest_engine.py` | `resolve_trade` fill block becomes direction/order-type aware. Local `SPREADS` copy deleted. | Modify |
+| `tests/unit/test_backtest_resolver.py` | New fill-trigger cases alongside the existing 14. | Modify |
+| `scripts/poc_sb_stops.py` | Imports the canonical table instead of defining its own. | Modify |
+| `scripts/research_run.py` | Threads per-signal spread into `resolve_trade`; fails closed on missing tick specs. | Modify |
+| `tests/unit/test_research_run.py` | Coverage for spread threading and the fail-closed spec guard. | Modify |
+| `data/specs.json` | Broker tick specs for US100, ETHUSD. | Modify |
+| `docs/research/2026-07-30-fill-model-correction.md` | Re-baseline results and the verdict on `+0.19R`. | **Create** |
+
+### Provenance of the new numbers (no invented values)
+
+All measured values come from the owner-ratified universe screen, `data/results/universe_screen_20260728/`:
+
+- Spreads in ticks, from `screen_candidates.py:29`: `US100: 200`, `ETHUSD: 193`, `XTIUSD: 2`.
+- Tick specs, from `candidate_probe.json` (probed from the broker): `US100 {tick_size: 0.01, tick_value: 0.1, volume_min: 0.01, volume_step: 0.01}`, `ETHUSD {tick_size: 0.01, tick_value: 0.1, volume_min: 0.01, volume_step: 0.01}`.
+- **XTIUSD has no probe record** — `candidate_probe.json["XTIUSD"]` is `null`. Its `{tick_value: 10.0, tick_size: 0.01}` exists only as a hand-entered value in `screen_candidates.py:39`. Its spread (2 ticks) *is* corroborated (`config/config.yaml:126-127`, re-measured 2026-07-29, median 2 points, n=20, zero variance), but its **tick specs are unverified**. Consequence, carried through the whole plan: **XTIUSD gets a spread-table entry but no `data/specs.json` entry, and is excluded from the re-baseline in Task 6.** Adding it requires `scripts/cache_specs.py` against a live Windows MT5 bridge, which is an operator step outside this plan.
+
+---
+
+## Task 1: Canonical spread table with a fail-closed accessor
+
+**Files:**
+- Create: `src/research/costs.py`
+- Test: `tests/unit/test_research_costs.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `FBS_SPREAD_TICKS: dict[str, int]` — 14 symbols.
+  - `class CostModelError(Exception)`
+  - `spread_ticks(symbol: str) -> int` — raises `CostModelError` on an unknown symbol.
+  - `spread_price(symbol: str, tick_size: float) -> float` — returns `spread_ticks(symbol) * tick_size`; raises `CostModelError` if `tick_size <= 0`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/unit/test_research_costs.py`:
+
+```python
+import os
+import sys
+import unittest
+
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, REPO)
+
+from src.research.costs import (  # noqa: E402
+    FBS_SPREAD_TICKS, CostModelError, spread_ticks, spread_price,
+)
+
+
+class SpreadTable(unittest.TestCase):
+    def test_covers_every_live_pair(self):
+        """Every symbol in config strategies.silver_bullet.pairs must be priceable.
+
+        A missing entry is what made US100/ETHUSD/XTIUSD unstudiable: pooled
+        research_run hard-errors on them, and the legacy Backtester path
+        silently substituted 20 ticks.
+        """
+        import yaml
+        with open(os.path.join(REPO, "config", "config.yaml")) as f:
+            cfg = yaml.safe_load(f)
+        live_pairs = cfg["strategies"]["silver_bullet"]["pairs"]
+        missing = [s for s in live_pairs if s not in FBS_SPREAD_TICKS]
+        self.assertEqual(missing, [], f"no spread entry for live pairs: {missing}")
+
+    def test_measured_values_from_universe_screen(self):
+        # data/results/universe_screen_20260728/screen_candidates.py:29
+        self.assertEqual(FBS_SPREAD_TICKS["US100"], 200)
+        self.assertEqual(FBS_SPREAD_TICKS["ETHUSD"], 193)
+        self.assertEqual(FBS_SPREAD_TICKS["XTIUSD"], 2)
+
+    def test_incumbent_values_unchanged(self):
+        """The 11 original values must be byte-identical to the retired tables,
+        or the re-baseline would conflate a spread change with the fill fix."""
+        self.assertEqual(FBS_SPREAD_TICKS["EURUSD"], 8)
+        self.assertEqual(FBS_SPREAD_TICKS["GBPUSD"], 12)
+        self.assertEqual(FBS_SPREAD_TICKS["USDJPY"], 10)
+        self.assertEqual(FBS_SPREAD_TICKS["AUDUSD"], 10)
+        self.assertEqual(FBS_SPREAD_TICKS["USDCAD"], 12)
+        self.assertEqual(FBS_SPREAD_TICKS["GBPCAD"], 30)
+        self.assertEqual(FBS_SPREAD_TICKS["GBPJPY"], 25)
+        self.assertEqual(FBS_SPREAD_TICKS["XAUUSD"], 20)
+        self.assertEqual(FBS_SPREAD_TICKS["US30"], 200)
+        self.assertEqual(FBS_SPREAD_TICKS["BTCUSD"], 1000)
+        self.assertEqual(FBS_SPREAD_TICKS["XBRUSD"], 30)
+
+
+class Accessors(unittest.TestCase):
+    def test_spread_ticks_known_symbol(self):
+        self.assertEqual(spread_ticks("EURUSD"), 8)
+
+    def test_spread_ticks_unknown_symbol_raises(self):
+        """Fail closed, never guess. Mirrors RiskManager.calculate_lot_size,
+        which returns 0 rather than inventing a spec."""
+        with self.assertRaises(CostModelError) as ctx:
+            spread_ticks("NOTAPAIR")
+        self.assertIn("NOTAPAIR", str(ctx.exception))
+
+    def test_spread_price_converts_via_tick_size(self):
+        self.assertAlmostEqual(spread_price("EURUSD", 1e-05), 8e-05)
+        self.assertAlmostEqual(spread_price("US100", 0.01), 2.0)
+        self.assertAlmostEqual(spread_price("ETHUSD", 0.01), 1.93)
+
+    def test_spread_price_rejects_nonpositive_tick_size(self):
+        with self.assertRaises(CostModelError):
+            spread_price("EURUSD", 0.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_costs -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'src.research.costs'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `src/research/costs.py`:
+
+```python
+"""Canonical research cost assumptions.
+
+Single source of truth for FBS spread assumptions. Previously duplicated in
+scripts/poc_sb_stops.py (the table research_run.py actually read) and
+tests/backtest/backtest_engine.py (a copy used by the legacy Backtester path).
+Both copies covered only the original 11 symbols, so the three pairs adopted in
+2026-07 could not be studied at all: pooled research_run hard-errors on a
+symbol absent from the table, and the Backtester copy silently substituted 20
+ticks.
+
+Values are in BROKER TICKS. Convert with spread_price(); never multiply by
+tick_size at call sites.
+"""
+
+
+class CostModelError(Exception):
+    """A cost assumption is missing or unusable. Never guess a spread."""
+
+
+# Indicative FBS spreads in broker ticks.
+#   - The 11 incumbents carry the values used by the 2026-07-11 stop study and
+#     the 2026-07-28 universe screen. Do not tune: changing one silently
+#     re-bases every historical result quoted against it.
+#   - US100 / ETHUSD / XTIUSD measured live over the Phase-1 HTTP bridge,
+#     data/results/universe_screen_20260728/screen_candidates.py:29. XTIUSD
+#     re-measured 2026-07-29 during the London/NY overlap (median 2 points,
+#     n=20, zero variance) -- config/config.yaml:126-127.
+FBS_SPREAD_TICKS = {
+    "EURUSD": 8,
+    "GBPUSD": 12,
+    "USDJPY": 10,
+    "AUDUSD": 10,
+    "USDCAD": 12,
+    "GBPCAD": 30,
+    "GBPJPY": 25,
+    "XAUUSD": 20,
+    "US30": 200,
+    "BTCUSD": 1000,
+    "XBRUSD": 30,
+    "US100": 200,
+    "ETHUSD": 193,
+    "XTIUSD": 2,
+}
+
+
+def spread_ticks(symbol):
+    """Spread for `symbol` in broker ticks.
+
+    Raises CostModelError rather than defaulting. A guessed spread produces a
+    plausible-looking net R that is silently wrong, which is the failure mode
+    this module exists to prevent.
+    """
+    try:
+        return FBS_SPREAD_TICKS[symbol]
+    except KeyError:
+        raise CostModelError(
+            f"no FBS spread assumption for {symbol!r}; "
+            f"known: {sorted(FBS_SPREAD_TICKS)}"
+        ) from None
+
+
+def spread_price(symbol, tick_size):
+    """Spread for `symbol` in PRICE units, given the broker's tick size."""
+    ts = float(tick_size or 0.0)
+    if ts <= 0:
+        raise CostModelError(
+            f"tick_size must be positive to price a spread for {symbol!r}, got {tick_size!r}"
+        )
+    return spread_ticks(symbol) * ts
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_costs -v`
+Expected: PASS, 7 tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/research/costs.py tests/unit/test_research_costs.py
+git commit -m "feat(research): canonical FBS spread table with fail-closed accessor
+
+Replaces two duplicated 11-symbol tables (scripts/poc_sb_stops.py and
+tests/backtest/backtest_engine.py) and adds the three pairs adopted in
+2026-07. US100/ETHUSD/XTIUSD were unstudiable: pooled research_run
+hard-errors on a symbol absent from the table, and the Backtester copy
+silently substituted 20 ticks.
+
+spread_ticks() raises rather than defaulting, mirroring RiskManager's
+fail-safe on missing broker specs.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 2: Direction-aware LIMIT fill trigger
+
+This is the defect that motivates the whole session. `tests/backtest/backtest_engine.py:58` tests `b["low"] <= entry <= b["high"]` — direction-blind, on bid OHLC. MT5 triggers BUY orders on **ask** (`= bid + spread`) and SELL orders on **bid**, so a BUY LIMIT needs bid to reach `entry − spread` while a SELL LIMIT triggers as soon as bid reaches `entry`.
+
+**Files:**
+- Modify: `tests/backtest/backtest_engine.py:50-63` (the `# 1. Fill.` block)
+- Test: `tests/unit/test_backtest_resolver.py`
+
+**Interfaces:**
+- Consumes: nothing from Task 1 (kept independent so it can be reviewed alone).
+- Produces: `resolve_trade(signal, future_bars)` now reads an optional `signal["spread"]`, a float in **price units**, default `0.0`.
+
+**Behaviour change to be explicit about:** the old test required `entry` to sit *within* the bar range. A bar that gapped entirely past the limit did **not** fill — wrong, since MT5 fills a gapped-through limit. The new one-sided test fixes that too. So `spread=0.0` reproduces today's behaviour **except** on bars that gap fully past the trigger, where the new code correctly fills. Both effects are attributed separately in Task 6.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/unit/test_backtest_resolver.py`, before the `if __name__` block:
+
+```python
+class LimitFillTrigger(unittest.TestCase):
+    """MT5 triggers BUY orders on ASK (bid + spread), SELL orders on BID.
+
+    Bars here are BID OHLC, so a BUY LIMIT at `entry` requires bid to reach
+    entry - spread, while a SELL LIMIT at `entry` triggers at bid >= entry.
+    Ignoring that filled buy limits one whole spread too easily.
+    """
+
+    def test_buy_limit_needs_bid_to_reach_entry_minus_spread(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        # Bid low grazes 99.7: touches entry, but ask never reaches 100.0
+        # (ask low = 99.7 + 0.5 = 100.2). Must NOT fill.
+        future = [bar(100.5, 100.6, 99.7, 100.0)] * 3
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "EXPIRED")
+        self.assertFalse(res["filled"])
+
+    def test_buy_limit_fills_once_bid_clears_the_spread(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        # Bid low 99.4 -> ask low 99.9 <= 100.0. Fills.
+        future = [bar(100.5, 100.6, 99.4, 110.5)] * 3
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+
+    def test_sell_limit_takes_no_spread_haircut(self):
+        """SELL LIMIT triggers on bid, which IS the data -- so the mirrored
+        price fills where the buy side did not."""
+        sig = {"dir": "SELL", "cmd": "LIMIT", "entry": 100.0, "sl": 105.0, "tp": 90.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.5, 100.0, 99.4, 99.5)] * 3   # bid high exactly 100.0
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+
+    def test_zero_spread_reproduces_legacy_touch_behaviour(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 90.0, "sl": 85.0, "tp": 100.0,
+               "ttl_bars": 5}          # no "spread" key at all
+        future = [bar(95, 96, 92, 94), bar(93, 93, 89, 91), bar(91, 101, 90, 100)]
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "TP")
+        self.assertEqual(res["fill_offset"], 1)
+
+    def test_bar_gapping_fully_past_the_limit_fills(self):
+        """A bar entirely below a BUY LIMIT means price gapped through it. The
+        legacy `low <= entry <= high` test wrongly expired these."""
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3}
+        future = [bar(98.0, 98.5, 97.0, 97.5), bar(97.5, 110.5, 97.0, 110.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_backtest_resolver.LimitFillTrigger -v`
+
+Expected: **2 of 5 fail.** Traced against the pre-fix `low <= entry <= high` test:
+
+| Test | Pre-fix result | Verdict |
+|---|---|---|
+| `test_buy_limit_needs_bid_to_reach_entry_minus_spread` | bid low 99.7 satisfies `99.7 <= 100 <= 100.6` → fills, resolves `OPEN_AT_END` | **FAIL** (`'OPEN_AT_END' != 'EXPIRED'`) |
+| `test_bar_gapping_fully_past_the_limit_fills` | bar 0 fails `100 <= 98.5`, fills at bar 1 instead | **FAIL** (`1 != 0`) |
+| `test_buy_limit_fills_once_bid_clears_the_spread` | already fills at offset 0 | passes |
+| `test_sell_limit_takes_no_spread_haircut` | already fills at offset 0 | passes |
+| `test_zero_spread_reproduces_legacy_touch_behaviour` | unchanged by design | passes |
+
+The three that pass pre-fix are regression guards, not new-behaviour proofs. The two failures are the evidence this task bites — record their exact output.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `tests/backtest/backtest_engine.py`, replace the `# 1. Fill.` block (lines 50-63) with:
+
+```python
+    # 1. Fill.
+    #    Bars are BID OHLC. MT5 triggers BUY orders on ASK (= bid + spread) and
+    #    SELL orders on BID, so a BUY order's bid-space trigger sits one spread
+    #    BELOW its nominal price while a SELL order's sits exactly at it. The
+    #    old direction-blind `low <= entry <= high` test filled buy limits one
+    #    whole spread too easily -- precisely the marginal region a passive-entry
+    #    policy operates in, so any execution study run on it was partly
+    #    self-confirming. `spread` is in PRICE units; absent/0.0 disables the
+    #    haircut. The one-sided test also fills bars that gap fully past the
+    #    trigger, which the old range test wrongly expired.
+    spread = float(signal.get("spread", 0.0) or 0.0)
+    cmd = signal.get("cmd", "LIMIT")
+    if cmd == "MARKET":
+        fill_offset = 0
+    else:
+        ttl = min(int(signal["ttl_bars"]), n)
+        trigger = (entry - spread) if is_long else entry
+        fill_offset = None
+        for k in range(ttl):
+            b = future_bars[k]
+            hit = (b["low"] <= trigger) if is_long else (b["high"] >= trigger)
+            if hit:
+                fill_offset = k
+                break
+        if fill_offset is None:
+            return {"filled": False, "outcome": "EXPIRED", "r": 0.0,
+                    "fill_offset": None, "exit_offset": max(0, ttl - 1)}  # exit_offset marks the last bar the resting limit occupied (its TTL window) so the caller can free the symbol
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_backtest_resolver -v`
+Expected: PASS, 19 tests (14 pre-existing + 5 new). The four pre-existing LIMIT cases (`test_limit_never_touched_expires`, `test_limit_fills_then_take_profit`, `test_same_bar_sl_and_tp_is_stop_loss`, `test_limit_fills_on_last_ttl_bar_and_resolves_same_bar`) must still pass **unchanged** — do not edit them. If any fails, the implementation is wrong; do not adjust the test to match.
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'`
+Expected: OK. Note the count; the memory says this suite takes 626–2089s, so allow up to 40 minutes and do not pipe it through `head`/`tail` (SIGPIPE kills long runs).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add tests/backtest/backtest_engine.py tests/unit/test_backtest_resolver.py
+git commit -m "fix(backtest): direction-aware LIMIT fill trigger
+
+resolve_trade tested 'low <= entry <= high' on BID OHLC, direction-blind.
+MT5 triggers BUY orders on ASK, so a BUY LIMIT filled one whole spread too
+easily -- the exact marginal region a passive-entry study operates in, which
+made such a study partly self-confirming.
+
+Also fixes bars that gap fully past the trigger: the old range test expired
+them, MT5 fills them.
+
+signal['spread'] is optional (price units); absent reproduces the legacy
+touch behaviour apart from the gap fix.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 3: Explicit STOP order handling
+
+`resolve_trade` treats **any** non-`MARKET` cmd as a limit. `Intent.kind` already admits `"STOP"` (`src/arbiter/intent.py:21`) and the EA already places stop orders (`Titan_Gateway.mq5:139-145`), so the first strategy to emit one would be silently resolved with inverted trigger semantics. Closing it now costs four lines.
+
+**Files:**
+- Modify: `tests/backtest/backtest_engine.py` (the fill block from Task 2)
+- Test: `tests/unit/test_backtest_resolver.py`
+
+**Interfaces:**
+- Consumes: `resolve_trade`'s `signal["spread"]` from Task 2.
+- Produces: `resolve_trade` recognises `signal["cmd"] == "STOP"`. Unrecognised cmd values keep limit semantics (unchanged fallback).
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/unit/test_backtest_resolver.py`:
+
+```python
+class StopFillTrigger(unittest.TestCase):
+    """STOP orders trigger on the OPPOSITE side of the price from LIMITs.
+
+    BUY STOP: ask >= price  -> bid >= entry - spread  (fills EASIER)
+    SELL STOP: bid <= price -> low <= entry
+    Treating a STOP as a LIMIT inverts the trigger entirely.
+    """
+
+    def test_buy_stop_fills_where_a_limit_never_could(self):
+        """Bid stays ABOVE the limit trigger the whole time (low 99.6 > 99.5),
+        so limit semantics expire. Ask reaches 100.7 >= 100.0, so stop
+        semantics fill. A test whose bars satisfy BOTH triggers proves nothing.
+        """
+        sig = {"dir": "BUY", "cmd": "STOP", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.7, 100.2, 99.6, 100.1), bar(100.1, 110.5, 100.0, 110.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+        self.assertEqual(res["outcome"], "TP")
+
+    def test_buy_stop_does_not_fill_on_downward_move(self):
+        """A LIMIT would have filled here (low 96.0 <= 99.5). A STOP must not:
+        bid high 99.2 -> ask high 99.7, never reaching 100.0."""
+        sig = {"dir": "BUY", "cmd": "STOP", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.0, 99.2, 96.0, 96.5)] * 3   # only ever moves down
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "EXPIRED")
+        self.assertFalse(res["filled"])
+
+    def test_sell_stop_fills_where_a_sell_limit_never_could(self):
+        """Bid high 99.9 never reaches 100.0, so SELL LIMIT semantics expire.
+        Bid low 99.0 <= 100.0, so SELL STOP fills. No spread haircut on the
+        sell side -- bid IS the data."""
+        sig = {"dir": "SELL", "cmd": "STOP", "entry": 100.0, "sl": 105.0, "tp": 90.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.8, 99.9, 99.0, 99.2), bar(99.2, 99.5, 89.5, 90.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+        self.assertEqual(res["outcome"], "TP")
+
+    def test_unknown_cmd_keeps_limit_semantics(self):
+        sig = {"dir": "BUY", "cmd": "WEIRD", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3}
+        future = [bar(101.0, 101.5, 99.0, 110.5)] * 2
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_backtest_resolver.StopFillTrigger -v`
+
+Expected: **3 of 4 fail.** Traced against the post-Task-2 code, which routes `STOP` through the LIMIT branch:
+
+| Test | Post-Task-2 result | Verdict |
+|---|---|---|
+| `test_buy_stop_fills_where_a_limit_never_could` | limit trigger 99.5; bar lows are 99.6 and 100.0, neither `<= 99.5` → `EXPIRED` | **FAIL** (`filled` is False) |
+| `test_buy_stop_does_not_fill_on_downward_move` | limit trigger 99.5; low 96.0 `<= 99.5` → fills, resolves `SL` | **FAIL** (`'SL' != 'EXPIRED'`) |
+| `test_sell_stop_fills_where_a_sell_limit_never_could` | sell-limit trigger 100.0; bar highs 99.9 and 99.5, neither `>= 100.0` → `EXPIRED` | **FAIL** (`filled` is False) |
+| `test_unknown_cmd_keeps_limit_semantics` | already correct — this is a regression guard for the fallback branch | passes |
+
+Record the three failure messages; they are the evidence this task bites.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `tests/backtest/backtest_engine.py`, replace the single `hit = ...` line from Task 2 with:
+
+```python
+            if cmd == "STOP":
+                hit = (b["high"] >= trigger) if is_long else (b["low"] <= trigger)
+            else:  # LIMIT (and any unrecognised cmd, preserving prior behaviour)
+                hit = (b["low"] <= trigger) if is_long else (b["high"] >= trigger)
+```
+
+And extend the fill-block comment by adding this line after the existing `spread` explanation:
+
+```python
+    #    STOP orders trigger on the opposite side from LIMITs; before this,
+    #    any non-MARKET cmd was resolved with LIMIT semantics, so the first
+    #    strategy to emit a STOP (Intent.kind already admits it, and the EA
+    #    already places them) would have been silently mis-filled.
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_backtest_resolver -v`
+Expected: PASS, 23 tests. All 14 pre-existing tests still pass unedited.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/backtest/backtest_engine.py tests/unit/test_backtest_resolver.py
+git commit -m "fix(backtest): resolve STOP orders with stop, not limit, semantics
+
+resolve_trade treated every non-MARKET cmd as a limit, inverting the
+trigger for stop orders. Intent.kind already admits 'STOP' and the EA
+already places them, so the first strategy to emit one would have been
+silently mis-filled.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 4: Retire the duplicate spread tables
+
+**Files:**
+- Modify: `scripts/poc_sb_stops.py:43-46`
+- Modify: `tests/backtest/backtest_engine.py:409-413`
+- Modify: `scripts/research_run.py:46`
+- Test: `tests/unit/test_research_costs.py`
+
+**Interfaces:**
+- Consumes: `FBS_SPREAD_TICKS`, `spread_ticks` from Task 1.
+- Produces: `scripts.poc_sb_stops.SPREADS` remains importable as an alias of `FBS_SPREAD_TICKS`, so `research_run.py`'s historical import path and the screen harness keep working.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/unit/test_research_costs.py`:
+
+```python
+class NoDuplicateTables(unittest.TestCase):
+    """Two hand-maintained copies of the spread table drifted apart once
+    already (neither gained the 2026-07 pairs). Assert one source of truth."""
+
+    def test_poc_sb_stops_reexports_the_canonical_table(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        import poc_sb_stops
+        self.assertIs(poc_sb_stops.SPREADS, FBS_SPREAD_TICKS)
+
+    def test_backtest_engine_defines_no_local_table(self):
+        path = os.path.join(REPO, "tests", "backtest", "backtest_engine.py")
+        with open(path) as f:
+            src = f.read()
+        self.assertNotIn("SPREADS = {", src,
+                         "backtest_engine must import the canonical table, not define one")
+
+    def test_research_run_reads_the_canonical_table(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
+        import research_run
+        self.assertIs(research_run.FBS_SPREADS, FBS_SPREAD_TICKS)
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_costs.NoDuplicateTables -v`
+Expected: FAIL — `test_poc_sb_stops_reexports_the_canonical_table` and `test_research_run_reads_the_canonical_table` fail on `assertIs` (distinct dict objects), `test_backtest_engine_defines_no_local_table` fails because `SPREADS = {` is still present at line 410.
+
+- [ ] **Step 3: Write minimal implementation**
+
+In `scripts/poc_sb_stops.py`, replace lines 43-46:
+
+```python
+# Canonical spread assumptions live in src/research/costs.py (single source of
+# truth; this module and tests/backtest/backtest_engine.py each used to carry
+# their own 11-symbol copy). Re-exported under the historical name so existing
+# importers -- scripts/research_run.py, the universe-screen harness -- keep
+# working unchanged.
+from src.research.costs import FBS_SPREAD_TICKS as SPREADS  # noqa: E402
+```
+
+In `tests/backtest/backtest_engine.py`, replace lines 409-413 (the `SPREADS = {...}` literal inside `Backtester.run`) with:
+
+```python
+        from src.research.costs import FBS_SPREAD_TICKS as SPREADS
+```
+
+In `scripts/research_run.py`, replace line 46:
+
+```python
+from src.research.costs import FBS_SPREAD_TICKS as FBS_SPREADS  # noqa: E402
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_costs -v`
+Expected: PASS, 10 tests.
+
+Then confirm the retired importers still work:
+
+Run: `.venv/bin/python -c "import sys; sys.path[:0]=['scripts','tests/backtest']; import poc_sb_stops, research_run; print(len(poc_sb_stops.SPREADS), len(research_run.FBS_SPREADS))"`
+Expected: `14 14`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/research/costs.py scripts/poc_sb_stops.py scripts/research_run.py tests/backtest/backtest_engine.py tests/unit/test_research_costs.py
+git commit -m "refactor(research): one spread table, three importers
+
+Retires the duplicate 11-symbol SPREADS literals in poc_sb_stops.py and
+backtest_engine.py in favour of src/research/costs.FBS_SPREAD_TICKS. Both
+copies had already drifted: neither gained US100/ETHUSD/XTIUSD.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 5: Thread the spread into research_run, and fail closed on missing specs
+
+Two defects here. The spread never reaches `resolve_trade`, so Task 2's fix is inert on the real study path. And `scripts/research_run.py:409,508` do `specs.get(symbol, _DEFAULT_SPEC)` where `_DEFAULT_SPEC` is EURUSD's `{tick_size: 1e-5, tick_value: 1.0}` — for US100 (`tick_size: 0.01`) that is a 1000× error in the sizing denominator, producing confidently wrong net R with no warning. The live path already refuses to guess (`CLAUDE.md`: *"If specs have not loaded for a symbol, `calculate_lot_size` fails safe (returns 0 + logs) rather than guessing"*); the research path must match.
+
+**Files:**
+- Modify: `scripts/research_run.py:237-289` (`_signals_to_trades`), `:359` (argparse), `:409`, `:508`
+- Test: `tests/unit/test_research_run.py`
+
+**Interfaces:**
+- Consumes: `resolve_trade`'s `signal["spread"]` (Task 2); `FBS_SPREADS` (Task 4).
+- Produces:
+  - `_signals_to_trades(records, df_h1, spread_points, spec, commission_per_lot, max_lots)` — signature unchanged; now derives `spread_price = spread_points * spec["tick_size"]` and stamps it on each signal dict as `"spread"`.
+  - New CLI flag `--allow-default-spec` (default `False`). Without it, a symbol absent from the specs file is a hard error.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/unit/test_research_run.py` (the module already imports `_signals_to_trades` and `_DEFAULT_SPEC` at line 29):
+
+```python
+class SpreadReachesResolver(unittest.TestCase):
+    """Task 2's corrected fill trigger is inert unless the spread actually
+    arrives on each signal dict. Assert the plumbing, not the intent."""
+
+    def test_signals_carry_spread_in_price_units(self):
+        # 6 flat bars; a BUY LIMIT resting 1.0 below the lows.
+        bars = [{"time": f"2026-01-01 0{i}:00:00", "open": 100.0, "high": 100.2,
+                 "low": 99.5, "close": 100.0} for i in range(6)]
+        df = pd.DataFrame(bars)
+        records = [{"i": 1, "signal": "BUY", "price": 99.5, "sl": 98.5, "tp": 101.5,
+                    "type": "LIMIT", "grade": "A", "strategy": "silver_bullet",
+                    "bias": "BULLISH", "time": bars[0]["time"]}]
+        spec = {"tick_size": 0.01, "tick_value": 0.1, "vol_step": 0.01}
+        trades, skipped = _signals_to_trades(
+            records, df, spread_points=50, spec=spec,
+            commission_per_lot=7.0, max_lots=5.0,
+        )
+        # 50 ticks * 0.01 = 0.50 price units.
+        for row in trades + skipped:
+            self.assertAlmostEqual(row["spread"], 0.50)
+
+    def test_wider_spread_suppresses_a_marginal_fill(self):
+        """The behavioural consequence: a limit that fills at spread 0 must
+        stop filling once the spread pushes its ask trigger out of reach."""
+        bars = [{"time": f"2026-01-01 0{i}:00:00", "open": 100.0, "high": 100.2,
+                 "low": 99.5, "close": 100.0} for i in range(20)]
+        df = pd.DataFrame(bars)
+        records = [{"i": 1, "signal": "BUY", "price": 99.5, "sl": 98.5, "tp": 101.5,
+                    "type": "LIMIT", "grade": "A", "strategy": "silver_bullet",
+                    "bias": "BULLISH", "time": bars[0]["time"]}]
+        spec = {"tick_size": 0.01, "tick_value": 0.1, "vol_step": 0.01}
+        cheap, _ = _signals_to_trades(records, df, 0, spec, 7.0, 5.0)
+        dear, _ = _signals_to_trades(records, df, 50, spec, 7.0, 5.0)
+        self.assertTrue(any(t["filled"] for t in cheap),
+                        "bid low exactly touches the limit; must fill at spread 0")
+        self.assertFalse(any(t["filled"] for t in dear),
+                         "ask never reaches the limit at a 0.50 spread")
+
+
+class MissingSpecFailsClosed(unittest.TestCase):
+    """A guessed tick spec produces confidently wrong net R. The live sizer
+    refuses to guess; the research path must too."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.out_dir = Path(self._tmpdir) / "out"
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_symbol_absent_from_specs_is_an_error(self):
+        specs_path = Path(self._tmpdir) / "specs.json"
+        specs_path.write_text(json.dumps({"EURUSD": {
+            "tick_size": 1e-05, "tick_value": 1.0, "vol_step": 0.01}}))
+        rc = research_main([
+            "--csv", TEST_DATA_CSV, "--symbol", "BTCUSD", "--tf", "H1",
+            "--strategy", "silver_bullet", "--spread-pips", "20",
+            "--out", str(self.out_dir), "--specs", str(specs_path),
+        ])
+        self.assertNotEqual(rc, 0, "missing tick spec must not silently default")
+
+    def test_allow_default_spec_opts_back_in(self):
+        specs_path = Path(self._tmpdir) / "specs.json"
+        specs_path.write_text(json.dumps({"EURUSD": {
+            "tick_size": 1e-05, "tick_value": 1.0, "vol_step": 0.01}}))
+        rc = research_main([
+            "--csv", TEST_DATA_CSV, "--symbol", "BTCUSD", "--tf", "H1",
+            "--strategy", "silver_bullet", "--spread-pips", "20",
+            "--out", str(self.out_dir), "--specs", str(specs_path),
+            "--allow-default-spec",
+        ])
+        self.assertEqual(rc, 0)
+```
+
+No new imports are needed: `tempfile`, `shutil`, `json`, `Path`, `pandas as pd`, `TEST_DATA_CSV`, `research_main`, and `_signals_to_trades` are all already imported at `tests/unit/test_research_run.py:7-33`. Use the module-level `pd`; do not add a local `import pandas`.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_run.SpreadReachesResolver tests.unit.test_research_run.MissingSpecFailsClosed -v`
+Expected: FAIL — `KeyError: 'spread'` in the first class; `AssertionError: 0 == 0` (the run succeeds when it should not) in `test_symbol_absent_from_specs_is_an_error`; and an argparse `unrecognized arguments: --allow-default-spec` error in the last.
+
+- [ ] **Step 3: Write minimal implementation**
+
+**3a.** In `scripts/research_run.py`, inside `_signals_to_trades`, replace the signal-building loop and add the spread derivation. Replace lines 256-271 with:
+
+```python
+    bars = df_h1.to_dict("records")
+    # Spread tables are in broker ticks; resolve_trade wants PRICE units.
+    # Without this the corrected BUY-LIMIT trigger (backtest_engine.resolve_trade)
+    # is inert and buy limits keep filling one spread too easily.
+    tick_size = float(spec.get("tick_size") or 0.0)
+    spread_price = float(spread_points) * tick_size if tick_size > 0 else 0.0
+    sigs = []
+    for rec in records:
+        if rec["signal"] is None:
+            continue
+        bar_idx = rec["i"] - 1
+        cmd = rec.get("type") or "LIMIT"
+        if cmd == "MARKET":
+            if bar_idx + 1 >= len(bars):
+                continue  # no next bar to fill on
+            entry = float(bars[bar_idx + 1]["open"])
+        else:
+            entry = float(rec["price"])
+        sigs.append({**rec, "bar_idx": bar_idx, "dir": rec["signal"], "cmd": cmd,
+                     "entry": entry, "sl": float(rec["sl"]), "tp": float(rec["tp"]),
+                     "ttl_bars": 12, "spread": spread_price})
+```
+
+**3b.** Add the argparse flag next to `--specs` (line 359):
+
+```python
+    p.add_argument("--allow-default-spec", action="store_true",
+                   help="permit the EURUSD-shaped _DEFAULT_SPEC when the symbol is "
+                        "absent from --specs. OFF by default: a guessed tick_size "
+                        "silently mis-sizes every trade (1000x for index symbols) "
+                        "and yields confidently wrong net R.")
+```
+
+**3c.** Add this helper immediately after `_spec_source` (after line 116):
+
+```python
+def _resolve_spec(specs, symbol, allow_default):
+    """Broker tick spec for `symbol`, or a hard error.
+
+    Mirrors RiskManager.calculate_lot_size's fail-safe: never guess a spec.
+    _DEFAULT_SPEC is EURUSD-shaped (tick_size 1e-5), so defaulting it for an
+    index or crypto symbol misstates the sizing denominator by orders of
+    magnitude -- and net R along with it -- without any warning.
+    """
+    if symbol in specs:
+        return specs[symbol]
+    if allow_default:
+        print(f"[RESEARCH_RUN] WARNING: no tick spec for {symbol!r}; "
+              f"using _DEFAULT_SPEC because --allow-default-spec was passed. "
+              f"Net R is only meaningful if {symbol!r} really is forex-shaped.")
+        return _DEFAULT_SPEC
+    print(f"[RESEARCH_RUN] ERROR: no tick spec for {symbol!r} in the specs file; "
+          f"known: {sorted(specs)}. Run scripts/cache_specs.py against a live "
+          f"bridge, or pass --allow-default-spec to accept EURUSD-shaped "
+          f"defaults (net R will be wrong for non-forex symbols).")
+    return None
+```
+
+**3d.** Replace line 409 (`spec = specs.get(sym, _DEFAULT_SPEC)`) with:
+
+```python
+            spec = _resolve_spec(specs, sym, args.allow_default_spec)
+            if spec is None:
+                return 1
+```
+
+**3e.** Replace line 508 (`spec = specs.get(symbol, _DEFAULT_SPEC)`) with:
+
+```python
+    spec = _resolve_spec(specs, symbol, args.allow_default_spec)
+    if spec is None:
+        return 1
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m unittest tests.unit.test_research_run -v`
+Expected: PASS, all tests in the module including the pre-existing ones. `test_different_spreads_produce_different_expectancy` writes its own specs fixture containing `BTCUSD`, so it is unaffected by the new guard — confirm that in the output rather than assuming it.
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'`
+Expected: OK. Allow up to 40 minutes; do not pipe through `head`/`tail`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/research_run.py tests/unit/test_research_run.py
+git commit -m "fix(research_run): thread spread into the resolver; fail closed on missing specs
+
+Two defects. The spread never reached resolve_trade, so the corrected
+BUY-LIMIT trigger was inert on the real study path. And specs.get(sym,
+_DEFAULT_SPEC) substituted EURUSD's tick_size=1e-5 for any unknown symbol
+-- a 1000x error in the sizing denominator for index symbols, yielding
+confidently wrong net R with no warning.
+
+Missing specs are now an error; --allow-default-spec opts back in with a
+loud warning. Mirrors RiskManager's live fail-safe on absent broker specs.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Task 6: Add the new pairs' broker specs and re-baseline the study
+
+This task produces the deliverable: the corrected `+0.19R` figure.
+
+**Files:**
+- Modify: `data/specs.json`
+- Create: `docs/research/2026-07-30-fill-model-correction.md`
+
+**Interfaces:**
+- Consumes: everything from Tasks 1-5.
+- Produces: a results doc, and the re-baselined per-symbol and pooled net-R figures.
+
+- [ ] **Step 1: Add the probed specs for US100 and ETHUSD**
+
+Both were probed from the broker and are recorded in `data/results/universe_screen_20260728/candidate_probe.json` under `[symbol]["info"]`. Add to `data/specs.json`:
+
+```json
+  "US100":  {"tick_value": 0.1, "tick_size": 0.01, "vol_min": 0.01, "vol_step": 0.01},
+  "ETHUSD": {"tick_value": 0.1, "tick_size": 0.01, "vol_min": 0.01, "vol_step": 0.01}
+```
+
+**Do NOT add XTIUSD.** `candidate_probe.json["XTIUSD"]` is `null` — its `{tick_value: 10.0, tick_size: 0.01}` exists only as a hand-entered value in `screen_candidates.py:39` and has never been read from the broker. Adding an unverified spec is exactly the guessing Task 5 just made impossible.
+
+- [ ] **Step 2: Verify the specs file parses and that XTIUSD is the only live pair still uncovered**
+
+Run:
+```bash
+.venv/bin/python -c "
+import json, yaml
+specs = json.load(open('data/specs.json'))
+pairs = yaml.safe_load(open('config/config.yaml'))['strategies']['silver_bullet']['pairs']
+print('specs:', len(specs))
+print('live pairs missing specs:', [p for p in pairs if p not in specs])
+"
+```
+Expected: `specs: 13` and `live pairs missing specs: ['XTIUSD']`
+
+- [ ] **Step 3: Run the baseline arm (pre-fix behaviour) for one symbol**
+
+The pre-fix model is reproduced by passing a zero spread to the resolver while keeping the cost charge — which is not a CLI option, so capture the baseline from git instead. Resolve the pre-fix revision **by commit message**, not by a `HEAD~N` offset, which drifts if any task produced a different number of commits:
+
+```bash
+mkdir -p /tmp/claude-1000/fillmodel
+PRE=$(git log --format='%H' --grep='direction-aware LIMIT fill trigger' -n 1)^
+echo "pre-fix revision: $(git rev-parse --short "$PRE")"
+git show "$PRE:tests/backtest/backtest_engine.py" > /tmp/claude-1000/fillmodel/backtest_engine_pre.py
+diff /tmp/claude-1000/fillmodel/backtest_engine_pre.py tests/backtest/backtest_engine.py
+```
+
+Expected: the diff shows **only** the `# 1. Fill.` block change from Tasks 2-3 plus the `SPREADS` import change from Task 4. If it shows anything else, the commit boundaries drifted — stop and report rather than proceeding with a contaminated comparison.
+
+- [ ] **Step 4: Run the corrected re-baseline over the 11 spec'd pairs**
+
+For each symbol with both a spread entry and a tick spec (all 12 live pairs except XTIUSD, plus the retired GBPCAD/XBRUSD if their history CSVs exist), run:
+
+```bash
+for SYM in EURUSD GBPUSD USDJPY AUDUSD USDCAD GBPJPY XAUUSD US30 BTCUSD US100 ETHUSD; do
+  .venv/bin/python scripts/research_run.py --lake-symbol "$SYM" --tf H1 \
+    --strategy silver_bullet --spread-mult 1.0 \
+    --out data/results/fillmodel_20260730 2>&1 | tee -a /tmp/claude-1000/fillmodel/run.log
+done
+```
+
+If `--lake-symbol` reports no partitions for a symbol, fall back to the CSV form for that symbol, passing its spread explicitly in ticks:
+
+```bash
+# tick values are FBS_SPREAD_TICKS from src/research/costs.py
+declare -A TICKS=( [EURUSD]=8 [GBPUSD]=12 [USDJPY]=10 [AUDUSD]=10 [USDCAD]=12 \
+                   [GBPJPY]=25 [XAUUSD]=20 [US30]=200 [BTCUSD]=1000 \
+                   [US100]=200 [ETHUSD]=193 )
+.venv/bin/python scripts/research_run.py --csv "data/history/${SYM}_M5.csv" \
+  --symbol "$SYM" --tf H1 --strategy silver_bullet \
+  --spread-pips "${TICKS[$SYM]}" --out data/results/fillmodel_20260730
+```
+
+Record which form each symbol used — the two paths differ in data provenance, and the results doc must say which was used where.
+
+- [ ] **Step 5: Record the verdict**
+
+Create `docs/research/2026-07-30-fill-model-correction.md` with these sections, filled from the run output:
+
+1. **Question** — does the adopted `+0.19R/trade, PF 1.53` survive a correct BUY-LIMIT fill trigger?
+2. **What changed** — the four corrections (direction-aware trigger, gap fills, STOP semantics, spread threading), and the explicit note that the cost model is unchanged and why.
+3. **Attribution** — separate the spread-haircut effect from the gap-fill effect by running one symbol three ways: pre-fix, post-fix at `--spread-mult 0`, and post-fix at `--spread-mult 1.0`. The middle run isolates the gap-fill change. Without this the two effects are confounded and the headline delta is uninterpretable.
+4. **Per-symbol table** — n, fill rate, gross R, net R, PF, IS/OOS split, for pre-fix and post-fix side by side.
+5. **Pooled verdict** — the corrected figure to quote in place of `+0.19R`.
+6. **Coverage gap** — XTIUSD excluded, with the reason (unverified tick specs) and the unblocking step (`scripts/cache_specs.py` against a live Windows MT5 bridge).
+7. **What this does and does not imply** — a corrected baseline is not by itself a reason to change `config/config.yaml`. If the figure degrades materially, say so plainly and leave the adoption decision to the owner. Do not edit `config.yaml` in this plan.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add data/specs.json docs/research/2026-07-30-fill-model-correction.md
+git commit -m "docs(research): re-baseline SilverBullet on the corrected fill model
+
+Adds broker-probed tick specs for US100/ETHUSD (source:
+data/results/universe_screen_20260728/candidate_probe.json) and records the
+re-baselined net R against the corrected BUY-LIMIT fill trigger.
+
+XTIUSD excluded: candidate_probe.json has no record for it, so its tick
+specs are unverified. Needs scripts/cache_specs.py against a live bridge.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
+
+---
+
+## Definition of Done
+
+- [ ] `src/research/costs.py` is the only spread table; `poc_sb_stops.SPREADS` and `research_run.FBS_SPREADS` are aliases of it, and `backtest_engine.py` contains no `SPREADS = {` literal.
+- [ ] `resolve_trade` applies a one-sided, direction-aware trigger with an optional price-unit `spread`, and distinguishes `STOP` from `LIMIT`.
+- [ ] All 14 pre-existing tests in `tests/unit/test_backtest_resolver.py` pass **unedited**.
+- [ ] `research_run.py` stamps `spread` on every signal and refuses to run on a missing tick spec unless `--allow-default-spec` is passed.
+- [ ] Full unit suite green: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'`
+- [ ] `docs/research/2026-07-30-fill-model-correction.md` states the corrected pooled net R, attributes the spread-haircut and gap-fill effects separately, and names XTIUSD's exclusion.
+- [ ] No file under `src/` other than the new `src/research/costs.py` is modified. `config/config.yaml` is untouched.
+
+## Out of scope
+
+`PassiveEntryModel`, `PendingOrderManager`, ask capture, the spread gate, `no_market_conversion`, non-fill archiving, and the placement journal are Sessions 2-4 of `docs/superpowers/specs/2026-07-29-passive-entry-layer-design.md`. Do not start them here.

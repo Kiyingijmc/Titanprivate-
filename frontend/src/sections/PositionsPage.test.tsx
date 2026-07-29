@@ -39,8 +39,7 @@ function fakeApi(): Api {
 function renderPage({
   snapshot = makeSnapshot(),
   api = fakeApi(),
-  readOnly = false,
-}: { snapshot?: Snapshot | null; api?: Api; readOnly?: boolean } = {}) {
+}: { snapshot?: Snapshot | null; api?: Api } = {}) {
   function Wrapper() {
     return (
       <MemoryRouter>

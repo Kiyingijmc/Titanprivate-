@@ -5,6 +5,8 @@
 |------|-------|--------|--------|-------|----------|-------|------|
 | featurebus-bar-index-single-counter-defect | S | promoted | brainstorm |  |  | 2026-07-18 | FeatureBus _bar_index single-counter defect — REQUIRED fix before any M5 strategy (per v15 advisory) |
 | cross-symbol-exposure-cap-missing-v15 | S | promoted | brainstorm |  |  | 2026-07-18 | cross-symbol exposure cap missing (v15 Plan 10 advisory) |
+| gui-bind-failure-on-8770-must | S | promoted | brainstorm |  |  | 2026-07-29 | GUI bind failure on :8770 must not kill the trading engine — the uvicorn bind error is raised inside the async web task so it escapes the try/except at system_controller.py:286 marked 'optional; must never block trading'; a stale scripts/gui_demo_server.py holding the port takes the live bot down seconds after TRANSITION TO ACTIVE. Make the failure genuinely non-fatal and make the port configurable. |
+| gui-websocket-double-close-raises-runtimeerror | S | inbox | brainstorm |  |  | 2026-07-29 | GUI websocket double-close raises RuntimeError in production: src/ops/web/server.py:95 calls await websocket.close(code=1008) on the first-frame auth-reject path without guarding against the connection already being closed, producing 'Unexpected ASGI message websocket.close, after sending websocket.close' with a full traceback per occurrence. Observed live on the demo-forward-test bot 2026-07-29 (5 log hits in 2h while a GUI client was connected). Not fatal — uvicorn isolates per-connection exceptions and trading is unaffected — but it spams the operator log and the existing test test_wrong_first_frame_closes_1008 passes because TestClient never reproduces the already-closed race. Guard on client_state/application_state (or catch RuntimeError) and add a test that closes the client before the reject lands. |
 <!-- /MIG-BACKLOG-TABLE -->
 
 ## Promoted
@@ -37,4 +39,5 @@
 - retired intent-arbiter-priority-is-hardcoded-make (delivered by commit 342820f) — mig triage 2026-07-28
 - featurebus-bar-index-single-counter-defect → minted S012 (2026-07-28)
 - cross-symbol-exposure-cap-missing-v15 → minted S013 (2026-07-29)
+- gui-bind-failure-on-8770-must → minted S014 (2026-07-29)
 <!-- /MIG-PROMOTED-LOG -->

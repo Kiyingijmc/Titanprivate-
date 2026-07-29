@@ -12,6 +12,7 @@
 | S008 | 2026-07-28 | hash-anchor-the-archive-live-seam | DONE | data | finalized via mig (review PASS) | parent: none |
 | S009 | 2026-07-28 | chain-protect-or-explicitly-adr-the | DONE | data | finalized via mig (review PASS) | parent: none |
 | S012 | 2026-07-29 | featurebus-bar-index-single-counter-defect | DONE | order_lifecycle | finalized via mig (review CHANGES) | parent: none |
+| S013 | 2026-07-29 | cross-symbol-exposure-cap-missing-v15 | DONE | risk_management | finalized via mig (review CHANGES) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -27,4 +28,5 @@
 | RS008 | 2026-07-28 | S008 (hash-anchor-the-archive-live-seam) | DONE | PASS (mig orchestrator in-session independent review) | [RS008.md](../session-reviews/RS008.md) |
 | RS009 | 2026-07-28 | S009 (chain-protect-or-explicitly-adr-the) | DONE | PASS (mig orchestrator in-session independent review) | [RS009.md](../session-reviews/RS009.md) |
 | RS012 | 2026-07-29 | S012 (featurebus-bar-index-single-counter-defect) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS012.md](../session-reviews/RS012.md) |
+| RS013 | 2026-07-29 | S013 (cross-symbol-exposure-cap-missing-v15) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS013.md](../session-reviews/RS013.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

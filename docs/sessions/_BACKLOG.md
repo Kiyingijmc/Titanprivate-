@@ -4,7 +4,7 @@
 | slug | track | status | source | needs | unblocks | added | desc |
 |------|-------|--------|--------|-------|----------|-------|------|
 | featurebus-bar-index-single-counter-defect | S | promoted | brainstorm |  |  | 2026-07-18 | FeatureBus _bar_index single-counter defect — REQUIRED fix before any M5 strategy (per v15 advisory) |
-| cross-symbol-exposure-cap-missing-v15 | S | inbox | brainstorm |  |  | 2026-07-18 | cross-symbol exposure cap missing (v15 Plan 10 advisory) |
+| cross-symbol-exposure-cap-missing-v15 | S | promoted | brainstorm |  |  | 2026-07-18 | cross-symbol exposure cap missing (v15 Plan 10 advisory) |
 <!-- /MIG-BACKLOG-TABLE -->
 
 ## Promoted
@@ -36,4 +36,5 @@
 - intent-arbiter-priority-is-hardcoded-make → minted S011 (2026-07-28)
 - retired intent-arbiter-priority-is-hardcoded-make (delivered by commit 342820f) — mig triage 2026-07-28
 - featurebus-bar-index-single-counter-defect → minted S012 (2026-07-28)
+- cross-symbol-exposure-cap-missing-v15 → minted S013 (2026-07-29)
 <!-- /MIG-PROMOTED-LOG -->

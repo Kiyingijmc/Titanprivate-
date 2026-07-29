@@ -24,6 +24,7 @@ from src.ops.web.bus_bridge import BusBridge
 from src.ops.web.config_layer import load_layered_config
 from src.ops.web.fake_controller import build_fake_controller
 from src.ops.web.settings import SettingsStore
+from src.ops.web.state_view import build_snapshot
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,6 +67,25 @@ async def _heartbeat(controller):
         await asyncio.sleep(3)
 
 
+async def _dollar(controller):
+    """Slowly walk the demo USD pair deltas + a rolling bias trend, so the
+    DollarBias gauge/sparkline visibly moves (mirrors the _feed pattern)."""
+    import math
+
+    bases = {sym: row["delta_pct"] for sym, row in controller.market_prices.items()}
+    controller.dollar_trend = []
+    step = 0
+    while True:
+        wave = math.sin(step / 6.0)
+        for i, symbol in enumerate(bases):
+            sign = 1 if i % 2 == 0 else -1
+            controller.market_prices[symbol]["delta_pct"] = round(bases[symbol] + wave * 0.12 * sign, 4)
+        snap = build_snapshot(controller)
+        controller.dollar_trend = (controller.dollar_trend + [snap["dollar"]["bias"]])[-20:]
+        step += 1
+        await asyncio.sleep(3)
+
+
 async def _feed(bridge):
     """Stream a lively mix of events so the feed + violet rule chips populate."""
     await asyncio.sleep(2)
@@ -92,7 +112,7 @@ async def _main():
     task = web_server.start(controller, settings_store, bridge)
     print("Titan Control GUI DEMO: http://127.0.0.1:8770 (token: "
           + os.environ["TITAN_GUI_TOKEN"] + ") — 2 positions + live blocked-intent feed")
-    await asyncio.gather(task, _heartbeat(controller), _feed(bridge))
+    await asyncio.gather(task, _heartbeat(controller), _feed(bridge), _dollar(controller))
 
 
 if __name__ == "__main__":

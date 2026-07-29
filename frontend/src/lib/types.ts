@@ -11,8 +11,16 @@ export interface ArbiterBlock {
 export interface RegistryRow {
   id: string; version: string; status: string; state: string; tf?: string; priority?: number; family?: string;
 }
+export interface DollarBias {
+  source: "index" | "computed" | "unavailable";
+  value: number | null;
+  bias: number;
+  trend: number[];
+  contributors: { symbol: string; contribution: number }[];
+}
 export interface Snapshot {
   health: Health; account: Account; positions: Position[]; arbiter: ArbiterBlock; registry: RegistryRow[];
+  dollar?: DollarBias;
 }
 export interface FeedEvent { topic: string; ts: number; [k: string]: unknown; }
 export interface SettingRow { key: string; value: unknown; source: "default" | "override"; tier: "live" | "restart"; }

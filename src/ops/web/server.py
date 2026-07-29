@@ -1,12 +1,14 @@
 """FastAPI app + uvicorn task for the embedded control API (port 8770)."""
 import asyncio
 import json
+import logging
 import os
 import socket
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.websockets import WebSocketState
 
 from src.core.events import GuiActionExecuted
 
@@ -15,6 +17,7 @@ from .commands import execute_command
 from .registry_view import execute_registry_action, registry_report
 from .state_view import build_snapshot, history_rows
 
+_LOG = logging.getLogger(__name__)
 _WS_AUTH_TIMEOUT_S = 3.0
 _DEFAULT_DIST_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
@@ -93,7 +96,16 @@ def create_app(controller, settings_store, bridge, dist_dir: Path | None = None)
             except Exception:
                 token = None
         if not auth.token_ok(token):
-            await websocket.close(code=1008)
+            if websocket.client_state != WebSocketState.DISCONNECTED:
+                try:
+                    await websocket.close(code=1008)
+                except RuntimeError:
+                    # Client disconnected between the auth-reject decision and
+                    # this call (or during receive_text() above) -- the
+                    # connection is already gone, so there is nothing to
+                    # close and nothing functionally wrong.
+                    _LOG.debug("WS auth-reject close raced an already-closed "
+                               "connection", exc_info=True)
             return
         await websocket.send_json({"type": "state", **build_snapshot(controller)})
         queue = bridge.attach()

@@ -6,7 +6,9 @@ import socket
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from unittest import mock
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocket, WebSocketState
 from src.core.events import GuiActionExecuted
 from src.ops.web import auth
 from src.ops.web import server as web_server
@@ -192,6 +194,32 @@ class TestWebSocketAuth(unittest.TestCase):
                 ws.send_text("wrong")
                 with self.assertRaises(Exception):   # closed by server
                     ws.receive_json()
+
+    def test_close_after_client_disconnect_does_not_raise(self):
+        """Reproduces the production race (data/logs/titan_live_stdout.log,
+        2026-07-29 demo-bot session): the client disconnects while ws()'s
+        receive_text() is pending for the auth frame. Starlette turns that
+        into a WebSocketDisconnect, which server.py's bare `except Exception`
+        swallows into token=None -- indistinguishable from a bad token -- so
+        the reject path tries to close a connection that is already gone.
+        Real uvicorn raises RuntimeError for that; this test fakes the same
+        state (client_state already DISCONNECTED) so close() raises it here
+        too, without needing a real uvicorn socket."""
+        with tempfile.TemporaryDirectory() as d:
+            client, _, _ = _make(d)
+            orig_close = WebSocket.close
+
+            async def flaky_close(self, code=1000, reason=None):
+                if self.client_state == WebSocketState.DISCONNECTED:
+                    raise RuntimeError(
+                        "Unexpected ASGI message 'websocket.close', after "
+                        "sending 'websocket.close' or response already "
+                        "completed.")
+                await orig_close(self, code, reason)
+
+            with mock.patch.object(WebSocket, "close", flaky_close):
+                with client.websocket_connect("/ws") as ws:
+                    ws.close(code=1000)  # client disconnects before auth
 
 
 def _free_port() -> int:

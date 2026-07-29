@@ -44,8 +44,8 @@ export default {
         sm: "var(--radius-sm)",
       },
       fontFamily: {
-        sans: ["'Fira Sans'", "system-ui", "sans-serif"],
-        mono: ["'Fira Code'", "ui-monospace", "monospace"],
+        sans: ["'Instrument Sans'", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["'JetBrains Mono'", "ui-monospace", "monospace"],
       },
       boxShadow: {
         1: "var(--shadow-1)",

@@ -1,10 +1,7 @@
 @import "./design/tokens.css";
 
-/* Self-host Fira fonts (woff2 placed in src/assets/fonts/; @font-face them — NO CDN).
-   If woff2 files are not yet vendored, this @font-face is inert and the stack falls
-   back to system-ui/monospace; Task 0 accepts that fallback (fonts vendored best-effort). */
-@font-face { font-family: "Fira Sans"; src: local("Fira Sans"); font-display: swap; }
-@font-face { font-family: "Fira Code"; src: local("Fira Code"); font-display: swap; }
+/* Brand fonts (Instrument Sans + JetBrains Mono) are self-hosted via @fontsource,
+   imported in main.tsx (Vite bundles the woff2 — CSP-safe, no CDN). */
 
 @tailwind base;
 @tailwind components;

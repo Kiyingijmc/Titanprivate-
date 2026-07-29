@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ReadOnlyProvider } from "@/context/ReadOnlyContext";
@@ -70,7 +70,10 @@ function renderOverview({
 describe("OverviewPage", () => {
   it("renders the KPI equity value from the snapshot", async () => {
     renderOverview();
-    expect(await screen.findByText("10,250.50")).toBeInTheDocument();
+    // The equity value also appears in the equity chart's current-value label, so
+    // scope the KPI assertion to the Equity tile specifically.
+    const tile = await screen.findByTestId("tile-equity");
+    expect(within(tile).getByText("10,250.50")).toBeInTheDocument();
   });
 
   it("shows a top-position symbol linking to /positions", async () => {

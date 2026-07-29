@@ -12,6 +12,7 @@ function Tile({
   testId,
   dataTone,
   icon,
+  accent = false,
 }: {
   label: string;
   value: string;
@@ -19,9 +20,18 @@ function Tile({
   testId?: string;
   dataTone?: string;
   icon?: ReactNode;
+  accent?: boolean;
 }) {
   return (
-    <Card data-testid={testId} data-tone={dataTone}>
+    <Card
+      data-testid={testId}
+      data-tone={dataTone}
+      className={cn(
+        "transition-colors hover:border-border-strong",
+        // A hairline accent rail marks the primary live figure (Open P&L).
+        accent && "border-l-2 border-l-accent"
+      )}
+    >
       <CardHeader className="pb-1 pt-4 px-4">
         <CardTitle className="text-xs font-medium text-muted-foreground tracking-wide uppercase font-sans">
           {label}
@@ -37,36 +47,52 @@ function Tile({
   );
 }
 
+const TONE_CLASS: Record<"profit" | "loss" | "flat", string> = {
+  profit: "text-profit",
+  loss: "text-loss",
+  flat: "text-muted-foreground",
+};
+
 export function StatTiles({
   account,
   arbiter,
   dayPnl,
+  openPnl,
   openCount,
 }: {
   account: Account;
   arbiter: ArbiterBlock;
   dayPnl: number;
+  /** Live floating P&L summed across all open orders (Σ position.pnl). */
+  openPnl: number;
   openCount: number;
 }) {
-  const pnl = signedPnl(dayPnl);
-  const pnlToneClass = {
-    profit: "text-profit",
-    loss: "text-loss",
-    flat: "text-muted-foreground",
-  }[pnl.tone];
-  const PnlIcon = pnl.tone === "profit" ? ArrowUp : pnl.tone === "loss" ? ArrowDown : Minus;
+  const day = signedPnl(dayPnl);
+  const DayIcon = day.tone === "profit" ? ArrowUp : day.tone === "loss" ? ArrowDown : Minus;
+
+  const open = signedPnl(openPnl);
+  const OpenIcon = open.tone === "profit" ? ArrowUp : open.tone === "loss" ? ArrowDown : Minus;
 
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-      <Tile label="Balance" value={money(account.balance)} />
-      <Tile label="Equity" value={money(account.equity)} />
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6">
+      <Tile label="Balance" value={money(account.balance)} testId="tile-balance" />
+      <Tile label="Equity" value={money(account.equity)} testId="tile-equity" />
+      <Tile
+        label="Open P&L"
+        value={open.text}
+        toneClass={TONE_CLASS[open.tone]}
+        testId="tile-openpnl"
+        dataTone={open.tone}
+        icon={<OpenIcon className="size-4" aria-hidden />}
+        accent
+      />
       <Tile
         label="Day P&L"
-        value={pnl.text}
-        toneClass={pnlToneClass}
+        value={day.text}
+        toneClass={TONE_CLASS[day.tone]}
         testId="tile-daypnl"
-        dataTone={pnl.tone}
-        icon={<PnlIcon className="size-4" aria-hidden />}
+        dataTone={day.tone}
+        icon={<DayIcon className="size-4" aria-hidden />}
       />
       <Tile label="Open Positions" value={String(openCount)} testId="tile-open-positions" />
       <Tile

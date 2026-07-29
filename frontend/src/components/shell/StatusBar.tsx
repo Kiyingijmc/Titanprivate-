@@ -2,10 +2,11 @@ import type { ReactNode } from "react";
 import { Wifi, WifiOff, Loader2, CloudOff, Clock, Pause, Gauge, Command, ArrowUp, ArrowDown, Minus } from "lucide-react";
 import type { ConnectionState, ConnectionStatus } from "@/lib/connection";
 import type { Snapshot } from "@/lib/types";
-import { money } from "@/lib/format";
+import { money, signedPnl } from "@/lib/format";
 import { sessionStates } from "@/lib/sessions";
 import { useNow } from "@/lib/useNow";
 import { cn } from "@/lib/utils";
+import { AccentToggle } from "./AccentToggle";
 
 type Tone = "profit" | "warning" | "loss" | "muted" | "accent";
 
@@ -15,6 +16,12 @@ const TONE_CLASS: Record<Tone, string> = {
   loss: "text-loss",
   muted: "text-muted-foreground",
   accent: "text-accent",
+};
+
+const PNL_CLASS: Record<"profit" | "loss" | "flat", string> = {
+  profit: "text-profit",
+  loss: "text-loss",
+  flat: "text-muted-foreground",
 };
 
 function StatusChip({ tone, icon, children }: { tone: Tone; icon: ReactNode; children: ReactNode }) {
@@ -118,6 +125,8 @@ export interface StatusBarProps {
 
 export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProps) {
   const conn = CONNECTION_PRESENTATION[connection.status];
+  // Live floating P&L across all open orders (Σ position.pnl) — always visible.
+  const openPnl = snapshot ? signedPnl(snapshot.positions.reduce((s, p) => s + p.pnl, 0)) : null;
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-surface-1 px-4">
@@ -157,7 +166,15 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
           <span>
             Equity <span className="text-foreground">{snapshot ? money(snapshot.account.equity) : "—"}</span>
           </span>
+          {openPnl && (
+            <span className="hidden sm:inline" data-testid="statusbar-openpnl">
+              Open P&L{" "}
+              <span className={cn(PNL_CLASS[openPnl.tone])}>{openPnl.text}</span>
+            </span>
+          )}
         </div>
+
+        <AccentToggle />
 
         <button
           type="button"

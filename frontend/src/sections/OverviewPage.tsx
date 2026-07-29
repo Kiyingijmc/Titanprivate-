@@ -110,6 +110,7 @@ export default function OverviewPage() {
             account={snapshot.account}
             arbiter={snapshot.arbiter}
             dayPnl={snapshot.account.equity - snapshot.account.balance}
+            openPnl={snapshot.positions.reduce((sum, p) => sum + p.pnl, 0)}
             openCount={snapshot.positions.length}
           />
         )}

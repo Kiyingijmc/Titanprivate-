@@ -33,3 +33,16 @@
   --shadow-2: 0 10px 30px -8px hsl(225 20% 2% / 0.6);
   --motion-fast: 150ms; --motion-base: 220ms; --ease: cubic-bezier(0.2, 0, 0, 1);
 }
+
+/* Alternate signature accent — ELECTRIC BLUE (operator toggle via <AccentToggle>;
+   brand default is violet above). Everything accent-tinted routes through --accent
+   (Tailwind `accent`/`primary`, --focus-ring, the equity trend), so this one block
+   re-skins the whole app. P&L profit/loss tokens are deliberately NOT touched. */
+:root[data-accent="blue"] {
+  --accent: 210 100% 56%;        /* #1E8BFF electric blue */
+  --accent-hover: 205 100% 66%;  /* #52B4FF brighter */
+  --accent-active: 214 85% 48%;  /* #1668E0 press */
+  --accent-subtle: 213 60% 12%;  /* deep-blue wash */
+  --focus-ring: 210 100% 56%;
+  --blocked: 205 100% 66%;       /* keep blocked chips distinct under the blue theme */
+}

@@ -54,7 +54,7 @@ async function connect() {
 }
 
 describe("App", () => {
-  it("gates on token, then renders the navigable shell with the Overview stub", async () => {
+  it("gates on token, then renders the navigable shell with the real Overview page", async () => {
     await connect();
 
     // Sidebar section links present.
@@ -65,8 +65,9 @@ describe("App", () => {
     // Status bar shows the Live connection pill.
     expect(screen.getByText(/live/i)).toBeInTheDocument();
 
-    // Default route (/overview) renders the Overview stub.
-    expect(await screen.findByText(/overview.*coming in plan 2/i)).toBeInTheDocument();
+    // Default route (/overview) renders the real Overview page (Plan 2 Task 2): KPI tiles + top-positions panel.
+    expect(await screen.findByText("Top Positions")).toBeInTheDocument();
+    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1");
   });
 
   it("navigates to the Positions stub when the Positions nav link is clicked", async () => {

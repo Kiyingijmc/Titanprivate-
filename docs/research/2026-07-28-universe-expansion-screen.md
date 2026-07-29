@@ -59,3 +59,9 @@ other five. Re-measure XTIUSD spread in liquid hours first. Because the FBS
 demo-forward-test of the incumbent 9 started 2026-07-28, tag the additions as
 a second cohort in the journal (or hold them to the 2-week checkpoint) so
 realized-vs-modeled cost comparison for the original universe stays clean.
+
+**Adoption record:** US100 + ETHUSD adopted 2026-07-28 (owner-ratified,
+XTIUSD held). XTIUSD re-measured 2026-07-29 16:47 EAT during the London/NY
+overlap: **median 2 points, n=20, zero variance** — the evening figure was not
+a quiet-session artifact; 2 pts is FBS's standard oil spread. Clears the
+≤5-pt gate; owner ratified adding XTIUSD as pair 12 on 2026-07-29.

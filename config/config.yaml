@@ -122,10 +122,11 @@ strategies:
     # Cost-viable universe (median round-trip cost ≤ 0.25R at the 1.0-ATR stop);
     # GBPCAD/XBRUSD excluded — spreads too wide for the stop size.
     # US100/ETHUSD added 2026-07-28 (owner-ratified expansion screen,
-    # docs/research/2026-07-28-universe-expansion-screen.md); XTIUSD passed too
-    # but is held pending a liquid-hours spread re-measure.
+    # docs/research/2026-07-28-universe-expansion-screen.md); XTIUSD added
+    # 2026-07-29 after its London/NY-overlap spread re-measure (median 2 pts,
+    # n=20 — well under the 5-pt gate; screen verdict +0.421R stands).
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-            "GBPJPY", "XAUUSD", "US30", "BTCUSD", "US100", "ETHUSD"]
+            "GBPJPY", "XAUUSD", "US30", "BTCUSD", "US100", "ETHUSD", "XTIUSD"]
 
   # 2. Gyroscope (Kalman drift + SPRT, H1) — arsenal #1, Plan 07.
   # status: research in config/manifests/gyroscope.yaml is the live gate

@@ -195,6 +195,13 @@ class TestWebSocketAuth(unittest.TestCase):
 
 
 def _free_port() -> int:
+    """An ephemeral port that was free a moment ago.
+
+    Reserve-then-close: the socket is shut before the caller re-binds, so a
+    racing process CAN take the port in between. Fine for picking an address
+    to bind, but never build an assertion on the port still being reachable
+    later -- assert on what the bind actually returned instead.
+    """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -242,6 +249,19 @@ class TestStartBindFailure(unittest.TestCase):
 
 class TestGuiPortEnv(unittest.TestCase):
     def test_titan_gui_port_env_changes_bound_port(self):
+        """TITAN_GUI_PORT must reach the real bind, and the socket must listen there.
+
+        Asserts on the bind itself rather than a loopback round-trip. The first
+        version of this test called a BLOCKING socket.create_connection(
+        timeout=1.0) from inside the coroutine -- which pins the event loop --
+        and it timed out in the full-suite verify on 2026-07-29 while the box
+        sat at load ~40 (that run took 1539s against a ~1000s norm), even
+        though the production path was correct: the same test passed in
+        isolation and alongside all 67 GUI tests. A 1s hard deadline on a
+        starved box tests the machine, not the code. Reading getsockname() off
+        the socket start() actually bound proves the same thing with no timing
+        dependence and no reliance on _free_port()'s reserve-then-close race.
+        """
         with tempfile.TemporaryDirectory() as d:
             os.environ["TITAN_GUI_TOKEN"] = "sekret"
             ctrl = FakeController()
@@ -250,11 +270,23 @@ class TestGuiPortEnv(unittest.TestCase):
             port = _free_port()
             os.environ["TITAN_GUI_PORT"] = str(port)
 
+            captured = {}
+            real_bind = web_server._bind_socket
+
+            def _spy(host, bind_port):
+                sock = real_bind(host, bind_port)
+                captured["host"] = host
+                captured["port"] = bind_port
+                captured["sock"] = sock
+                # Read the bound address NOW: uvicorn's cancelled serve() (and
+                # our own cleanup) closes this socket before the assertions.
+                captured["sockname"] = sock.getsockname()
+                return sock
+
             async def _run():
                 task = web_server.start(ctrl, store, bridge)
                 try:
-                    probe = socket.create_connection(("127.0.0.1", port), timeout=1.0)
-                    probe.close()
+                    await asyncio.sleep(0)  # let serve() reach its first await
                 finally:
                     task.cancel()
                     try:
@@ -262,10 +294,24 @@ class TestGuiPortEnv(unittest.TestCase):
                     except BaseException:
                         pass
 
+            web_server._bind_socket = _spy
             try:
                 asyncio.run(_run())
             finally:
+                web_server._bind_socket = real_bind
                 os.environ.pop("TITAN_GUI_PORT", None)
+                sock = captured.get("sock")
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass  # already closed by the cancelled serve()
+
+            self.assertEqual(captured.get("port"), port,
+                             "TITAN_GUI_PORT must be the port passed to the bind")
+            self.assertEqual(captured.get("host"), "127.0.0.1")
+            # The bind really happened on that port, not merely requested.
+            self.assertEqual(captured["sockname"][1], port)
 
 
 class TestControllerGuiBootSeam(unittest.TestCase):

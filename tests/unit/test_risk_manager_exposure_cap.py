@@ -26,6 +26,7 @@ operator on Telegram -- pinned below.
 import asyncio
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -510,20 +511,30 @@ class SyncGuardSeamTests(unittest.TestCase):
             entry=1.1000, tp=1.1200, sl=1.0900, lots=0.99)
         return c
 
+    def _backdate(self, c, ticket, age_s):
+        """Age a row past reconcile_state's registration grace window.
+
+        Every test whose subject is CORROBORATION must call this. A row that
+        is seconds old is exempt on grace alone, so its survival proves
+        nothing about the `pos u orders` union -- and RS013 round 4 caught
+        exactly that: the grace window silently defanged the round-2 CRITICAL
+        regression tests, leaving the union (which CLAUDE.md tells
+        maintainers not to re-narrow) unguarded against a one-line revert.
+        """
+        c.state_manager.conn.execute(
+            "UPDATE active_orders SET time_placed = ? WHERE ticket_id = ?",
+            (time.time() - age_s, ticket))
+        c.state_manager.conn.commit()
+
     def test_corroborated_pending_survives_the_sweep(self):
         c = self._controller_with_real_db()
+        self._backdate(c, 111, 300)  # past grace: only corroboration can save it
         c.current_pending_orders = [
             {"t": 111, "s": "EURUSD", "p": 1.1000, "type": 2, "vol": 0.99}]
         _run(c._perform_reconciliation())
         self.assertEqual(
             [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
         self.assertEqual(c.telemetry.messages, [])  # no false "Closed externally"
-
-    def _backdate(self, c, ticket, age_s):
-        c.state_manager.conn.execute(
-            "UPDATE active_orders SET time_placed = ? WHERE ticket_id = ?",
-            (__import__("time").time() - age_s, ticket))
-        c.state_manager.conn.commit()
 
     def test_externally_deleted_pending_is_still_swept(self):
         """Ghost semantics are preserved: an order the broker no longer
@@ -552,6 +563,7 @@ class SyncGuardSeamTests(unittest.TestCase):
         """A limit that filled moves from `orders` to `pos` under the same
         ticket; the (now ACTIVE-bound) row must survive that transition too."""
         c = self._controller_with_real_db()
+        self._backdate(c, 111, 300)  # past grace: only corroboration can save it
         c.current_open_positions = [_pos("EURUSD", 1.1000, 1.0900, 0.99, ticket=111)]
         c.current_pending_orders = []
         _run(c._perform_reconciliation())
@@ -575,6 +587,7 @@ class SyncGuardSeamTests(unittest.TestCase):
         1.5% cap. If the sweep drops the resting row, the next bar's signal
         sails through; it must block."""
         c = self._controller_with_real_db(cap=1.5)
+        self._backdate(c, 111, 300)  # past grace: only corroboration can save it
         c.current_pending_orders = [
             {"t": 111, "s": "EURUSD", "p": 1.1000, "type": 2, "vol": 0.99}]
         _run(c._perform_reconciliation())

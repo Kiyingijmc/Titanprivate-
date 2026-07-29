@@ -31,12 +31,20 @@ function pct(min: number): string {
   return `${(min / MINUTES_IN_DAY) * 100}%`;
 }
 
-const SESSION_BAND_CLASS: Record<string, string> = {
-  sydney: "bg-info/35",
-  tokyo: "bg-warning/35",
-  london: "bg-accent/35",
-  newyork: "bg-profit/35",
+/**
+ * Vivid, well-separated identity color per session (amber / rose / violet /
+ * teal-green). Fixed hues — deliberately independent of the app accent so they
+ * never clash with the violet↔blue toggle. Each session's timeline band AND its
+ * clock card use this same color, so the card reads as "this is that band".
+ */
+const SESSION_COLORS: Record<string, string> = {
+  sydney: "#F59E0B", // amber
+  tokyo: "#FB5C7D", // rose
+  london: "#8B7CF6", // violet
+  newyork: "#2DD4A7", // teal-green
 };
+
+const BAND_ALPHA = "B3"; // ~70% — vivid, still lets the now-marker + overlaps read
 
 /**
  * 24h session timeline + status chips, driven by `sessionStates()` (T9).
@@ -100,20 +108,30 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
               toSegments(session.startUtcMin, session.endUtcMin).map((seg, i) => (
                 <div
                   key={`${session.id}-${i}`}
-                  className={cn("absolute inset-y-0 rounded-sm", SESSION_BAND_CLASS[session.id])}
-                  style={{ left: pct(seg[0]), width: pct(seg[1] - seg[0]) }}
+                  className="absolute inset-y-0 rounded-sm"
+                  style={{
+                    left: pct(seg[0]),
+                    width: pct(seg[1] - seg[0]),
+                    backgroundColor: SESSION_COLORS[session.id] + BAND_ALPHA,
+                  }}
                   aria-hidden
                 />
               ))
             )}
+            {/* Overlap = both sessions open: brighten the stacked bands so peak
+                liquidity windows (esp. London × New York) visibly glow. */}
             {overlapBands.map(({ ids, seg }, i) => (
               <div
                 key={`overlap-${ids.join("-")}-${i}`}
-                className={cn(
-                  "absolute inset-y-0 rounded-sm bg-accent/50",
-                  ids.includes("london") && ids.includes("newyork") && "bg-accent/80"
-                )}
-                style={{ left: pct(seg[0]), width: pct(seg[1] - seg[0]) }}
+                className="absolute inset-y-0 rounded-sm"
+                style={{
+                  left: pct(seg[0]),
+                  width: pct(seg[1] - seg[0]),
+                  backgroundColor:
+                    ids.includes("london") && ids.includes("newyork")
+                      ? "rgba(255,255,255,0.32)"
+                      : "rgba(255,255,255,0.18)",
+                }}
                 aria-hidden
               />
             ))}
@@ -127,7 +145,7 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {sessions.map((session) => (
-              <SessionChip key={session.id} session={session} />
+              <SessionChip key={session.id} session={session} color={SESSION_COLORS[session.id]} />
             ))}
           </div>
         </>
@@ -136,21 +154,34 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
   );
 }
 
-function SessionChip({ session }: { session: SessionState }) {
+function SessionChip({ session, color }: { session: SessionState; color: string }) {
   return (
     <div
       data-testid={`session-chip-${session.id}`}
-      className="flex flex-col gap-1 rounded-md border border-border bg-surface-2 px-3 py-2"
+      className="flex flex-col gap-1 rounded-md border border-l-2 border-border bg-surface-2 px-3 py-2"
+      style={{
+        borderLeftColor: color,
+        // A faint session-color wash over the card surface while the market is open.
+        ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${color}14` } : {}),
+      }}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-foreground">{session.label}</span>
-        <span className="font-mono tabnum text-xs text-muted-foreground">
-          {session.localTime}
+        <span className="text-sm font-semibold" style={{ color }}>
+          {session.label}
         </span>
+        {/* Live HH:MM:SS in the session's own timezone — ticks every second. */}
+        <span className="font-mono tabnum text-xs text-secondary-foreground">{session.localClock}</span>
       </div>
       {session.open ? (
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-profit/15 px-2 py-0.5 text-xs font-medium text-profit">
-          <span className="size-1.5 animate-pulse rounded-full bg-profit" aria-hidden />
+        <span
+          className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
+          style={{ backgroundColor: `${color}26`, color }}
+        >
+          <span
+            className="size-1.5 animate-pulse rounded-full"
+            style={{ backgroundColor: color }}
+            aria-hidden
+          />
           Open
         </span>
       ) : (

@@ -52,6 +52,8 @@ export interface SessionState {
   label: string;
   open: boolean;
   localTime: string;
+  /** Live HH:MM:SS in the session's own zone — ticks each second for a "live" feel. */
+  localClock: string;
   statusLabel: string;
   countdownMin: number;
   startUtcMin: number;
@@ -85,6 +87,16 @@ function localTimeString(zone: string, at: Date): string {
   }).format(at);
 }
 
+function localClockString(zone: string, at: Date): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: zone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(at);
+}
+
 export function sessionStates(nowUtc: Date): {
   sessions: SessionState[];
   overlaps: Array<{ ids: [string, string]; active: boolean }>;
@@ -108,6 +120,7 @@ export function sessionStates(nowUtc: Date): {
       label: session.label,
       open,
       localTime: localTimeString(session.zone, nowUtc),
+      localClock: localClockString(session.zone, nowUtc),
       statusLabel,
       countdownMin,
       startUtcMin,

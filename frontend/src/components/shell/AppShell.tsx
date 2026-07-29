@@ -24,18 +24,22 @@ function readStoredCollapsed(): boolean {
  */
 export function AppShell() {
   const { snapshot, connectionStatus } = useController();
-  const [collapsed, setCollapsed] = useState<boolean>(readStoredCollapsed);
+  // The user's explicit desktop preference (persisted) is kept SEPARATE from the
+  // responsive override, so tablet-forced collapse never clobbers the saved pref.
+  const [userCollapsed, setUserCollapsed] = useState<boolean>(readStoredCollapsed);
+  const [narrow, setNarrow] = useState<boolean>(false);
+  const collapsed = narrow || userCollapsed;
   const [paletteOpen, setPaletteOpen] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
   const location = useLocation();
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, userCollapsed ? "1" : "0");
     } catch {
       // ignore — persistence is best-effort
     }
-  }, [collapsed]);
+  }, [userCollapsed]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -52,13 +56,13 @@ export function AppShell() {
     mainRef.current?.focus();
   }, [location.pathname]);
 
-  // Responsive (design system §6.3): tablet (<1280px) forces the sidebar to the
-  // icon rail; desktop restores the user's stored preference. Phone hides the
-  // sidebar entirely (CSS) and shows <BottomTabs/>.
+  // Responsive (design system §6.3): tablet (<1280px) forces the icon rail via a
+  // separate `narrow` flag; the persisted user preference is left untouched. Phone
+  // hides the sidebar entirely (CSS) and shows <BottomTabs/>.
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const tablet = window.matchMedia("(max-width: 1279px)");
-    const apply = () => setCollapsed(tablet.matches ? true : readStoredCollapsed());
+    const apply = () => setNarrow(tablet.matches);
     apply();
     tablet.addEventListener("change", apply);
     return () => tablet.removeEventListener("change", apply);
@@ -70,7 +74,7 @@ export function AppShell() {
     <div className="flex h-dvh bg-background text-foreground">
       {/* Sidebar: hidden on phone (BottomTabs takes over there) */}
       <div className="hidden md:flex">
-        <Sidebar collapsed={collapsed} onToggleCollapse={() => setCollapsed((v) => !v)} />
+        <Sidebar collapsed={collapsed} onToggleCollapse={() => setUserCollapsed((v) => !v)} />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <StatusBar

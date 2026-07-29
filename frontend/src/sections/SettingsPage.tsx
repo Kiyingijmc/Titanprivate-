@@ -14,7 +14,7 @@ import { useReadOnly } from "@/context/ReadOnlyContext";
  */
 export default function SettingsPage() {
   const { api } = useController();
-  const { readOnly } = useReadOnly();
+  const { readOnly, setReadOnly } = useReadOnly();
   const [search, setSearch] = useState("");
 
   return (
@@ -26,7 +26,7 @@ export default function SettingsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <SettingsTab api={api} readOnly={readOnly} filter={search} groupByDomain />
+        <SettingsTab api={api} readOnly={readOnly} filter={search} groupByDomain onReadOnly={() => setReadOnly(true)} />
       </div>
     </Panel>
   );

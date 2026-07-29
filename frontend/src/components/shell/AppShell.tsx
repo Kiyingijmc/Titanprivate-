@@ -47,6 +47,7 @@ export function AppShell() {
   const collapsed = narrow || userCollapsed;
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<{ command: string; label: string } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const location = useLocation();
 
@@ -85,10 +86,18 @@ export function AppShell() {
     return () => tablet.removeEventListener("change", apply);
   }, []);
 
+  // Route every ⌘K command through run (403 → read-only flip) AND surface any
+  // other failure (network / 5xx / 429) as a visible alert — a command that
+  // silently fails, especially a destructive one, must never look like success.
+  async function surfaceRun(fn: () => Promise<unknown>) {
+    const r = await run(fn);
+    setActionError(r.ok || r.error === "read-only" ? null : r.error);
+  }
+
   const actions = buildCommandActions({
     paused: snapshot?.health.paused ?? false,
     readOnly,
-    run,
+    run: surfaceRun,
     api,
     requestConfirm: setPendingConfirm,
   });
@@ -97,7 +106,7 @@ export function AppShell() {
     const pending = pendingConfirm;
     setPendingConfirm(null);
     if (!pending) return;
-    run(() => api.postCommand({ command: pending.command, confirm: true }));
+    void surfaceRun(() => api.postCommand({ command: pending.command, confirm: true }));
   }
 
   return (
@@ -123,6 +132,25 @@ export function AppShell() {
       {/* Phone glance nav */}
       <BottomTabs className="md:hidden" />
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} actions={actions} />
+
+      {/* Command-failure toast — a ⌘K action that fails (network/5xx/429) never
+          looks like success. Read-only failures route to the read-only state instead. */}
+      {actionError && (
+        <div
+          role="alert"
+          className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border border-loss/40 bg-elevated px-4 py-2 text-sm text-loss shadow-2"
+        >
+          <span>Command failed: {actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Shared confirm-gate for destructive palette actions (closeall/panic) — mirrors
           the Controls confirm dialog; there is no unconfirmed path from the palette. */}

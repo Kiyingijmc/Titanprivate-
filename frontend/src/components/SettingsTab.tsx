@@ -94,11 +94,13 @@ export function SettingsTab({
   readOnly,
   filter = "",
   groupByDomain = false,
+  onReadOnly,
 }: {
   api: Api;
   readOnly: boolean;
   filter?: string;
   groupByDomain?: boolean;
+  onReadOnly?: () => void;
 }) {
   const [rows, setRows] = useState<SettingRow[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -132,6 +134,7 @@ export function SettingsTab({
         : "Applied";
       setMessages((m) => ({ ...m, [row.key]: msg }));
     } catch (e) {
+      if (isApiError(e) && e.kind === "readOnly") onReadOnly?.();
       const detail = isApiError(e) ? e.detail : "Save failed";
       setErrors((er) => ({ ...er, [row.key]: detail }));
     }

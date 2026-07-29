@@ -1,0 +1,35 @@
+/* Titan design tokens — ROLE-based, filled from the Titan brand board
+   (docs/branding/brand-board, Claude Design handoff 2026-07-15): violet accent,
+   Instrument Sans + JetBrains Mono, "Bracket" mark. Values are the brand hexes
+   converted to HSL (hex noted per line). */
+:root {
+  /* surfaces */
+  --bg: 225 20% 8%;            /* #101218 */
+  --surface-1: 223 19% 15%;    /* #1E222C — cards/panels */
+  --surface-2: 222 16% 21%;    /* #2C313D — muted rows / inputs / table header */
+  --elevated: 220 17% 24%;     /* #333A48 — popovers / command palette / dialogs */
+  /* lines + text */
+  --border: 222 16% 21%;       /* #2C313D */
+  --border-strong: 221 16% 27%;/* #3A4150 */
+  --text-primary: 223 24% 94%; /* #EDEFF4 */
+  --text-secondary: 221 13% 67%;/* #A0A7B6 */
+  --text-muted: 222 10% 44%;   /* #656C7C */
+  /* signature accent (brand: violet) + states */
+  --accent: 252 83% 65%;       /* #7A5CF0 */
+  --accent-hover: 251 100% 76%;/* #9C86FF (accent-bright) */
+  --accent-active: 251 58% 54%;/* #5F45CE (accent-press) */
+  --accent-subtle: 248 37% 12%;/* #17142B (accent-wash) */
+  --focus-ring: 252 83% 65%;   /* #7A5CF0 */
+  --on-accent: 0 0% 100%;
+  /* reserved semantic — the signature accent is NEVER used for P&L */
+  --profit: 153 60% 53%;       /* #3FCF8E */
+  --loss: 358 84% 64%;         /* #F0565B */
+  --warning: 36 79% 57%;       /* #E8A33D */
+  --info: 212 77% 60%;         /* #4A93E8 */
+  --blocked: 251 100% 76%;     /* #9C86FF — distinct from accent via brightness; Plan 2 may refine */
+  /* radius / elevation / motion */
+  --radius-lg: 10px; --radius-md: 8px; --radius-sm: 6px;
+  --shadow-1: 0 1px 2px 0 hsl(225 20% 3% / 0.5);
+  --shadow-2: 0 10px 30px -8px hsl(225 20% 2% / 0.6);
+  --motion-fast: 150ms; --motion-base: 220ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+}

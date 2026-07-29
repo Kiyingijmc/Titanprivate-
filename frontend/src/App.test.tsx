@@ -1,7 +1,16 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Snapshot } from "@/lib/types";
+
+// The shell renders two nav landmarks (sidebar "Sections" + phone "Primary"/BottomTabs);
+// scope link queries to the sidebar so the responsive duplication isn't ambiguous.
+const sidebar = () => within(screen.getByRole("navigation", { name: "Sections" }));
+
+// jsdom has no scrollIntoView; cmdk (used by CommandPalette) calls it on selection-change.
+if (typeof Element.prototype.scrollIntoView !== "function") {
+  Element.prototype.scrollIntoView = () => {};
+}
 
 const seededSnapshot: Snapshot = {
   health: { bridge_connected: true, last_heartbeat_age_s: 3, paused: false, last_error: null },
@@ -28,20 +37,56 @@ const seededSnapshot: Snapshot = {
 };
 
 vi.mock("@/lib/useLiveState", () => ({
-  useLiveState: () => ({ snapshot: seededSnapshot, events: [], connected: true }),
+  useLiveState: () => ({
+    snapshot: seededSnapshot,
+    events: [],
+    connected: true,
+    connectionStatus: { status: "live", stale: false },
+  }),
 }));
 
 import App from "./App";
 
+async function connect() {
+  render(<App />);
+  await userEvent.type(screen.getByLabelText(/token/i), "devtoken");
+  await userEvent.click(screen.getByRole("button", { name: /connect/i }));
+}
+
 describe("App", () => {
-  it("gates on token, then renders the cockpit with a seeded position and health", async () => {
-    render(<App />);
+  it("gates on token, then renders the navigable shell with the real Overview page", async () => {
+    await connect();
 
-    await userEvent.type(screen.getByLabelText(/token/i), "devtoken");
-    await userEvent.click(screen.getByRole("button", { name: /connect/i }));
+    // Sidebar section links present.
+    expect(await screen.findByRole("navigation", { name: "Sections" })).toBeInTheDocument();
+    expect(sidebar().getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(sidebar().getByRole("link", { name: "Positions" })).toBeInTheDocument();
 
-    expect(await screen.findByText("EURUSD")).toBeInTheDocument();
-    expect(await screen.findByRole("status", { name: /system health/i })).toBeInTheDocument();
-    expect(screen.getByText(/connected/i)).toBeInTheDocument();
+    // Status bar shows the Live connection pill.
+    expect(screen.getByText(/live/i)).toBeInTheDocument();
+
+    // Default route (/overview) renders the real Overview page (Plan 2 Task 2): KPI tiles + top-positions panel.
+    expect(await screen.findByText("Top Positions")).toBeInTheDocument();
+    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1");
+  });
+
+  it("navigates to the real Positions page when the Positions nav link is clicked", async () => {
+    await connect();
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    await userEvent.click(sidebar().getByRole("link", { name: "Positions" }));
+
+    // The real Positions page (Plan 2 Task 3) renders its filter bar (symbol filter),
+    // not the old stub text.
+    expect(await screen.findByLabelText(/symbol/i)).toBeInTheDocument();
+  });
+
+  it("opens the command palette on Ctrl/Cmd+K", async () => {
+    await connect();
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+
+    expect(await screen.findByRole("dialog", { name: /command palette/i })).toBeInTheDocument();
   });
 });

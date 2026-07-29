@@ -5,6 +5,16 @@ from datetime import datetime
 _HEARTBEAT_STALE_S = 60.0
 _REGISTRY_FIELDS = ("id", "version", "status", "state", "tf", "priority")
 
+# Tracked USD pairs used by the "computed" dollar-bias fallback (owner DXY policy:
+# broker index symbol if available, else compute from these, else "unavailable").
+# USD is the BASE currency in the first three (USDxxx); a +delta_pct there means
+# USD strengthened. USD is the QUOTE currency in the last three (xxxUSD); a
+# +delta_pct there means the foreign currency strengthened i.e. USD weakened, so
+# its contribution is inverted (-delta_pct).
+_USD_BASE_PAIRS = ("USDJPY", "USDCAD", "USDCHF")
+_USD_QUOTE_PAIRS = ("EURUSD", "GBPUSD", "AUDUSD", "NZDUSD")
+_DOLLAR_BIAS_SCALE = 40.0  # scales avg %-change contribution into the [-100,100] band
+
 
 def build_snapshot(controller) -> dict:
     age = (datetime.now() - controller.last_heartbeat_time).total_seconds()
@@ -28,7 +38,63 @@ def build_snapshot(controller) -> dict:
                          "current_mult": float(rm.throttle_factor())},
         },
         "registry": [{k: r.get(k) for k in _REGISTRY_FIELDS} for r in controller.registry.report()],
+        "dollar": _dollar_block(controller),
     }
+
+
+def _dollar_block(controller) -> dict:
+    """Best-effort USD-strength snapshot. Defensive by design: the live
+    controller may not expose any price data yet — this must NEVER crash the
+    snapshot. Sourcing order (owner DXY policy): broker index symbol if the
+    controller provides one, else computed from tracked USD pairs, else
+    "unavailable"."""
+    try:
+        index_fn = getattr(controller, "dollar_index", None)
+        if callable(index_fn):
+            data = index_fn()
+            if isinstance(data, dict) and data:
+                return {
+                    "source": "index",
+                    "value": data.get("value"),
+                    "bias": float(data.get("bias", 0.0) or 0.0),
+                    "trend": list(data.get("trend", []) or []),
+                    "contributors": list(data.get("contributors", []) or []),
+                }
+    except Exception:
+        pass
+
+    try:
+        prices = getattr(controller, "market_prices", None)
+        if isinstance(prices, dict) and prices:
+            contributions = []
+            for symbol in _USD_BASE_PAIRS:
+                row = prices.get(symbol)
+                if not isinstance(row, dict) or "delta_pct" not in row:
+                    continue
+                contributions.append({"symbol": symbol, "contribution": float(row["delta_pct"])})
+            for symbol in _USD_QUOTE_PAIRS:
+                row = prices.get(symbol)
+                if not isinstance(row, dict) or "delta_pct" not in row:
+                    continue
+                contributions.append({"symbol": symbol, "contribution": -float(row["delta_pct"])})
+            if contributions:
+                avg = sum(c["contribution"] for c in contributions) / len(contributions)
+                bias = max(-100.0, min(100.0, avg * _DOLLAR_BIAS_SCALE))
+                # Optional rolling history the controller may maintain itself
+                # (e.g. the demo server) so the widget's sparkline has motion;
+                # absent on the live controller today, so this defaults to [].
+                trend = list(getattr(controller, "dollar_trend", []) or [])
+                return {
+                    "source": "computed",
+                    "value": None,
+                    "bias": round(bias, 2),
+                    "trend": trend,
+                    "contributors": contributions,
+                }
+    except Exception:
+        pass
+
+    return {"source": "unavailable", "value": None, "bias": 0.0, "trend": [], "contributors": []}
 
 
 def _map_position(controller, p: dict) -> dict:

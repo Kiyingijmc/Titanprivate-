@@ -37,6 +37,18 @@ class _FakeStateManager:
         return None
 
 
+# Plausible static USD-pair mids/deltas so build_snapshot's dollar block resolves
+# to a full "computed" reading (mild USD-strong bias) instead of "unavailable".
+_MARKET_PRICES = {
+    "EURUSD": {"mid": 1.08550, "delta_pct": -0.18},
+    "GBPUSD": {"mid": 1.26500, "delta_pct": -0.09},
+    "USDJPY": {"mid": 157.20, "delta_pct": 0.22},
+    "AUDUSD": {"mid": 0.66500, "delta_pct": -0.12},
+    "USDCAD": {"mid": 1.36500, "delta_pct": 0.14},
+    "USDCHF": {"mid": 0.88500, "delta_pct": 0.08},
+}
+
+
 class FakeController:
     """In-memory stand-in for SystemController, for offline GUI dev/demo."""
 
@@ -50,6 +62,7 @@ class FakeController:
         self.config = {"risk": {"drawdown_throttle": {"enabled": False}}}
         self.current_open_positions = []
         self.state_manager = _FakeStateManager()
+        self.market_prices = {k: dict(v) for k, v in _MARKET_PRICES.items()}
         self.applied = []
         self.published = []
 

@@ -6,26 +6,50 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
-        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        // surfaces
+        background: "hsl(var(--bg))",
+        surface: { 1: "hsl(var(--surface-1))", 2: "hsl(var(--surface-2))" },
+        elevated: "hsl(var(--elevated))",
+        // lines + text
         border: "hsl(var(--border))",
-        input: "hsl(var(--input))",
-        ring: "hsl(var(--ring))",
-        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        "border-strong": "hsl(var(--border-strong))",
+        foreground: "hsl(var(--text-primary))",
+        "secondary-foreground": "hsl(var(--text-secondary))",
+        "muted-foreground": "hsl(var(--text-muted))",
+        // accent + states
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          hover: "hsl(var(--accent-hover))",
+          active: "hsl(var(--accent-active))",
+          subtle: "hsl(var(--accent-subtle))",
+          foreground: "hsl(var(--on-accent))",
+        },
+        ring: "hsl(var(--focus-ring))",
         // semantic (design-system §2) — always paired with an icon+label in UI
         profit: "hsl(var(--profit))",
         loss: "hsl(var(--loss))",
         warning: "hsl(var(--warning))",
         info: "hsl(var(--info))",
         blocked: "hsl(var(--blocked))",
-        destructive: { DEFAULT: "hsl(var(--loss))", foreground: "#ffffff" },
+        destructive: { DEFAULT: "hsl(var(--loss))", foreground: "hsl(var(--on-accent))" },
+        // back-compat aliases — existing components still reference these v1 names
+        card: { DEFAULT: "hsl(var(--surface-1))", foreground: "hsl(var(--text-primary))" },
+        muted: { DEFAULT: "hsl(var(--surface-2))", foreground: "hsl(var(--text-muted))" },
+        input: "hsl(var(--border))",
+        primary: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--on-accent))" },
       },
-      borderRadius: { lg: "8px", md: "6px", sm: "4px" },
+      borderRadius: {
+        lg: "var(--radius-lg)",
+        md: "var(--radius-md)",
+        sm: "var(--radius-sm)",
+      },
       fontFamily: {
-        sans: ["'Fira Sans'", "system-ui", "sans-serif"],
-        mono: ["'Fira Code'", "ui-monospace", "monospace"],
+        sans: ["'Instrument Sans'", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["'JetBrains Mono'", "ui-monospace", "monospace"],
+      },
+      boxShadow: {
+        1: "var(--shadow-1)",
+        2: "var(--shadow-2)",
       },
     },
   },

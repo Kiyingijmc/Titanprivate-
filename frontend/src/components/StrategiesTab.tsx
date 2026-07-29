@@ -68,7 +68,7 @@ function PromoteDialog({
   api: Api;
   readOnly: boolean;
   onDone: () => void;
-  onError: (detail: string) => void;
+  onError: (e: unknown) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
@@ -86,7 +86,7 @@ function PromoteDialog({
       onOpenChange(false);
       onDone();
     } catch (e) {
-      onError(isApiError(e) ? `promote ${row.id}: ${e.detail}` : `promote ${row.id} failed`);
+      onError(e);
     }
   }
 
@@ -133,7 +133,15 @@ function PromoteDialog({
  * dialog. Research rows get a warning left border. All mutations are
  * disabled in read-only mode.
  */
-export function StrategiesTab({ api, readOnly }: { api: Api; readOnly: boolean }) {
+export function StrategiesTab({
+  api,
+  readOnly,
+  onReadOnly,
+}: {
+  api: Api;
+  readOnly: boolean;
+  onReadOnly?: () => void;
+}) {
   const [rows, setRows] = useState<RegistryRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -158,13 +166,18 @@ export function StrategiesTab({ api, readOnly }: { api: Api; readOnly: boolean }
     };
   }, [api]);
 
+  function handleError(prefix: string, e: unknown) {
+    if (isApiError(e) && e.kind === "readOnly") onReadOnly?.();
+    setError(isApiError(e) ? `${prefix}: ${e.detail}` : `${prefix} failed`);
+  }
+
   async function act(id: string, action: "enable" | "disable") {
     setError(null);
     try {
       await api.registryAction(id, action);
       reload();
     } catch (e) {
-      setError(isApiError(e) ? `${action} ${id}: ${e.detail}` : `${action} ${id} failed`);
+      handleError(`${action} ${id}`, e);
     }
   }
 
@@ -224,7 +237,7 @@ export function StrategiesTab({ api, readOnly }: { api: Api; readOnly: boolean }
                     api={api}
                     readOnly={readOnly}
                     onDone={reload}
-                    onError={setError}
+                    onError={(e) => handleError(`promote ${row.id}`, e)}
                   />
                 </div>
               </TableCell>

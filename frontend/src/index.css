@@ -1,38 +1,17 @@
-/* Self-host Fira fonts (woff2 placed in src/assets/fonts/; @font-face them — NO CDN).
-   If woff2 files are not yet vendored, this @font-face is inert and the stack falls
-   back to system-ui/monospace; Task 0 accepts that fallback (fonts vendored best-effort). */
-@font-face { font-family: "Fira Sans"; src: local("Fira Sans"); font-display: swap; }
-@font-face { font-family: "Fira Code"; src: local("Fira Code"); font-display: swap; }
+@import "./design/tokens.css";
+
+/* Brand fonts (Instrument Sans + JetBrains Mono) are self-hosted via @fontsource,
+   imported in main.tsx (Vite bundles the woff2 — CSP-safe, no CDN). */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  /* design-system §2 — dark cockpit, expressed as HSL for the hsl(var(--x)) convention */
-  --background: 222 47% 11%;        /* #0F172A */
-  --foreground: 210 40% 98%;        /* #F8FAFC */
-  --card: 222 24% 17%;              /* #222735 */
-  --card-foreground: 210 40% 98%;
-  --muted: 222 30% 21%;             /* #272F42 */
-  --muted-foreground: 215 20% 65%;  /* #94A3B8 */
-  --border: 215 25% 27%;            /* #334155 */
-  --input: 215 25% 27%;
-  --ring: 214 77% 56%;              /* #3987E5 */
-  --primary: 214 77% 56%;           /* #3987E5 */
-  --primary-foreground: 0 0% 100%;
-  --profit: 142 71% 45%;            /* #22C55E */
-  --loss: 0 84% 60%;                /* #EF4444 */
-  --warning: 38 92% 50%;            /* #F59E0B */
-  --info: 199 92% 60%;              /* #38BDF8 */
-  --blocked: 255 92% 76%;           /* #A78BFA */
-}
-
 html { color-scheme: dark; }
 body {
   margin: 0;
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
+  background: hsl(var(--bg));
+  color: hsl(var(--text-primary));
   font-family: "Fira Sans", system-ui, sans-serif;
   font-size: 16px;
   line-height: 1.5;

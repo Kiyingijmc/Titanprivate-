@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import { useLiveState } from "./useLiveState";
 
@@ -37,5 +37,26 @@ describe("useLiveState", () => {
     act(() => { for (let i = 0; i < 5; i++) FakeWS.last!.message({ type: "event", topic: "T", ts: i }); });
     await waitFor(() => expect(result.current.events.length).toBe(3));
     expect(result.current.events[0].ts).toBe(2);         // oldest dropped
+  });
+
+  it("exposes connectionStatus live after WS open + state", async () => {
+    const { result } = renderHook(() =>
+      useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, pollFallback: false }));
+    act(() => { FakeWS.last!.open(); });
+    act(() => { FakeWS.last!.message({ type: "state", health: { last_heartbeat_age_s: 3 }, positions: [] }); });
+    await waitFor(() => expect(result.current.connectionStatus.status).toBe("live"));
+    expect(result.current.connectionStatus.stale).toBe(false);
+  });
+
+  it("poll runs only while disconnected (no poll when connected)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ health: {}, positions: [] }) });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.useFakeTimers();
+    try {
+      renderHook(() => useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, base: "", pollFallback: true }));
+      act(() => { FakeWS.last!.open(); });           // connected
+      act(() => { vi.advanceTimersByTime(12000); }); // >2 poll intervals
+      expect(fetchSpy).not.toHaveBeenCalled();       // connected -> no poll (stale-closure fixed)
+    } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
 });

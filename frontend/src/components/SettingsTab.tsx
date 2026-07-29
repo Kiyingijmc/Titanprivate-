@@ -57,14 +57,51 @@ function TierBadge({ tier }: { tier: string }) {
   );
 }
 
+/** First dotted segment of a setting key — its domain (signal_grading / risk / connection / …). */
+function domainOf(key: string): string {
+  const idx = key.indexOf(".");
+  return idx === -1 ? key : key.slice(0, idx);
+}
+
+function ColumnHeader() {
+  return (
+    <TableHeader>
+      <TableRow>
+        <TableHead>Key</TableHead>
+        <TableHead>Value</TableHead>
+        <TableHead>Source</TableHead>
+        <TableHead>Tier</TableHead>
+        <TableHead className="text-right">Save</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+}
+
 /**
  * Settings table per design-system §6: source badge (default/override) +
  * tier badge (live=profit, restart=warning "restart-required"). Editing a
  * value + Save calls patchSetting; a 422 (ApiError.kind==="validation")
  * renders its detail inline under the row; success shows applied/
  * restart_required. All mutations disabled in read-only mode.
+ *
+ * Optional `filter` (substring match on key, case-insensitive) and
+ * `groupByDomain` (split rows into per-domain tables with a heading) let a
+ * page compose a searchable/grouped view without reimplementing the
+ * source/tier/patch/422 logic — SettingsPage is the current consumer.
  */
-export function SettingsTab({ api, readOnly }: { api: Api; readOnly: boolean }) {
+export function SettingsTab({
+  api,
+  readOnly,
+  filter = "",
+  groupByDomain = false,
+  onReadOnly,
+}: {
+  api: Api;
+  readOnly: boolean;
+  filter?: string;
+  groupByDomain?: boolean;
+  onReadOnly?: () => void;
+}) {
   const [rows, setRows] = useState<SettingRow[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -97,69 +134,96 @@ export function SettingsTab({ api, readOnly }: { api: Api; readOnly: boolean }) 
         : "Applied";
       setMessages((m) => ({ ...m, [row.key]: msg }));
     } catch (e) {
+      if (isApiError(e) && e.kind === "readOnly") onReadOnly?.();
       const detail = isApiError(e) ? e.detail : "Save failed";
       setErrors((er) => ({ ...er, [row.key]: detail }));
     }
   }
 
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Key</TableHead>
-          <TableHead>Value</TableHead>
-          <TableHead>Source</TableHead>
-          <TableHead>Tier</TableHead>
-          <TableHead className="text-right">Save</TableHead>
+  function renderRows(rowsToRender: SettingRow[]) {
+    return rowsToRender.map((row) => {
+      const inputId = `setting-${row.key}`;
+      return (
+        <TableRow key={row.key}>
+          <TableCell className="font-mono">
+            <label htmlFor={inputId}>{row.key}</label>
+          </TableCell>
+          <TableCell>
+            <Input
+              id={inputId}
+              value={drafts[row.key] ?? ""}
+              disabled={readOnly}
+              onChange={(e) => setDrafts((d) => ({ ...d, [row.key]: e.target.value }))}
+            />
+            {errors[row.key] && (
+              <div role="alert" className="mt-1 text-sm text-loss">
+                {errors[row.key]}
+              </div>
+            )}
+            {messages[row.key] && (
+              <div role="status" className="mt-1 text-sm text-profit">
+                {messages[row.key]}
+              </div>
+            )}
+          </TableCell>
+          <TableCell>
+            <SourceBadge source={row.source} />
+          </TableCell>
+          <TableCell>
+            <TierBadge tier={row.tier} />
+          </TableCell>
+          <TableCell className="text-right">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={readOnly}
+              onClick={() => save(row)}
+            >
+              Save
+            </Button>
+          </TableCell>
         </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => {
-          const inputId = `setting-${row.key}`;
-          return (
-            <TableRow key={row.key}>
-              <TableCell className="font-mono">
-                <label htmlFor={inputId}>{row.key}</label>
-              </TableCell>
-              <TableCell>
-                <Input
-                  id={inputId}
-                  value={drafts[row.key] ?? ""}
-                  disabled={readOnly}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [row.key]: e.target.value }))}
-                />
-                {errors[row.key] && (
-                  <div role="alert" className="mt-1 text-sm text-loss">
-                    {errors[row.key]}
-                  </div>
-                )}
-                {messages[row.key] && (
-                  <div role="status" className="mt-1 text-sm text-profit">
-                    {messages[row.key]}
-                  </div>
-                )}
-              </TableCell>
-              <TableCell>
-                <SourceBadge source={row.source} />
-              </TableCell>
-              <TableCell>
-                <TierBadge tier={row.tier} />
-              </TableCell>
-              <TableCell className="text-right">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={readOnly}
-                  onClick={() => save(row)}
-                >
-                  Save
-                </Button>
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+      );
+    });
+  }
+
+  const query = filter.trim().toLowerCase();
+  const filteredRows = query ? rows.filter((row) => row.key.toLowerCase().includes(query)) : rows;
+
+  if (!groupByDomain) {
+    return (
+      <Table>
+        <ColumnHeader />
+        <TableBody>{renderRows(filteredRows)}</TableBody>
+      </Table>
+    );
+  }
+
+  const domainOrder: string[] = [];
+  const domainGroups = new Map<string, SettingRow[]>();
+  for (const row of filteredRows) {
+    const domain = domainOf(row.key);
+    if (!domainGroups.has(domain)) {
+      domainGroups.set(domain, []);
+      domainOrder.push(domain);
+    }
+    domainGroups.get(domain)!.push(row);
+  }
+
+  return (
+    <div className="grid gap-4">
+      {domainOrder.map((domain) => (
+        <div key={domain}>
+          <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            {domain}
+          </h3>
+          <Table>
+            <ColumnHeader />
+            <TableBody>{renderRows(domainGroups.get(domain)!)}</TableBody>
+          </Table>
+        </div>
+      ))}
+    </div>
   );
 }

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Pause, Play, XCircle, Ban, OctagonAlert } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
+import { Pause, Play, XCircle, Ban, OctagonAlert, Loader2, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -15,6 +15,14 @@ import type { Api, ApiError } from "@/lib/api";
 
 type DestructiveCommand = "closeall" | "panic";
 
+const LABELS: Record<string, string> = {
+  pause: "Pause",
+  resume: "Resume",
+  cancel: "Cancel",
+  closeall: "Close All",
+  panic: "Panic",
+};
+
 function isApiError(e: unknown): e is ApiError {
   return typeof e === "object" && e !== null && "kind" in e;
 }
@@ -24,6 +32,11 @@ function isApiError(e: unknown): e is ApiError {
  * closeall/panic are destructive (loss-red, visually separated) and require an
  * explicit AlertDialog confirm before POSTing {command, confirm:true} — mirrors
  * the backend confirm-gate (src/ops/web/commands.py _DESTRUCTIVE).
+ *
+ * Every command runs through `run`, which tracks an in-flight command: the group
+ * disables while a command is pending (a ref hard-guards against double-firing a
+ * destructive command), the active button shows a spinner, and a successful send
+ * shows a brief confirmation — a control action must never be ambiguous.
  */
 export function Controls({
   api,
@@ -37,12 +50,20 @@ export function Controls({
   onResult: (result: { readOnly?: true; error?: string }) => void;
 }) {
   const [pending, setPending] = useState<DestructiveCommand | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
 
   async function run(command: string, extra: Record<string, unknown> = {}) {
+    if (inFlight.current) return; // hard guard: never double-fire (esp. destructive)
+    inFlight.current = true;
+    setBusy(command);
     setError(null);
+    setOk(null);
     try {
       await api.postCommand({ command, ...extra });
+      setOk(command);
     } catch (e) {
       // A failed command — especially a destructive one — must never look like
       // success. Read-only routes to the read-only banner; every other failure
@@ -58,6 +79,9 @@ export function Controls({
         : "Command failed — check the connection";
       setError(`${command}: ${detail}`);
       onResult({ error: detail });
+    } finally {
+      inFlight.current = false;
+      setBusy(null);
     }
   }
 
@@ -68,65 +92,45 @@ export function Controls({
     await run(command, { confirm: true });
   }
 
+  const groupDisabled = readOnly || busy !== null;
+  // Show a spinner in place of the button's icon while its command is in-flight.
+  const glyph = (command: string, icon: ReactNode) =>
+    busy === command ? <Loader2 className="animate-spin" aria-hidden /> : icon;
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-2">
         {paused ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={readOnly}
-            onClick={() => run("resume")}
-          >
-            <Play aria-hidden /> Resume
+          <Button type="button" variant="outline" size="sm" disabled={groupDisabled} onClick={() => run("resume")}>
+            {glyph("resume", <Play aria-hidden />)} Resume
           </Button>
         ) : (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={readOnly}
-            onClick={() => run("pause")}
-          >
-            <Pause aria-hidden /> Pause
+          <Button type="button" variant="outline" size="sm" disabled={groupDisabled} onClick={() => run("pause")}>
+            {glyph("pause", <Pause aria-hidden />)} Pause
           </Button>
         )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={readOnly}
-          onClick={() => run("cancel")}
-        >
-          <XCircle aria-hidden /> Cancel
+        <Button type="button" variant="outline" size="sm" disabled={groupDisabled} onClick={() => run("cancel")}>
+          {glyph("cancel", <XCircle aria-hidden />)} Cancel
         </Button>
       </div>
 
       <div className="ml-2 flex items-center gap-2 border-l border-border pl-2">
-        <Button
-          type="button"
-          variant="destructive"
-          size="sm"
-          disabled={readOnly}
-          onClick={() => setPending("closeall")}
-        >
-          <Ban aria-hidden /> Close All
+        <Button type="button" variant="destructive" size="sm" disabled={groupDisabled} onClick={() => setPending("closeall")}>
+          {glyph("closeall", <Ban aria-hidden />)} Close All
         </Button>
-        <Button
-          type="button"
-          variant="destructive"
-          size="sm"
-          disabled={readOnly}
-          onClick={() => setPending("panic")}
-        >
-          <OctagonAlert aria-hidden /> Panic
+        <Button type="button" variant="destructive" size="sm" disabled={groupDisabled} onClick={() => setPending("panic")}>
+          {glyph("panic", <OctagonAlert aria-hidden />)} Panic
         </Button>
       </div>
 
       {error && (
         <div role="alert" className="flex items-center gap-2 text-sm text-loss">
           <OctagonAlert className="size-4" aria-hidden /> {error}
+        </div>
+      )}
+      {ok && !error && (
+        <div role="status" className="flex items-center gap-2 text-sm text-profit">
+          <CheckCircle2 className="size-4" aria-hidden /> {LABELS[ok] ?? ok} sent
         </div>
       )}
 

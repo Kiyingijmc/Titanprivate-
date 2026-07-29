@@ -47,8 +47,14 @@ export function EquitySparkline({
   const up = delta >= 0;
 
   return (
-    <div data-testid="equity-sparkline" className="relative" style={{ width: "100%", height }}>
-      <div className="pointer-events-none absolute right-1 top-0 z-10 flex items-baseline gap-2">
+    <div
+      data-testid="equity-sparkline"
+      className="relative"
+      style={{ width: "100%", height }}
+      role="img"
+      aria-label={`Equity trend. Current ${money(last)}, ${up ? "up" : "down"} ${money(Math.abs(delta))} over the last ${points.length} samples.`}
+    >
+      <div className="pointer-events-none absolute right-1 top-0 z-10 flex items-baseline gap-2" aria-hidden>
         <span className="font-mono tabnum text-sm font-semibold text-foreground">{money(last)}</span>
         <span className={cn("font-mono tabnum text-xs", up ? "text-profit" : "text-loss")}>
           {up ? "+" : ""}

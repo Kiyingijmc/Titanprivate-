@@ -70,4 +70,21 @@ describe("Controls", () => {
     render(<Controls api={api()} paused={false} readOnly onResult={() => {}} />);
     screen.getAllByRole("button").forEach((b) => expect(b).toBeDisabled());
   });
+
+  it("shows a success confirmation once a command is sent", async () => {
+    render(<Controls api={api()} paused={false} readOnly={false} onResult={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: /^pause$/i }));
+    expect(await screen.findByRole("status")).toHaveTextContent(/pause sent/i);
+  });
+
+  it("disables the button group while a command is in flight (no double-fire)", async () => {
+    let resolve!: (v: unknown) => void;
+    const a = { postCommand: vi.fn().mockImplementation(() => new Promise((r) => { resolve = r; })) } as any;
+    render(<Controls api={a} paused={false} readOnly={false} onResult={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: /^pause$/i }));
+    // The pending POST hasn't resolved: the sibling command buttons are disabled.
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /panic/i })).toBeDisabled();
+    resolve({ status: "ok" });
+  });
 });

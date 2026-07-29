@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { money, signedPnl, ageLabel } from "./format";
+import { money, signedPnl, ageLabel, price, lots } from "./format";
 
 describe("format", () => {
   it("money is fixed-2 with thousands", () => {
@@ -14,5 +14,15 @@ describe("format", () => {
   it("ageLabel is human", () => {
     expect(ageLabel(2)).toBe("2s");
     expect(ageLabel(125)).toBe("2m 5s");
+  });
+  it("price trims float noise and avoids scientific notation", () => {
+    expect(price(1.1)).toBe("1.1");
+    expect(price(1.08500000001)).toBe("1.085");
+    expect(price(0.00001)).toBe("0.00001");   // not 1e-5
+    expect(price(91000.5)).toBe("91,000.5");
+  });
+  it("lots is a stable 2-decimal figure", () => {
+    expect(lots(0.1)).toBe("0.10");
+    expect(lots(1)).toBe("1.00");
   });
 });

@@ -46,6 +46,8 @@ export function DollarBias({ data, className }: { data?: DollarBiasData; classNa
   return (
     <div
       data-testid="dollar-bias"
+      role="img"
+      aria-label={`US dollar bias ${data.bias > 0 ? "+" : ""}${data.bias.toFixed(1)} of 100, ${strong ? "USD strong" : "USD weak"}, source ${data.source}.`}
       className={cn(
         "flex flex-col gap-3 rounded-lg border border-border bg-surface-1 p-4",
         className

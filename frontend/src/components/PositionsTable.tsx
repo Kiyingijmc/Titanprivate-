@@ -9,7 +9,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import type { Position } from "@/lib/types";
-import { signedPnl } from "@/lib/format";
+import { signedPnl, price, lots } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 function SideChip({ side }: { side: "BUY" | "SELL" }) {
@@ -69,10 +69,10 @@ export function PositionsTable({
               <TableCell>
                 <SideChip side={p.side} />
               </TableCell>
-              <TableCell className="text-right font-mono tabnum">{p.lots}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{p.entry}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{p.sl}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{p.tp}</TableCell>
+              <TableCell className="text-right font-mono tabnum">{lots(p.lots)}</TableCell>
+              <TableCell className="text-right font-mono tabnum">{price(p.entry)}</TableCell>
+              <TableCell className="text-right font-mono tabnum">{price(p.sl)}</TableCell>
+              <TableCell className="text-right font-mono tabnum">{price(p.tp)}</TableCell>
               <TableCell className={cn("text-right font-mono tabnum", pnlToneClass)}>
                 {pnl.text}
               </TableCell>
@@ -85,7 +85,9 @@ export function PositionsTable({
                   disabled={readOnly}
                   onClick={() => onClose(p.ticket)}
                   className={cn(
-                    "inline-flex items-center justify-center rounded-md border border-border p-1.5",
+                    // 36px hit target (up from ~28px) — closer to the 44px touch min
+                    // without forcing tall rows in a dense desktop/tablet table.
+                    "inline-flex h-9 w-9 items-center justify-center rounded-md border border-border",
                     "hover:bg-loss/15 hover:text-loss hover:border-loss/30",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     "disabled:opacity-50 disabled:pointer-events-none"

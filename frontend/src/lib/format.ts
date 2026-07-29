@@ -8,6 +8,20 @@ export function signedPnl(n: number): { text: string; tone: "profit" | "loss" | 
   return { text: `${sign}${money(n)}`, tone };
 }
 
+/**
+ * Instrument price: trims float noise and kills scientific notation (e.g. 1e-5)
+ * while preserving up to broker-scale precision. No fixed decimals — instruments
+ * vary (JPY 3, FX 5, indices 1) and the client has no per-symbol digit count.
+ */
+export function price(n: number): string {
+  return n.toLocaleString("en-US", { maximumFractionDigits: 5 });
+}
+
+/** Lot size to a stable 2 decimals so the column doesn't jitter. */
+export function lots(n: number): string {
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function ageLabel(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;

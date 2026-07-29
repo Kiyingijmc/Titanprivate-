@@ -17,7 +17,7 @@ export function AccentToggle() {
       aria-label={`Accent color: ${label} — click to switch`}
       title={`Accent: ${label} — click to switch`}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-muted-foreground",
+        "inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-muted-foreground",
         "hover:bg-surface-2 hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       )}

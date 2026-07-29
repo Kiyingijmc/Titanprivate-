@@ -519,14 +519,34 @@ class SyncGuardSeamTests(unittest.TestCase):
             [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
         self.assertEqual(c.telemetry.messages, [])  # no false "Closed externally"
 
+    def _backdate(self, c, ticket, age_s):
+        c.state_manager.conn.execute(
+            "UPDATE active_orders SET time_placed = ? WHERE ticket_id = ?",
+            (__import__("time").time() - age_s, ticket))
+        c.state_manager.conn.commit()
+
     def test_externally_deleted_pending_is_still_swept(self):
         """Ghost semantics are preserved: an order the broker no longer
-        reports (operator deleted it in MT5) is still reconciled away."""
+        reports (operator deleted it in MT5) is still reconciled away once
+        it is old enough that the heartbeat must have corroborated it."""
         c = self._controller_with_real_db()
+        self._backdate(c, 111, 300)  # well past the registration grace window
         c.current_pending_orders = []
         _run(c._perform_reconciliation())
         self.assertEqual(c.state_manager.get_pending_orders(), [])
         self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+
+    def test_fresh_row_survives_a_recon_tick_before_its_first_heartbeat(self):
+        """RS013 round 3 MAJOR: a row registered by EXECUTION:OPENED is
+        uncorroborated until the NEXT heartbeat (<=5 s away). A 60 s recon
+        tick landing in that window must not sweep the whole bar's batch —
+        nothing can re-register a swept PENDING row."""
+        c = self._controller_with_real_db()  # time_placed = now
+        c.current_pending_orders = []        # heartbeat snapshot predates the order
+        _run(c._perform_reconciliation())
+        self.assertEqual(
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
+        self.assertEqual(c.telemetry.messages, [])
 
     def test_filled_position_still_corroborates_its_row(self):
         """A limit that filled moves from `orders` to `pos` under the same
@@ -536,6 +556,19 @@ class SyncGuardSeamTests(unittest.TestCase):
         c.current_pending_orders = []
         _run(c._perform_reconciliation())
         self.assertTrue(c.state_manager.exists(111))
+
+    def test_stop_entry_registers_pending_not_active(self):
+        """RS013 round 3 MINOR: a resting STOP entry is committed risk exactly
+        like a LIMIT — registering it ACTIVE hid it from the aggregate's
+        resting source, the Sync Guard corroboration, and the TTL cleanup."""
+        c = self._controller_with_real_db()
+        c.pending_signal_meta["XAUUSD"] = {
+            "strat": "SilverBullet", "cmd": "STOP", "entry": 2000.0,
+            "sl": 1995.0, "tp": 2010.0, "lots": 1.0, "grade": "A"}
+        _run(c._process_incoming_data({
+            "type": "EXECUTION", "status": "OPENED", "ticket": 333,
+            "s": "XAUUSD", "cmd": "STOP"}))
+        self.assertEqual(c.state_manager.get_order(333)["status"], "PENDING")
 
     def test_cap_still_binds_on_the_bar_after_placement(self):
         """RS013's repro in miniature: $99 resting + ~$99 proposed = 1.98% vs a

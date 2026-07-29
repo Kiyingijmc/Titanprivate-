@@ -625,7 +625,10 @@ class SystemController:
                 # real entry/SL/TP/lots/grade (the EA's OPENED carries no prices).
                 meta = self.pending_signal_meta.pop(sym, None)
                 if meta:
-                    reg_status = "PENDING" if meta['cmd'] == "LIMIT" else "ACTIVE"
+                    # STOP entries rest just like LIMITs: registering them
+                    # ACTIVE hid them from the aggregate's resting source, the
+                    # Sync Guard corroboration and the TTL cleanup (RS013 r3).
+                    reg_status = "PENDING" if meta['cmd'] in ("LIMIT", "STOP") else "ACTIVE"
                     self.state_manager.register_order(
                         ticket, sym, meta['strat'], meta['cmd'], status=reg_status,
                         entry=meta['entry'], tp=meta['tp'], sl=meta['sl'],

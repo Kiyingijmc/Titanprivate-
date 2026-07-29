@@ -166,16 +166,26 @@ class StateManager:
         except Exception as e:
             print(f"[DB ERROR] Backfill: {e}")
 
-    def reconcile_state(self, mt5_tickets):
+    def reconcile_state(self, mt5_tickets, grace_s=120.0):
         """
         Identifies tickets present in DB but missing in MT5 (Closed Externally).
+
+        Rows younger than grace_s are exempt: a row registered by
+        EXECUTION:OPENED is uncorroborated until the NEXT heartbeat (the EA
+        heartbeats every 5s), so a recon tick landing inside that window would
+        falsely sweep it — and nothing can re-register a swept PENDING row,
+        because the heartbeat's `orders` entries carry no SL (RS013 round 3).
+        The cost is bounded: an externally-deleted order is detected at most
+        grace_s late.
         """
         ghost_tickets = []
         try:
-            rows = self.conn.execute("SELECT ticket_id FROM active_orders").fetchall()
+            cutoff = time.time() - grace_s
+            rows = self.conn.execute(
+                "SELECT ticket_id, time_placed FROM active_orders").fetchall()
             for r in rows:
                 tid = r['ticket_id']
-                if tid not in mt5_tickets:
+                if tid not in mt5_tickets and (r['time_placed'] or 0) < cutoff:
                     ghost_tickets.append(tid)
         except Exception as e:
             print(f"[DB ERROR] Reconcile: {e}")

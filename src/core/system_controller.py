@@ -243,6 +243,26 @@ class SystemController:
             self.logger.log_event("ERROR", "TAPE", f"warmup snapshot failed: {e}")
             return
 
+    def _start_gui(self):
+        """Optional embedded control API (port TITAN_GUI_PORT, default 8770);
+        must never block trading. web_server.start() binds its own socket
+        synchronously and raises a plain exception on a bind failure (e.g. the
+        port already held by a stray process), which this except catches so
+        boot continues with the GUI simply absent."""
+        try:
+            from src.ops.web.bus_bridge import BusBridge
+            from src.ops.web.settings import SettingsStore
+            from src.ops.web import server as web_server
+            self.gui_bridge = BusBridge()
+            self.bus.subscribe_all(self.gui_bridge.handle, name="gui")
+            self._settings_store = SettingsStore(
+                self.config, self.root_dir / "config" / "overrides.yaml")
+            self._web_task = web_server.start(self, self._settings_store, self.gui_bridge)
+            self.logger.log_event("INFO", "GUI", "Control API on :8770")
+        except Exception as e:
+            self.logger.log_event("WARN", "GUI", f"Control API failed to start: {e}")
+            self._web_task = None
+
     async def run(self):
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] TITAN V14.3 PRO (INSTITUTIONAL) IGNITION...")
         
@@ -283,19 +303,7 @@ class SystemController:
                 self.logger.log_event("ERROR", "HEALTH", f"probe start failed: {e}")
 
         # --- Embedded control API (optional; must never block trading) ---
-        try:
-            from src.ops.web.bus_bridge import BusBridge
-            from src.ops.web.settings import SettingsStore
-            from src.ops.web import server as web_server
-            self.gui_bridge = BusBridge()
-            self.bus.subscribe_all(self.gui_bridge.handle, name="gui")
-            self._settings_store = SettingsStore(
-                self.config, self.root_dir / "config" / "overrides.yaml")
-            self._web_task = web_server.start(self, self._settings_store, self.gui_bridge)
-            self.logger.log_event("INFO", "GUI", "Control API on :8770")
-        except Exception as e:
-            self.logger.log_event("WARN", "GUI", f"Control API failed to start: {e}")
-            self._web_task = None
+        self._start_gui()
 
         await self.telemetry.send_message(
             f"🚀 **Titan V14.4 Pro Online**\n"

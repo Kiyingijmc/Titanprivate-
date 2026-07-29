@@ -1,12 +1,15 @@
 import unittest
+import asyncio
 import os
 import json
+import socket
 import tempfile
 from pathlib import Path
 from datetime import datetime
 from fastapi.testclient import TestClient
 from src.core.events import GuiActionExecuted
 from src.ops.web import auth
+from src.ops.web import server as web_server
 from src.ops.web.server import create_app
 from src.ops.web.settings import SettingsStore
 from src.ops.web.bus_bridge import BusBridge
@@ -189,6 +192,131 @@ class TestWebSocketAuth(unittest.TestCase):
                 ws.send_text("wrong")
                 with self.assertRaises(Exception):   # closed by server
                     ws.receive_json()
+
+
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class TestStartBindFailure(unittest.TestCase):
+    """uvicorn's Config.bind_socket() calls sys.exit(1) on a port-in-use
+    OSError; SystemExit raised inside the fire-and-forget serve() task
+    bypasses normal Task exception handling and crashes the event loop.
+    start() must bind synchronously and let a plain OSError propagate
+    instead, so the caller's `except Exception` (system_controller.py) can
+    catch it."""
+
+    def test_bind_failure_raises_plain_exception_not_systemexit(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["TITAN_GUI_TOKEN"] = "sekret"
+            ctrl = FakeController()
+            store = SettingsStore(DEFAULTS, Path(d) / "overrides.yaml")
+            bridge = BusBridge()
+
+            occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            os.environ["TITAN_GUI_PORT"] = str(port)
+
+            caught = None
+            try:
+                async def _call():
+                    return web_server.start(ctrl, store, bridge)
+                asyncio.run(_call())
+            except BaseException as exc:  # noqa: BLE001 - deliberately broad
+                caught = exc
+            finally:
+                occupied.close()
+                os.environ.pop("TITAN_GUI_PORT", None)
+
+            self.assertIsNotNone(caught, "start() must raise on a bind failure")
+            self.assertNotIsInstance(caught, SystemExit)
+            self.assertIsInstance(caught, OSError)
+
+
+class TestGuiPortEnv(unittest.TestCase):
+    def test_titan_gui_port_env_changes_bound_port(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["TITAN_GUI_TOKEN"] = "sekret"
+            ctrl = FakeController()
+            store = SettingsStore(DEFAULTS, Path(d) / "overrides.yaml")
+            bridge = BusBridge()
+            port = _free_port()
+            os.environ["TITAN_GUI_PORT"] = str(port)
+
+            async def _run():
+                task = web_server.start(ctrl, store, bridge)
+                try:
+                    probe = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+                    probe.close()
+                finally:
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+
+            try:
+                asyncio.run(_run())
+            finally:
+                os.environ.pop("TITAN_GUI_PORT", None)
+
+
+class TestControllerGuiBootSeam(unittest.TestCase):
+    """Not just start() in isolation: the controller's boot path must
+    survive a bind failure that arrives as a SystemExit-shaped-but-actually-
+    plain-OSError from a route the pre-existing `except Exception` at the
+    call site could not previously see (it only saw whatever start()
+    happened to raise synchronously, and the old start() never raised
+    synchronously at all)."""
+
+    def test_bind_failure_logs_warn_clears_web_task_and_boot_continues(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["TITAN_GUI_TOKEN"] = "sekret"
+
+            occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("127.0.0.1", 0))
+            occupied.listen()
+            port = occupied.getsockname()[1]
+            os.environ["TITAN_GUI_PORT"] = str(port)
+
+            from src.core.system_controller import SystemController
+            from src.core.bus import EventBus
+
+            events = []
+
+            class FakeLogger:
+                def log_event(self, level, tag, msg, payload=None):
+                    events.append((level, tag, msg))
+
+            ctrl = object.__new__(SystemController)
+            ctrl.root_dir = Path(d)
+            ctrl.config = {}
+            ctrl.logger = FakeLogger()
+            ctrl.bus = EventBus(logger=ctrl.logger)
+
+            try:
+                async def _boot():
+                    ctrl._start_gui()
+                    return "boot continued past the GUI block"
+
+                result = asyncio.run(_boot())
+            finally:
+                occupied.close()
+                os.environ.pop("TITAN_GUI_PORT", None)
+
+            self.assertEqual(result, "boot continued past the GUI block")
+            self.assertIsNone(ctrl._web_task)
+            self.assertTrue(
+                any(level == "WARN" and tag == "GUI" for level, tag, _ in events),
+                f"expected a WARN/GUI log entry, got {events}")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import socket
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -126,12 +127,34 @@ def create_app(controller, settings_store, bridge, dist_dir: Path | None = None)
     return app
 
 
+def _bind_socket(host: str, port: int) -> socket.socket:
+    """Bind+listen synchronously so a port-in-use OSError raises here — a
+    plain, catchable exception — instead of only surfacing later as an
+    uncaught SystemExit from uvicorn's own Config.bind_socket(), which calls
+    sys.exit(1) on OSError. SystemExit raised inside an asyncio.Task bypasses
+    normal Task exception handling and crashes the event loop, so it must
+    never be allowed to originate inside the fire-and-forget serve() task."""
+    family = socket.AF_INET6 if host and ":" in host else socket.AF_INET
+    sock = socket.socket(family=family)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+        sock.listen()
+    except OSError:
+        sock.close()
+        raise
+    sock.set_inheritable(True)
+    return sock
+
+
 def start(controller, settings_store, bridge) -> "asyncio.Task":
     """uvicorn Server on the controller's loop; returns the serve() task."""
     import uvicorn  # local import keeps unit-test imports light
 
     app = create_app(controller, settings_store, bridge)
     host = os.environ.get("TITAN_GUI_BIND", "127.0.0.1")
-    config = uvicorn.Config(app, host=host, port=8770, log_level="warning", lifespan="off")
+    port = int(os.environ.get("TITAN_GUI_PORT", "8770"))
+    sock = _bind_socket(host, port)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="off")
     server = uvicorn.Server(config)
-    return asyncio.create_task(server.serve())
+    return asyncio.create_task(server.serve(sockets=[sock]))

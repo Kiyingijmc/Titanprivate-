@@ -371,7 +371,16 @@ class SystemController:
             await asyncio.sleep(2.0)
 
     async def _perform_reconciliation(self):
+        # Corroborate DB rows against EVERYTHING the broker reports: filled
+        # positions (`pos`) AND resting pending orders (`orders`). A resting
+        # LIMIT never appears in `pos`, so sweeping against positions alone
+        # deleted every PENDING row within one 60s tick of registration —
+        # silently emptying the $ cap's resting-risk source, keeping
+        # _cleanup_ghost_orders' TTL from ever firing, and sending a false
+        # "Closed externally" Telegram for every limit Titan placed (RS013).
         mt5_tickets = [int(p['t']) for p in self.current_open_positions if 't' in p]
+        mt5_tickets += [int(o['t']) for o in
+                        (getattr(self, 'current_pending_orders', None) or []) if 't' in o]
         ghosts = self.state_manager.reconcile_state(mt5_tickets)
         for tid in ghosts:
             self.state_manager.archive_trade(tid, 0.0)
@@ -486,22 +495,20 @@ class SystemController:
                 del reserved[sym]
         return sum(r for r, _ in reserved.values())
 
-    def _release_reserved_risk(self):
-        """Drop reservations for symbols the broker now reports.
+    def _release_reserved_risk(self, symbol):
+        """Drop SYMBOL's reservation once its own EXECUTION:OPENED registers
+        the DB row — from that moment the aggregate counts the real record and
+        keeping the reservation would double-count it.
 
-        From that point the real position (or its DB PENDING row) carries the
-        risk, so keeping the reservation would double-count it.
+        Deliberately NOT keyed on heartbeat visibility: a symbol that already
+        has an older row resting becomes 'visible' on the next heartbeat, which
+        would discard a newer order's reservation before its own OPENED landed
+        (RS013 MINOR). An order whose OPENED never arrives is expired by the
+        RESERVED_RISK_TTL_S sweep in _reserved_risk_total instead.
         """
         reserved = getattr(self, '_reserved_risk', None)
-        if not reserved:
-            return
-        visible = {p.get('s', '') for p in (self.current_open_positions or [])}
-        sm = getattr(self, 'state_manager', None)
-        if sm is not None:
-            visible |= {r.get('symbol', '') for r in sm.get_pending_orders()}
-        for sym in list(reserved):
-            if sym in visible:
-                del reserved[sym]
+        if reserved:
+            reserved.pop(symbol, None)
 
     async def _alert_uncomputable_book(self, book_risk, reason):
         """Operator alarm when the $ cap goes book-wide un-computable.
@@ -523,9 +530,12 @@ class SystemController:
         if last is not None and (now - last) < self.UNCOMPUTABLE_ALERT_INTERVAL_S:
             return
         self._uncomputable_alert_at = now
+        row = getattr(self.risk_manager, 'last_uncomputable_row', None)
+        culprit = (f"\nOffending row: ticket `#{row['ticket']}` `{row['symbol']}` "
+                   f"({row['source']})" if row else "")
         await self.telemetry.send_message(
             "🛑 **Risk Gate Halted**\nTotal open risk is un-computable, so **all "
-            f"symbols are blocked** until it clears.\nReason: `{reason}`\n"
+            f"symbols are blocked** until it clears.\nReason: `{reason}`{culprit}\n"
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
 
@@ -631,6 +641,11 @@ class SystemController:
                     )
                     sl_v, tp_v, lots_v, grade_v, strat_v = 0.0, 0.0, 0.0, '', msg.get('strat', 'Auto')
 
+                # The order's DB row now exists, so the aggregate counts the
+                # real record; its in-flight reservation goes here — not on
+                # heartbeat visibility, which an older same-symbol row triggers.
+                self._release_reserved_risk(sym)
+
                 risk_money = self.risk_manager.money_for_move(sym, abs(entry_p - sl_v), lots_v)
                 await self.telemetry.notify_execution(
                     ticket, sym, msg.get('cmd'), entry_p, sl_v, tp_v, lots_v, grade_v, risk_money, strat_v
@@ -710,10 +725,6 @@ class SystemController:
                         self.state_manager.backfill_position_state(
                             tid, entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
                         )
-
-            # The book snapshot just refreshed: anything it now shows is
-            # counted from the real row, so its in-flight reservation goes.
-            self._release_reserved_risk()
 
     async def _cleanup_ghost_orders(self):
         pending = self.state_manager.get_pending_orders()

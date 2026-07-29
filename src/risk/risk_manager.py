@@ -35,6 +35,10 @@ class RiskManager:
         self.current_equity = 0.0
         self.day_start_equity = 0.0  # daily DD anchor; re-set by reset_daily_metrics
         self.symbol_specs = {}
+        # Set by aggregate_open_risk when it returns None: the row that made
+        # the book un-computable, so the operator halt alert can name it
+        # (a book-wide block the operator can't locate is not actionable).
+        self.last_uncomputable_row = None
         
         # V14 Reporting Metrics (For 11:45 PM Uganda Report)
         self.equity_max = 0.0
@@ -297,7 +301,11 @@ class RiskManager:
             resting, none filled yet" -- exactly the state in which a
             positions-only aggregate reads 0.0 and waves everything through.
             (The heartbeat's own `orders` rows are NOT a usable source: the EA
-            emits them as `t,s,p,type,vol` with no `sl`, Titan_Gateway.mq5:225.)
+            emits them as `t,s,p,type,vol` with no `sl`, Titan_Gateway.mq5:225.
+            Consequence: a pending order placed MANUALLY in MT5 has no DB row
+            and cannot be priced, so it is NOT counted — unlike a manual
+            stopless *position*, which halts the book. Closing that asymmetry
+            needs an EA change.)
 
         Rows are de-duplicated by ticket: between a limit filling and the next
         heartbeat's backfill flipping the DB row PENDING->ACTIVE, the same trade
@@ -317,6 +325,7 @@ class RiskManager:
         """
         total = 0.0
         open_tickets = set()
+        self.last_uncomputable_row = None
 
         for pos in open_positions or []:
             try:
@@ -329,6 +338,8 @@ class RiskManager:
             risk = self._row_risk(pos.get('s', ''), pos.get('p'),
                                   pos.get('sl'), pos.get('vol'))
             if risk is None:
+                self.last_uncomputable_row = {
+                    'ticket': ticket, 'symbol': pos.get('s', ''), 'source': 'position'}
                 return None
             total += risk
 
@@ -343,6 +354,8 @@ class RiskManager:
             risk = self._row_risk(row.get('symbol', ''), row.get('initial_entry'),
                                   row.get('initial_sl'), row.get('lots'))
             if risk is None:
+                self.last_uncomputable_row = {
+                    'ticket': ticket, 'symbol': row.get('symbol', ''), 'source': 'pending'}
                 return None
             total += risk
 

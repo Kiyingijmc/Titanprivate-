@@ -30,6 +30,7 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from src.core.state_manager import StateManager  # noqa: E402
 from src.core.system_controller import SystemController  # noqa: E402
 from src.risk.exposure import ExposureManager  # noqa: E402
 from src.risk.risk_manager import RiskManager  # noqa: E402
@@ -221,6 +222,9 @@ class FakeTelemetry:
     async def notify_signal(self, *a, **kw):
         pass
 
+    async def notify_execution(self, *a, **kw):
+        pass
+
     async def send_message(self, text, parse_mode="HTML"):
         self.messages.append(text)
 
@@ -397,16 +401,41 @@ class InCycleReservationTests(unittest.TestCase):
         self._fire(c)
         self.assertEqual(len(c.bridge.reliable), 2)
 
-    def test_heartbeat_releases_the_reservation_it_can_now_see(self):
-        """Otherwise the reservation and the real position double-count."""
+    def test_opened_releases_the_orders_own_reservation(self):
+        """Otherwise the reservation and the real DB row double-count.
+
+        RS013 final round moved the release from heartbeat symbol-visibility to
+        the order's own EXECUTION:OPENED — the moment its DB row is registered
+        and the aggregate starts counting it from the real record.
+        """
         c = _controller([], cap=1.5)
         self._fire(c)
         self.assertIn("EURUSD", c._reserved_risk)
         _run(c._process_incoming_data({
-            "type": "HEARTBEAT", "bal": 10000.0, "eq": 10000.0,
-            "pos": [_pos("EURUSD", 1.1000, 1.0900, 1.0, ticket=5)], "orders": [],
+            "type": "EXECUTION", "status": "OPENED", "ticket": 500,
+            "s": "EURUSD", "cmd": "LIMIT",
         }))
         self.assertEqual(c._reserved_risk, {})
+
+    def test_heartbeat_showing_an_older_row_does_not_release(self):
+        """RS013 MINOR: a second order on a symbol that already has one resting
+        must not lose its reservation just because the OLD row makes the symbol
+        'visible' on the next heartbeat — its own OPENED has not landed yet."""
+        c = _controller([], cap=1.5,
+                        resting=[_pending("EURUSD", 1.1000, 1.0950, 0.50, ticket=100)])
+        c._reserve_risk("EURUSD", 99.0)
+        _run(c._process_incoming_data({
+            "type": "HEARTBEAT", "bal": 10000.0, "eq": 10000.0,
+            "pos": [], "orders": [{"t": 100, "s": "EURUSD", "p": 1.1, "type": 2, "vol": 0.5}],
+        }))
+        self.assertAlmostEqual(c._reserved_risk_total(), 99.0, places=6)
+
+    def test_release_is_scoped_to_one_symbol(self):
+        c = _controller([])
+        c._reserve_risk("EURUSD", 99.0)
+        c._reserve_risk("XAUUSD", 50.0)
+        c._release_reserved_risk("EURUSD")
+        self.assertAlmostEqual(c._reserved_risk_total(), 50.0, places=6)
 
     def test_heartbeat_keeps_a_reservation_the_broker_has_not_reported(self):
         c = _controller([], cap=1.5)
@@ -452,6 +481,111 @@ class UncomputableBookAlertTests(unittest.TestCase):
         self._fire(c)
         self.assertEqual(c.bridge.reliable, [])
         self.assertEqual(c.telemetry.messages, [])
+
+
+# ---------------------------------------------------------------------------
+# RS013 final round — the Sync Guard seam, driven through a REAL StateManager
+# ---------------------------------------------------------------------------
+
+class SyncGuardSeamTests(unittest.TestCase):
+    """The cap must keep counting a resting limit ACROSS Sync Guard ticks.
+
+    FakeStateManager hands back a fixed pending list forever, so it cannot
+    lose a row to reconciliation — which is exactly how RS013's surviving
+    CRITICAL stayed green: `reconcile_state` swept every `active_orders` row
+    absent from the heartbeat's *positions* list, and a resting LIMIT is never
+    in that list, so each PENDING row (the aggregate's resting-risk source)
+    was deleted within one 60 s tick of being registered — along with a false
+    "Closed externally" Telegram, and a 12-bar TTL cleanup that could never
+    fire. These tests drive the real StateManager through the real
+    `_perform_reconciliation` path.
+    """
+
+    def _controller_with_real_db(self, cap=1.5):
+        c = _controller([], cap=cap)
+        c.state_manager = StateManager(db_path=":memory:")
+        # A resting SilverBullet limit carrying ~$99 of risk (0.99% of equity).
+        c.state_manager.register_order(
+            111, "EURUSD", "SilverBullet", "LIMIT", status="PENDING",
+            entry=1.1000, tp=1.1200, sl=1.0900, lots=0.99)
+        return c
+
+    def test_corroborated_pending_survives_the_sweep(self):
+        c = self._controller_with_real_db()
+        c.current_pending_orders = [
+            {"t": 111, "s": "EURUSD", "p": 1.1000, "type": 2, "vol": 0.99}]
+        _run(c._perform_reconciliation())
+        self.assertEqual(
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
+        self.assertEqual(c.telemetry.messages, [])  # no false "Closed externally"
+
+    def test_externally_deleted_pending_is_still_swept(self):
+        """Ghost semantics are preserved: an order the broker no longer
+        reports (operator deleted it in MT5) is still reconciled away."""
+        c = self._controller_with_real_db()
+        c.current_pending_orders = []
+        _run(c._perform_reconciliation())
+        self.assertEqual(c.state_manager.get_pending_orders(), [])
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+
+    def test_filled_position_still_corroborates_its_row(self):
+        """A limit that filled moves from `orders` to `pos` under the same
+        ticket; the (now ACTIVE-bound) row must survive that transition too."""
+        c = self._controller_with_real_db()
+        c.current_open_positions = [_pos("EURUSD", 1.1000, 1.0900, 0.99, ticket=111)]
+        c.current_pending_orders = []
+        _run(c._perform_reconciliation())
+        self.assertTrue(c.state_manager.exists(111))
+
+    def test_cap_still_binds_on_the_bar_after_placement(self):
+        """RS013's repro in miniature: $99 resting + ~$99 proposed = 1.98% vs a
+        1.5% cap. If the sweep drops the resting row, the next bar's signal
+        sails through; it must block."""
+        c = self._controller_with_real_db(cap=1.5)
+        c.current_pending_orders = [
+            {"t": 111, "s": "EURUSD", "p": 1.1000, "type": 2, "vol": 0.99}]
+        _run(c._perform_reconciliation())
+        _run(c._execute_signal("EURUSD", DECISION, "SilverBullet", "BULLISH"))
+        self.assertEqual(c.bridge.reliable, [])
+        self.assertTrue(any("Total Open Risk" in e[2] for e in c.logger.events
+                            if e[0] == "RISK"), c.logger.events)
+
+
+class UncomputableRowIdentificationTests(unittest.TestCase):
+    """RS013 MINOR: a book-wide halt must name the row that caused it, or the
+    operator gets a recurring 'all symbols blocked' alert with no way to act
+    on it (and a bad row now persists — the Sync Guard no longer deletes it)."""
+
+    def test_aggregate_records_the_offending_position(self):
+        rm = _risk_manager()
+        book = [_pos("XAUUSD", 2000.0, 1996.0, 1.0, ticket=7),
+                _pos("EURUSD", 1.1000, 0.0, 1.0, ticket=8)]  # stopless
+        self.assertIsNone(rm.aggregate_open_risk(book))
+        self.assertEqual(rm.last_uncomputable_row,
+                         {"ticket": 8, "symbol": "EURUSD", "source": "position"})
+
+    def test_aggregate_records_the_offending_pending_row(self):
+        rm = _risk_manager()
+        resting = [_pending("EURUSD", 1.1000, 1.0950, 0.0, ticket=13)]  # lots=0
+        self.assertIsNone(rm.aggregate_open_risk([], resting))
+        self.assertEqual(rm.last_uncomputable_row,
+                         {"ticket": 13, "symbol": "EURUSD", "source": "pending"})
+
+    def test_computable_book_clears_the_marker(self):
+        rm = _risk_manager()
+        rm.aggregate_open_risk([_pos("EURUSD", 1.1000, 0.0, 1.0, ticket=8)])
+        rm.aggregate_open_risk([_pos("EURUSD", 1.1000, 1.0900, 1.0, ticket=8)])
+        self.assertIsNone(rm.last_uncomputable_row)
+
+    def test_halt_alert_names_the_offending_row(self):
+        c = _controller([_pos("EURUSD", 1.1000, 0.0, 1.0, ticket=8)])
+        decision = {"signal": "BUY", "type": "MARKET",
+                    "price": 2000.0, "sl": 1995.0, "tp": 2010.0}
+        _run(c._execute_signal("XAUUSD", decision, "SilverBullet", "BULLISH"))
+        self.assertEqual(c.bridge.reliable, [])
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+        self.assertIn("#8", c.telemetry.messages[0])
+        self.assertIn("EURUSD", c.telemetry.messages[0])
 
 
 if __name__ == "__main__":

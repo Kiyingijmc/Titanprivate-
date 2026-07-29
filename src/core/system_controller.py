@@ -258,7 +258,8 @@ class SystemController:
             self._settings_store = SettingsStore(
                 self.config, self.root_dir / "config" / "overrides.yaml")
             self._web_task = web_server.start(self, self._settings_store, self.gui_bridge)
-            self.logger.log_event("INFO", "GUI", "Control API on :8770")
+            self.logger.log_event(
+                "INFO", "GUI", f"Control API on :{web_server.gui_port()}")
         except Exception as e:
             self.logger.log_event("WARN", "GUI", f"Control API failed to start: {e}")
             self._web_task = None

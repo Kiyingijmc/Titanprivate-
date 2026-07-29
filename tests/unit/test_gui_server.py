@@ -364,6 +364,53 @@ class TestControllerGuiBootSeam(unittest.TestCase):
                 any(level == "WARN" and tag == "GUI" for level, tag, _ in events),
                 f"expected a WARN/GUI log entry, got {events}")
 
+    def test_success_log_reports_the_port_actually_bound(self):
+        """RS014 MINOR: the success log was the literal ':8770' while this
+        session made the port configurable, so any non-default TITAN_GUI_PORT
+        made the boot log confidently name the wrong port. An operator
+        debugging a port collision reads that line first -- and this repo has
+        already been burned today by a log that said something untrue."""
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["TITAN_GUI_TOKEN"] = "sekret"
+            port = _free_port()
+            os.environ["TITAN_GUI_PORT"] = str(port)
+
+            from src.core.system_controller import SystemController
+            from src.core.bus import EventBus
+
+            events = []
+
+            class FakeLogger:
+                def log_event(self, level, tag, msg, payload=None):
+                    events.append((level, tag, msg))
+
+            ctrl = object.__new__(SystemController)
+            ctrl.root_dir = Path(d)
+            ctrl.config = {}
+            ctrl.logger = FakeLogger()
+            ctrl.bus = EventBus(logger=ctrl.logger)
+
+            try:
+                async def _boot():
+                    ctrl._start_gui()
+                    task = ctrl._web_task
+                    if task is not None:
+                        task.cancel()
+                        try:
+                            await task
+                        except BaseException:
+                            pass
+
+                asyncio.run(_boot())
+            finally:
+                os.environ.pop("TITAN_GUI_PORT", None)
+
+            info = [msg for level, tag, msg in events
+                    if level == "INFO" and tag == "GUI"]
+            self.assertTrue(info, f"expected an INFO/GUI log entry, got {events}")
+            self.assertIn(str(port), info[0])
+            self.assertNotIn("8770", info[0])  # the old hardcoded literal
+
 
 if __name__ == "__main__":
     unittest.main()

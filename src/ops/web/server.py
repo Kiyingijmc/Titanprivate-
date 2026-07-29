@@ -147,13 +147,22 @@ def _bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
+DEFAULT_GUI_PORT = 8770
+
+
+def gui_port() -> int:
+    """The port start() will bind. Single-sourced so callers that only need to
+    REPORT it (e.g. the controller's boot log) cannot drift from the bind."""
+    return int(os.environ.get("TITAN_GUI_PORT", DEFAULT_GUI_PORT))
+
+
 def start(controller, settings_store, bridge) -> "asyncio.Task":
     """uvicorn Server on the controller's loop; returns the serve() task."""
     import uvicorn  # local import keeps unit-test imports light
 
     app = create_app(controller, settings_store, bridge)
     host = os.environ.get("TITAN_GUI_BIND", "127.0.0.1")
-    port = int(os.environ.get("TITAN_GUI_PORT", "8770"))
+    port = gui_port()
     sock = _bind_socket(host, port)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="off")
     server = uvicorn.Server(config)

@@ -48,15 +48,41 @@ describe("useLiveState", () => {
     expect(result.current.connectionStatus.stale).toBe(false);
   });
 
-  it("poll runs only while disconnected (no poll when connected)", async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ health: {}, positions: [] }) });
+  it("polls /api/state to refresh the snapshot even while connected, staying live", async () => {
+    // The WS pushes `state` ONCE at connect, then only events — so account/positions
+    // would freeze if the snapshot poll were gated off while connected. The poll must
+    // keep refreshing the snapshot (live positions) without demoting status off "live".
+    let positions: Array<{ ticket: number }> = [{ ticket: 1 }];
+    const fetchSpy = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ health: { last_heartbeat_age_s: 1 }, positions }),
+    }));
     vi.stubGlobal("fetch", fetchSpy);
     vi.useFakeTimers();
     try {
-      renderHook(() => useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, base: "", pollFallback: true }));
-      act(() => { FakeWS.last!.open(); });           // connected
-      act(() => { vi.advanceTimersByTime(12000); }); // >2 poll intervals
-      expect(fetchSpy).not.toHaveBeenCalled();       // connected -> no poll (stale-closure fixed)
+      const { result } = renderHook(() =>
+        useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, base: "", pollFallback: true, pollMs: 1000 }));
+      act(() => { FakeWS.last!.open(); });                                         // connected
+      act(() => { FakeWS.last!.message({ type: "state", health: { last_heartbeat_age_s: 1 }, positions: [{ ticket: 1 }] }); });
+      positions = [{ ticket: 1 }, { ticket: 2 }];                                  // broker opens a 2nd position
+      await act(async () => { await vi.advanceTimersByTimeAsync(1100); });         // one poll tick
+      expect(fetchSpy).toHaveBeenCalled();                                         // poll DID fire while connected
+      expect(result.current.snapshot?.positions.length).toBe(2);                  // snapshot refreshed live
+      expect(result.current.connectionStatus.status).toBe("live");               // still live, not degraded
+    } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
+  });
+
+  it("a failing poll while connected does NOT demote status off live", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: false });
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() =>
+        useLiveState("t", { WebSocketImpl: FakeWS as unknown as typeof WebSocket, base: "", pollFallback: true, pollMs: 1000 }));
+      act(() => { FakeWS.last!.open(); });
+      act(() => { FakeWS.last!.message({ type: "state", health: { last_heartbeat_age_s: 1 }, positions: [] }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+      expect(result.current.connectionStatus.status).toBe("live");               // WS up short-circuits; poll result ignored for status
     } finally { vi.useRealTimers(); vi.unstubAllGlobals(); }
   });
 });

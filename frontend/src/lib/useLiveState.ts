@@ -4,7 +4,8 @@ import { deriveConnection, type ConnectionState } from "./connection";
 
 interface Opts {
   WebSocketImpl?: typeof WebSocket;
-  pollFallback?: boolean;      // default true; poll GET /api/state while disconnected
+  pollFallback?: boolean;      // default true; poll GET /api/state to refresh the snapshot
+  pollMs?: number;             // default 2000; snapshot refresh cadence
   maxEvents?: number;          // default 200
   base?: string;               // default "" (same-origin)
 }
@@ -74,24 +75,29 @@ export function useLiveState(token: string | null, opts: Opts = {}) {
     };
     connect();
 
-    // polling fallback while disconnected (same-origin GET /api/state)
+    // Snapshot refresh poll (same-origin GET /api/state). The WS pushes `state` only
+    // ONCE at connect and then streams events, so account/positions would freeze while
+    // connected if this were gated off — it must run REGARDLESS of WS state to keep
+    // positions live. It only touches pollOk / connection status while the WS is DOWN;
+    // when the WS is up, deriveConnection short-circuits to "live" and the poll's
+    // success/failure is irrelevant to status (a failed poll must not demote "live").
     let poll: ReturnType<typeof setInterval> | undefined;
+    const pollMs = opts.pollMs ?? 2000;
     if (opts.pollFallback !== false && typeof fetch !== "undefined") {
       poll = setInterval(async () => {
-        if (connectedRef.current) return;
         try {
           const r = await fetch(`${opts.base ?? ""}/api/state`, { headers: { Authorization: `Bearer ${token}` } });
           if (r.ok) {
             const snap = await r.json();
-            pollOkRef.current = true;
             snapshotRef.current = snap;
-            setSnapshot(snap);
-          } else {
+            setSnapshot(snap);                                  // live positions/account, always
+            if (!connectedRef.current) pollOkRef.current = true;
+          } else if (!connectedRef.current) {
             pollOkRef.current = false;
           }
-        } catch { pollOkRef.current = false; }
-        refreshStatus();
-      }, 5000);
+        } catch { if (!connectedRef.current) pollOkRef.current = false; }
+        if (!connectedRef.current) refreshStatus();             // poll drives status only while WS is down
+      }, pollMs);
     }
 
     return () => {

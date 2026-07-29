@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Snapshot } from "@/lib/types";
+
+// The shell renders two nav landmarks (sidebar "Sections" + phone "Primary"/BottomTabs);
+// scope link queries to the sidebar so the responsive duplication isn't ambiguous.
+const sidebar = () => within(screen.getByRole("navigation", { name: "Sections" }));
 
 // jsdom has no scrollIntoView; cmdk (used by CommandPalette) calls it on selection-change.
 if (typeof Element.prototype.scrollIntoView !== "function") {
@@ -54,8 +58,9 @@ describe("App", () => {
     await connect();
 
     // Sidebar section links present.
-    expect(await screen.findByRole("link", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Positions" })).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: "Sections" })).toBeInTheDocument();
+    expect(sidebar().getByRole("link", { name: "Overview" })).toBeInTheDocument();
+    expect(sidebar().getByRole("link", { name: "Positions" })).toBeInTheDocument();
 
     // Status bar shows the Live connection pill.
     expect(screen.getByText(/live/i)).toBeInTheDocument();
@@ -66,16 +71,16 @@ describe("App", () => {
 
   it("navigates to the Positions stub when the Positions nav link is clicked", async () => {
     await connect();
-    await screen.findByRole("link", { name: "Overview" });
+    await screen.findByRole("navigation", { name: "Sections" });
 
-    await userEvent.click(screen.getByRole("link", { name: "Positions" }));
+    await userEvent.click(sidebar().getByRole("link", { name: "Positions" }));
 
     expect(await screen.findByText(/positions.*coming in plan 2/i)).toBeInTheDocument();
   });
 
   it("opens the command palette on Ctrl/Cmd+K", async () => {
     await connect();
-    await screen.findByRole("link", { name: "Overview" });
+    await screen.findByRole("navigation", { name: "Sections" });
 
     fireEvent.keyDown(document, { key: "k", metaKey: true });
 

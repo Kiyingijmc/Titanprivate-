@@ -7,26 +7,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { SideChip } from "@/components/SideChip";
 import type { Position } from "@/lib/types";
-import { signedPnl, price, lots } from "@/lib/format";
+import { signedPnl, price, lots, pnlToneClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
-
-function SideChip({ side }: { side: "BUY" | "SELL" }) {
-  const tone = side === "BUY" ? "profit" : "loss";
-  return (
-    <Badge
-      variant="outline"
-      data-tone={tone}
-      className={cn(
-        "border-transparent",
-        tone === "profit" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss"
-      )}
-    >
-      {side}
-    </Badge>
-  );
-}
 
 export function PositionsTable({
   positions,
@@ -57,11 +41,6 @@ export function PositionsTable({
       <TableBody>
         {positions.map((p) => {
           const pnl = signedPnl(p.pnl);
-          const pnlToneClass = {
-            profit: "text-profit",
-            loss: "text-loss",
-            flat: "text-muted-foreground",
-          }[pnl.tone];
           return (
             <TableRow key={p.ticket}>
               <TableCell className="font-mono tabnum">{p.ticket}</TableCell>
@@ -73,7 +52,7 @@ export function PositionsTable({
               <TableCell className="text-right font-mono tabnum">{price(p.entry)}</TableCell>
               <TableCell className="text-right font-mono tabnum">{price(p.sl)}</TableCell>
               <TableCell className="text-right font-mono tabnum">{price(p.tp)}</TableCell>
-              <TableCell className={cn("text-right font-mono tabnum", pnlToneClass)}>
+              <TableCell className={cn("text-right font-mono tabnum", pnlToneClass(pnl.tone))}>
                 {pnl.text}
               </TableCell>
               <TableCell>{p.grade}</TableCell>

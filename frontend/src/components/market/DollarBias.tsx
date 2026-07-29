@@ -27,9 +27,12 @@ export function DollarBias({ data, className }: { data?: DollarBiasData; classNa
         <Header source={data?.source} />
         <div
           data-testid="dollar-bias-empty"
-          className="flex items-center justify-center rounded-md border border-border bg-surface-2 py-6 text-sm text-muted-foreground"
+          className="flex flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-6 text-center"
         >
-          Dollar bias unavailable
+          <span className="text-sm text-muted-foreground">Dollar bias unavailable</span>
+          <span className="text-xs text-muted-foreground/70">
+            No USD price feed is connected yet — populated on demo and backtest data.
+          </span>
         </div>
       </div>
     );

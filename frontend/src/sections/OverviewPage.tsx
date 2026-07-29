@@ -7,29 +7,16 @@ import { MarketSessions } from "@/components/market/MarketSessions";
 import { LocalityClock } from "@/components/market/LocalityClock";
 import { DollarBias } from "@/components/market/DollarBias";
 import { Badge } from "@/components/ui/badge";
+import { SideChip } from "@/components/SideChip";
 import { useController } from "@/context/ControllerContext";
 import { useReadOnly } from "@/context/ReadOnlyContext";
 import { useEquityBuffer } from "@/lib/useEquityBuffer";
-import { signedPnl } from "@/lib/format";
+import { signedPnl, pnlToneClass } from "@/lib/format";
 import type { Position, FeedEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function SideChip({ side }: { side: "BUY" | "SELL" }) {
-  const tone = side === "BUY" ? "profit" : "loss";
-  return (
-    <Badge
-      variant="outline"
-      data-tone={tone}
-      className={cn("border-transparent", tone === "profit" ? "bg-profit/15 text-profit" : "bg-loss/15 text-loss")}
-    >
-      {side}
-    </Badge>
-  );
-}
-
 function TopPositionRow({ position }: { position: Position }) {
   const pnl = signedPnl(position.pnl);
-  const pnlToneClass = { profit: "text-profit", loss: "text-loss", flat: "text-muted-foreground" }[pnl.tone];
   return (
     <Link
       to="/positions"
@@ -39,7 +26,7 @@ function TopPositionRow({ position }: { position: Position }) {
         <span className="font-medium">{position.symbol}</span>
         <SideChip side={position.side} />
       </span>
-      <span className={cn("font-mono tabnum", pnlToneClass)}>{pnl.text}</span>
+      <span className={cn("font-mono tabnum", pnlToneClass(pnl.tone))}>{pnl.text}</span>
     </Link>
   );
 }

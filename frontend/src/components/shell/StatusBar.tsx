@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Wifi, WifiOff, Loader2, CloudOff, Clock, Pause, Gauge, Command, ArrowUp, ArrowDown, Minus } from "lucide-react";
 import type { ConnectionState, ConnectionStatus } from "@/lib/connection";
 import type { Snapshot } from "@/lib/types";
-import { money, signedPnl } from "@/lib/format";
+import { money, signedPnl, pnlToneClass } from "@/lib/format";
 import { sessionStates } from "@/lib/sessions";
 import { useNow } from "@/lib/useNow";
 import { cn } from "@/lib/utils";
@@ -16,12 +16,6 @@ const TONE_CLASS: Record<Tone, string> = {
   loss: "text-loss",
   muted: "text-muted-foreground",
   accent: "text-accent",
-};
-
-const PNL_CLASS: Record<"profit" | "loss" | "flat", string> = {
-  profit: "text-profit",
-  loss: "text-loss",
-  flat: "text-muted-foreground",
 };
 
 function StatusChip({ tone, icon, children }: { tone: Tone; icon: ReactNode; children: ReactNode }) {
@@ -169,7 +163,7 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
           {openPnl && (
             <span className="hidden sm:inline" data-testid="statusbar-openpnl">
               Open P&L{" "}
-              <span className={cn(PNL_CLASS[openPnl.tone])}>{openPnl.text}</span>
+              <span className={cn(pnlToneClass(openPnl.tone))}>{openPnl.text}</span>
             </span>
           )}
         </div>

@@ -6,6 +6,11 @@ import StrategiesPage from "@/sections/StrategiesPage";
 import ActivityPage from "@/sections/ActivityPage";
 import SettingsPage from "@/sections/SettingsPage";
 
+// NOTE: sections are loaded EAGERLY on purpose. This is a trading control panel —
+// instant navigation to Positions/Controls during a market event matters more than
+// a marginal initial-bundle trim on a LAN tool loaded once. (Route-level React.lazy
+// was tried and reverted: it adds a chunk-fetch delay + Suspense flash on every nav.)
+
 /**
  * Shared route tree: consumed by the app's `createHashRouter` (hash history avoids needing
  * a server rewrite rule) and reusable by tests that prefer a `MemoryRouter` (e.g.

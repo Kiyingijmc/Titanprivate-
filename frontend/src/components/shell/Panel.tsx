@@ -51,7 +51,7 @@ export function Panel({
   className,
 }: PanelProps) {
   return (
-    <Card className={cn("bg-surface-1", className)}>
+    <Card className={cn("bg-surface-1 shadow-1", className)}>
       {(title || actions) && (
         <CardHeader className="flex-row items-center justify-between space-y-0">
           {title && <CardTitle className="text-foreground">{title}</CardTitle>}

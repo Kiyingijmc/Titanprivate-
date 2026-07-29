@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { money, signedPnl, ageLabel, price, lots } from "./format";
+import { money, signedPnl, ageLabel, price, lots, pnlToneClass } from "./format";
 
 describe("format", () => {
   it("money is fixed-2 with thousands", () => {
@@ -24,5 +24,10 @@ describe("format", () => {
   it("lots is a stable 2-decimal figure", () => {
     expect(lots(0.1)).toBe("0.10");
     expect(lots(1)).toBe("1.00");
+  });
+  it("pnlToneClass maps tone to a text color", () => {
+    expect(pnlToneClass("profit")).toBe("text-profit");
+    expect(pnlToneClass("loss")).toBe("text-loss");
+    expect(pnlToneClass("flat")).toBe("text-muted-foreground");
   });
 });

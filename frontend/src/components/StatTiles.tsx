@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowUp, ArrowDown, Minus } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { Account, ArbiterBlock } from "@/lib/types";
-import { money, signedPnl } from "@/lib/format";
+import { money, signedPnl, pnlToneClass } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 function Tile({
@@ -27,7 +27,9 @@ function Tile({
       data-testid={testId}
       data-tone={dataTone}
       className={cn(
-        "transition-colors hover:border-border-strong",
+        // Resting depth + a subtle lift on hover gives the KPI row a premium,
+        // layered feel (reduced-motion users get the end state, no transition).
+        "shadow-1 transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong hover:shadow-2",
         // A hairline accent rail marks the primary live figure (Open P&L).
         accent && "border-l-2 border-l-accent"
       )}
@@ -46,12 +48,6 @@ function Tile({
     </Card>
   );
 }
-
-const TONE_CLASS: Record<"profit" | "loss" | "flat", string> = {
-  profit: "text-profit",
-  loss: "text-loss",
-  flat: "text-muted-foreground",
-};
 
 export function StatTiles({
   account,
@@ -80,7 +76,7 @@ export function StatTiles({
       <Tile
         label="Open P&L"
         value={open.text}
-        toneClass={TONE_CLASS[open.tone]}
+        toneClass={pnlToneClass(open.tone)}
         testId="tile-openpnl"
         dataTone={open.tone}
         icon={<OpenIcon className="size-4" aria-hidden />}
@@ -89,7 +85,7 @@ export function StatTiles({
       <Tile
         label="Day P&L"
         value={day.text}
-        toneClass={TONE_CLASS[day.tone]}
+        toneClass={pnlToneClass(day.tone)}
         testId="tile-daypnl"
         dataTone={day.tone}
         icon={<DayIcon className="size-4" aria-hidden />}

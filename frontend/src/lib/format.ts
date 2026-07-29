@@ -22,6 +22,11 @@ export function lots(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** The single P&L tone→text-color mapping shared by tiles, tables and the status bar. */
+export function pnlToneClass(tone: "profit" | "loss" | "flat"): string {
+  return tone === "profit" ? "text-profit" : tone === "loss" ? "text-loss" : "text-muted-foreground";
+}
+
 export function ageLabel(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;

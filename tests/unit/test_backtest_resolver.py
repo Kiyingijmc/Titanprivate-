@@ -134,5 +134,61 @@ class SimulateSignals(unittest.TestCase):
         self.assertEqual(trades[0]["strat"], "B")
 
 
+class LimitFillTrigger(unittest.TestCase):
+    """MT5 triggers BUY orders on ASK (bid + spread), SELL orders on BID.
+
+    Bars here are BID OHLC, so a BUY LIMIT at `entry` requires bid to reach
+    entry - spread, while a SELL LIMIT at `entry` triggers at bid >= entry.
+    Ignoring that filled buy limits one whole spread too easily.
+    """
+
+    def test_buy_limit_needs_bid_to_reach_entry_minus_spread(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        # Bid low grazes 99.7: touches entry, but ask never reaches 100.0
+        # (ask low = 99.7 + 0.5 = 100.2). Must NOT fill.
+        future = [bar(100.5, 100.6, 99.7, 100.0)] * 3
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "EXPIRED")
+        self.assertFalse(res["filled"])
+
+    def test_buy_limit_fills_once_bid_clears_the_spread(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        # Bid low 99.4 -> ask low 99.9 <= 100.0. Fills.
+        future = [bar(100.5, 100.6, 99.4, 110.5)] * 3
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+
+    def test_sell_limit_takes_no_spread_haircut(self):
+        """SELL LIMIT triggers on bid, which IS the data -- so the mirrored
+        price fills where the buy side did not."""
+        sig = {"dir": "SELL", "cmd": "LIMIT", "entry": 100.0, "sl": 105.0, "tp": 90.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.5, 100.0, 99.4, 99.5)] * 3   # bid high exactly 100.0
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+
+    def test_zero_spread_reproduces_legacy_touch_behaviour(self):
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 90.0, "sl": 85.0, "tp": 100.0,
+               "ttl_bars": 5}          # no "spread" key at all
+        future = [bar(95, 96, 92, 94), bar(93, 93, 89, 91), bar(91, 101, 90, 100)]
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "TP")
+        self.assertEqual(res["fill_offset"], 1)
+
+    def test_bar_gapping_fully_past_the_limit_fills(self):
+        """A bar entirely below a BUY LIMIT means price gapped through it. The
+        legacy `low <= entry <= high` test wrongly expired these."""
+        sig = {"dir": "BUY", "cmd": "LIMIT", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3}
+        future = [bar(98.0, 98.5, 97.0, 97.5), bar(97.5, 110.5, 97.0, 110.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

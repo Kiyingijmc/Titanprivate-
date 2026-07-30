@@ -48,14 +48,27 @@ def resolve_trade(signal, future_bars):
         return {"filled": False, "outcome": "OPEN_AT_END", "r": 0.0, "fill_offset": None, "exit_offset": 0}
 
     # 1. Fill.
-    if signal["cmd"] == "MARKET":
+    #    Bars are BID OHLC. MT5 triggers BUY orders on ASK (= bid + spread) and
+    #    SELL orders on BID, so a BUY order's bid-space trigger sits one spread
+    #    BELOW its nominal price while a SELL order's sits exactly at it. The
+    #    old direction-blind `low <= entry <= high` test filled buy limits one
+    #    whole spread too easily -- precisely the marginal region a passive-entry
+    #    policy operates in, so any execution study run on it was partly
+    #    self-confirming. `spread` is in PRICE units; absent/0.0 disables the
+    #    haircut. The one-sided test also fills bars that gap fully past the
+    #    trigger, which the old range test wrongly expired.
+    spread = float(signal.get("spread", 0.0) or 0.0)
+    cmd = signal.get("cmd", "LIMIT")
+    if cmd == "MARKET":
         fill_offset = 0
-    else:  # LIMIT: filled when a bar's range touches entry, within TTL.
+    else:
         ttl = min(int(signal["ttl_bars"]), n)
+        trigger = (entry - spread) if is_long else entry
         fill_offset = None
         for k in range(ttl):
             b = future_bars[k]
-            if b["low"] <= entry <= b["high"]:
+            hit = (b["low"] <= trigger) if is_long else (b["high"] >= trigger)
+            if hit:
                 fill_offset = k
                 break
         if fill_offset is None:

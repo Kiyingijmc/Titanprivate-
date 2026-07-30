@@ -17,6 +17,56 @@ body {
   line-height: 1.5;
 }
 .tabnum { font-variant-numeric: tabular-nums; }   /* numbers in columns */
+
+/* ── Dialog + alert-dialog motion ──────────────────────────────────────────
+   Purpose: a destructive confirm (panic, close-all) must not blink into
+   existence — the operator needs a beat to register what is being asked.
+   Occasional surface, so a standard animation is warranted.
+
+   These are @keyframes, not transitions or @starting-style, on purpose:
+   Radix unmounts the content on close and only defers that unmount while a
+   real CSS *animation* is running (it waits for animationend). A transition
+   would give an enter and no exit.
+
+   Enter --motion-base / exit --motion-fast: slow where the user is deciding,
+   fast where the system is responding. Both ease-out — never ease-in.
+   Origin stays centre: a modal is not anchored to a trigger.
+   Enter from scale(0.95), never scale(0) — nothing appears out of nothing.
+   The translate(-50%, -50%) is carried through every frame because it is what
+   centres the content (the .translate-x/y-[-50%] utilities it would otherwise
+   inherit are on the same transform property).                              */
+@keyframes titan-overlay-in  { from { opacity: 0 } to { opacity: 1 } }
+@keyframes titan-overlay-out { from { opacity: 1 } to { opacity: 0 } }
+@keyframes titan-dialog-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.95) }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1) }
+}
+@keyframes titan-dialog-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1) }
+  to   { opacity: 0; transform: translate(-50%, -50%) scale(0.95) }
+}
+[data-titan-overlay][data-state="open"] {
+  animation: titan-overlay-in var(--motion-base) var(--ease-out);
+}
+[data-titan-overlay][data-state="closed"] {
+  animation: titan-overlay-out var(--motion-fast) var(--ease-out);
+}
+[data-titan-dialog][data-state="open"] {
+  animation: titan-dialog-in var(--motion-base) var(--ease-out);
+}
+[data-titan-dialog][data-state="closed"] {
+  animation: titan-dialog-out var(--motion-fast) var(--ease-out);
+}
 @media (prefers-reduced-motion: reduce) {
-  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  /* Reduced motion has to actually STOP motion. Duration alone does not:
+     an infinite animation (animate-pulse on the skeletons and the session dot,
+     animate-spin on the connection spinner) keeps looping at 0.001ms — faster
+     and more distracting than the animation it was meant to suppress. Pinning
+     iteration-count to 1 is what ends them. */
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }

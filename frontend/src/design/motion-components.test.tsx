@@ -49,7 +49,9 @@ describe("pressable surfaces answer the press", () => {
     render(<Button>Panic</Button>);
     const css = await compileClassesOf(screen.getByRole("button"));
     expect(css).toContain("var(--motion-fast)");
-    expect(css).toContain("var(--ease");
+    // ease-out specifically, not the default hover curve: a press has to be
+    // visible in its first frame.
+    expect(css).toContain("var(--ease-out)");
   });
 });
 

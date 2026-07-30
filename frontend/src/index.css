@@ -57,6 +57,32 @@ body {
 [data-titan-dialog][data-state="closed"] {
   animation: titan-dialog-out var(--motion-fast) var(--ease-out);
 }
+
+/* ── Command-failure toast ─────────────────────────────────────────────────
+   This surface exists ONLY when something failed. Appearing instantly makes a
+   failure indistinguishable from a repaint — it must arrive, so the operator
+   registers that it arrived. Rises from below with a fade, ease-out, one
+   --motion-base beat.
+
+   The X translate is carried on every frame because it is what centres the
+   toast (left-1/2 + -50%); animating only Y would fight it on the same
+   property. Exit is instant and that is deliberate: dismissal is a click on ×
+   and the operator has already read it, so there is nothing left to register —
+   and an exit animation would mean keeping a failed command's toast mounted
+   after its own state was cleared.                                          */
+[data-titan-toast] {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition:
+    opacity var(--motion-base) var(--ease-out),
+    transform var(--motion-base) var(--ease-out);
+}
+@starting-style {
+  [data-titan-toast] {
+    opacity: 0;
+    transform: translate(-50%, 100%);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   /* Reduced motion has to actually STOP motion. Duration alone does not:
      an infinite animation (animate-pulse on the skeletons and the session dot,

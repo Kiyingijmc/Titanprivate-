@@ -2,6 +2,10 @@ import type { Config } from "tailwindcss";
 
 export default {
   darkMode: ["class"],
+  // Wraps every `hover:` utility in @media (hover: hover) and (pointer: fine).
+  // BottomTabs proves phones are a real target, and on touch a tap fires :hover
+  // and leaves the element stuck in its hover state until the next tap.
+  future: { hoverOnlyWhenSupported: true },
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {

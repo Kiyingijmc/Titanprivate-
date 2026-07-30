@@ -578,7 +578,7 @@ Expected: **3 of 4 fail.** Traced against the post-Task-2 code, which routes `ST
 | Test | Post-Task-2 result | Verdict |
 |---|---|---|
 | `test_buy_stop_fills_where_a_limit_never_could` | limit trigger 99.5; bar lows are 99.6 and 100.0, neither `<= 99.5` → `EXPIRED` | **FAIL** (`filled` is False) |
-| `test_buy_stop_does_not_fill_on_downward_move` | limit trigger 99.5; low 96.0 `<= 99.5` → fills, resolves `SL` | **FAIL** (`'SL' != 'EXPIRED'`) |
+| `test_buy_stop_does_not_fill_on_downward_move` | limit trigger 99.5; low 96.0 `<= 99.5` → fills at offset 0, then neither SL (95.0, lows only reach 96.0) nor TP (110.0) is touched, so it runs off the 3-bar window | **FAIL** (`'OPEN_AT_END' != 'EXPIRED'`) |
 | `test_sell_stop_fills_where_a_sell_limit_never_could` | sell-limit trigger 100.0; bar highs 99.9 and 99.5, neither `>= 100.0` → `EXPIRED` | **FAIL** (`filled` is False) |
 | `test_unknown_cmd_keeps_limit_semantics` | already correct — this is a regression guard for the fallback branch | passes |
 

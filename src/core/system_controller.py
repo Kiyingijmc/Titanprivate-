@@ -782,9 +782,15 @@ class SystemController:
         try:
             cfg = self.config['connection']['zeromq']
             self.bridge = ZMQBridge(
-                push_port=cfg.get('push_port', 32768), 
-                pull_port=cfg.get('pull_port', 32769), 
-                req_port=32770
+                push_port=cfg.get('push_port', 32768),
+                pull_port=cfg.get('pull_port', 32769),
+                req_port=32770,
+                # SEC-05: config declared connection.zeromq.host all along and
+                # nothing read it, so the sockets bound every interface. Read it
+                # here (loopback if absent) -- this is also the operator's lever
+                # if WSL ever leaves mirrored networking and the EA needs a
+                # routable bind again.
+                host=cfg.get('host', '127.0.0.1')
             )
             return True
         except Exception as e: 

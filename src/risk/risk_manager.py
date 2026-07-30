@@ -59,21 +59,90 @@ class RiskManager:
         if equity > self.equity_max: self.equity_max = equity
         if equity < self.equity_min: self.equity_min = equity
 
+    # SEC-05 / OPS-07: broker-plausible envelopes for the two spec fields the
+    # sizing math divides by. They are deliberately wide -- they do not encode
+    # any symbol's true values, they only bracket what a real MT5 quote can be
+    # (1e-6 covers 5-digit forex ticks, 100 covers whole-unit index ticks).
+    # 'vm'/'vs' have no upper bound; a broker may legitimately require large
+    # lots. They only have to be positive so the volume math cannot divide by 0.
+    SPEC_BOUNDS = {'val': (1e-4, 1e4), 'ts': (1e-6, 100.0)}
+
+    # A real symbol regrade (4-digit -> 5-digit forex) moves a field by exactly
+    # 10x. More than that is a corrupt or hostile frame, not a spec change.
+    MAX_SPEC_JUMP = 10.0
+
     def update_symbol_specs(self, symbol, val, size, v_min, v_step):
         """
         Receives precise contract details from MQL5.
-        AUDIT FIX: Sanitizes inputs to prevent mathematical crashes.
+
+        SEC-05: these arrive on an UNAUTHENTICATED socket, and every trade is
+        sized off them. A single bad HISTORY frame -- hostile, or a broker
+        misquoting tick_value after a symbol-spec change -- drives
+        ticks_at_risk towards 0, blows every subsequent trade out to
+        hard_max_lots against an intended 1% risk, and has risk_to_stop
+        validate it as safe off the same poisoned numbers. So an update is
+        sanity-bounded, and a rejected one is a NO-OP: previously accepted
+        specs stay put, and a symbol that never had accepted specs stays
+        spec-less so calculate_lot_size keeps failing safe to 0. Never coerce
+        a bad value into the store -- half-good specs size real trades.
         """
-        try:
-            self.symbol_specs[symbol] = {
-                'val': float(val) if val is not None else 0.0,    # Tick Value
-                'ts': float(size) if size is not None else 0.0,   # Tick Size
-                'vm': float(v_min) if v_min is not None else 0.01,# Volume Min
-                'vs': float(v_step) if v_step is not None else 0.01 # Volume Step
-            }
-        except ValueError:
-            # If ZMQ sends garbage, ignore update to keep existing/default state
-            pass
+        incoming = {'val': val, 'ts': size, 'vm': v_min, 'vs': v_step}
+        clean = {}
+
+        for field, raw in incoming.items():
+            try:
+                num = float(raw)
+            except (TypeError, ValueError):
+                return self._reject_specs(symbol, field, raw, "not a number")
+            if not math.isfinite(num):
+                return self._reject_specs(symbol, field, raw, "not finite")
+
+            bounds = self.SPEC_BOUNDS.get(field)
+            if bounds is None:
+                if num <= 0:
+                    return self._reject_specs(symbol, field, raw, "must be > 0")
+            elif not (bounds[0] <= num <= bounds[1]):
+                return self._reject_specs(
+                    symbol, field, raw, f"outside [{bounds[0]}, {bounds[1]}]")
+
+            clean[field] = num
+
+        # Jump guard, measured against the last ACCEPTED specs only -- a
+        # rejected frame must never become the baseline, or two bad messages
+        # in a row can walk the specs anywhere they like.
+        prior = self.symbol_specs.get(symbol)
+        if prior:
+            for field, num in clean.items():
+                was = prior.get(field, 0.0)
+                if was <= 0:
+                    continue
+                ratio = max(num / was, was / num)
+                # +epsilon so an exactly-10x regrade survives float rounding.
+                if ratio > self.MAX_SPEC_JUMP * (1 + 1e-9):
+                    # incoming[field], NOT `raw`: `raw` is the loop variable
+                    # from the validation pass above and by now holds the LAST
+                    # field's value, so it would name the jumping field beside
+                    # an unrelated (healthy) number.
+                    return self._reject_specs(
+                        symbol, field, incoming[field],
+                        f"{ratio:.4g}x jump from last accepted {was}")
+
+        self.symbol_specs[symbol] = clean
+
+    def _reject_specs(self, symbol, field, value, reason):
+        """Drop a spec update and tell the operator which field poisoned it.
+
+        A silent reject is indistinguishable from a symbol that simply never
+        got specs -- and the visible symptom of both is 'that pair stopped
+        trading', so the message has to name symbol + field + value.
+        """
+        if self.logger:
+            self.logger.log_event(
+                "RISK", "SPECS",
+                f"Rejected {symbol} spec update: {field}={value!r} ({reason}). "
+                f"Keeping previously accepted specs.",
+                {"symbol": symbol, "field": field, "value": repr(value), "reason": reason},
+            )
 
     def normalize_price(self, price, symbol):
         """

@@ -14,15 +14,28 @@ import json
 import asyncio
 
 class ZMQBridge:
-    def __init__(self, push_port=32768, pull_port=32769, req_port=32770):
+    # SEC-05: bind ONE interface, not every interface. These sockets are
+    # unauthenticated -- anything that can reach them can feed HISTORY frames
+    # that resize every trade, or drain the command stream. Loopback is the
+    # correct default because WSL runs in MIRRORED networking mode, so the EA's
+    # InpIP is 127.0.0.1. If the host is ever moved back to NAT mode the EA
+    # will NOT reach a loopback bind: set connection.zeromq.host in
+    # config/config.yaml to the WSL IP and re-check with scripts/check_bridge.py.
+    DEFAULT_HOST = "127.0.0.1"
+
+    def __init__(self, push_port=32768, pull_port=32769, req_port=32770, host=None):
         self.context = zmq.asyncio.Context()
-        
+        # `or` (not a default arg) so an explicit None/"" from a config file
+        # that declares the key but leaves it blank still lands on loopback
+        # rather than building the wildcard-equivalent "tcp://:32768".
+        self.host = host or self.DEFAULT_HOST
+
         # 1. PUSH: Commands (Py -> MT5)
         self.push_port = push_port
         self.socket_push = self.context.socket(zmq.PUSH)
         self.socket_push.setsockopt(zmq.SNDHWM, 1000)
-        try: 
-            self.socket_push.bind(f"tcp://*:{self.push_port}")
+        try:
+            self.socket_push.bind(f"tcp://{self.host}:{self.push_port}")
         except zmq.ZMQError as e:
             print(f"[ZMQ ERROR] Failed to bind PUSH: {e}")
         
@@ -33,7 +46,7 @@ class ZMQBridge:
         self.socket_pull.setsockopt(zmq.RCVHWM, 10000)
         self.socket_pull.setsockopt(zmq.RCVBUF, 10 * 1024 * 1024) 
         try: 
-            self.socket_pull.bind(f"tcp://*:{self.pull_port}")
+            self.socket_pull.bind(f"tcp://{self.host}:{self.pull_port}")
         except zmq.ZMQError as e:
              print(f"[ZMQ ERROR] Failed to bind PULL: {e}")
 
@@ -50,7 +63,7 @@ class ZMQBridge:
         self.socket_req = self.context.socket(zmq.REQ)
         self.socket_req.setsockopt(zmq.LINGER, 0)
         try: 
-            self.socket_req.bind(f"tcp://*:{self.req_port}")
+            self.socket_req.bind(f"tcp://{self.host}:{self.req_port}")
         except zmq.ZMQError as e:
             print(f"[ZMQ ERROR] Failed to bind REQ: {e}")
 

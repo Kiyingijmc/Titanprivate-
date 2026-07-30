@@ -57,6 +57,10 @@ def resolve_trade(signal, future_bars):
     #    self-confirming. `spread` is in PRICE units; absent/0.0 disables the
     #    haircut. The one-sided test also fills bars that gap fully past the
     #    trigger, which the old range test wrongly expired.
+    #    STOP orders trigger on the opposite side from LIMITs; before this,
+    #    any non-MARKET cmd was resolved with LIMIT semantics, so the first
+    #    strategy to emit a STOP (Intent.kind already admits it, and the EA
+    #    already places them) would have been silently mis-filled.
     spread = float(signal.get("spread", 0.0) or 0.0)
     cmd = signal.get("cmd", "LIMIT")
     if cmd == "MARKET":
@@ -67,7 +71,10 @@ def resolve_trade(signal, future_bars):
         fill_offset = None
         for k in range(ttl):
             b = future_bars[k]
-            hit = (b["low"] <= trigger) if is_long else (b["high"] >= trigger)
+            if cmd == "STOP":
+                hit = (b["high"] >= trigger) if is_long else (b["low"] <= trigger)
+            else:  # LIMIT (and any unrecognised cmd, preserving prior behaviour)
+                hit = (b["low"] <= trigger) if is_long else (b["high"] >= trigger)
             if hit:
                 fill_offset = k
                 break

@@ -190,5 +190,56 @@ class LimitFillTrigger(unittest.TestCase):
         self.assertEqual(res["fill_offset"], 0)
 
 
+class StopFillTrigger(unittest.TestCase):
+    """STOP orders trigger on the OPPOSITE side of the price from LIMITs.
+
+    BUY STOP: ask >= price  -> bid >= entry - spread  (fills EASIER)
+    SELL STOP: bid <= price -> low <= entry
+    Treating a STOP as a LIMIT inverts the trigger entirely.
+    """
+
+    def test_buy_stop_fills_where_a_limit_never_could(self):
+        """Bid stays ABOVE the limit trigger the whole time (low 99.6 > 99.5),
+        so limit semantics expire. Ask reaches 100.7 >= 100.0, so stop
+        semantics fill. A test whose bars satisfy BOTH triggers proves nothing.
+        """
+        sig = {"dir": "BUY", "cmd": "STOP", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.7, 100.2, 99.6, 100.1), bar(100.1, 110.5, 100.0, 110.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+        self.assertEqual(res["outcome"], "TP")
+
+    def test_buy_stop_does_not_fill_on_downward_move(self):
+        """A LIMIT would have filled here (low 96.0 <= 99.5). A STOP must not:
+        bid high 99.2 -> ask high 99.7, never reaching 100.0."""
+        sig = {"dir": "BUY", "cmd": "STOP", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.0, 99.2, 96.0, 96.5)] * 3   # only ever moves down
+        res = bt.resolve_trade(sig, future)
+        self.assertEqual(res["outcome"], "EXPIRED")
+        self.assertFalse(res["filled"])
+
+    def test_sell_stop_fills_where_a_sell_limit_never_could(self):
+        """Bid high 99.9 never reaches 100.0, so SELL LIMIT semantics expire.
+        Bid low 99.0 <= 100.0, so SELL STOP fills. No spread haircut on the
+        sell side -- bid IS the data."""
+        sig = {"dir": "SELL", "cmd": "STOP", "entry": 100.0, "sl": 105.0, "tp": 90.0,
+               "ttl_bars": 3, "spread": 0.5}
+        future = [bar(99.8, 99.9, 99.0, 99.2), bar(99.2, 99.5, 89.5, 90.0)]
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+        self.assertEqual(res["fill_offset"], 0)
+        self.assertEqual(res["outcome"], "TP")
+
+    def test_unknown_cmd_keeps_limit_semantics(self):
+        sig = {"dir": "BUY", "cmd": "WEIRD", "entry": 100.0, "sl": 95.0, "tp": 110.0,
+               "ttl_bars": 3}
+        future = [bar(101.0, 101.5, 99.0, 110.5)] * 2
+        res = bt.resolve_trade(sig, future)
+        self.assertTrue(res["filled"])
+
+
 if __name__ == "__main__":
     unittest.main()

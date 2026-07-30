@@ -14,6 +14,7 @@
 | S012 | 2026-07-29 | featurebus-bar-index-single-counter-defect | DONE | order_lifecycle | finalized via mig (review CHANGES) | parent: none |
 | S013 | 2026-07-29 | cross-symbol-exposure-cap-missing-v15 | DONE | risk_management | finalized via mig (review CHANGES) | parent: none |
 | S014 | 2026-07-29 | gui-bind-failure-on-8770-must | DONE | infra | finalized via mig (review PASS) | parent: none |
+| S015 | 2026-07-30 | gui-websocket-double-close-raises-runtimeerror | DONE | api | finalized via mig (review CHANGES) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -31,4 +32,5 @@
 | RS012 | 2026-07-29 | S012 (featurebus-bar-index-single-counter-defect) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS012.md](../session-reviews/RS012.md) |
 | RS013 | 2026-07-29 | S013 (cross-symbol-exposure-cap-missing-v15) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS013.md](../session-reviews/RS013.md) |
 | RS014 | 2026-07-29 | S014 (gui-bind-failure-on-8770-must) | DONE | PASS (mig orchestrator in-session independent review) | [RS014.md](../session-reviews/RS014.md) |
+| RS015 | 2026-07-30 | S015 (gui-websocket-double-close-raises-runtimeerror) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS015.md](../session-reviews/RS015.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

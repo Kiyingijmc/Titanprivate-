@@ -101,5 +101,28 @@ class ResearchTickSpecs(unittest.TestCase):
         self.assertEqual(overlap, set(), f"duplicated tick specs: {overlap}")
 
 
+class NoDuplicateTables(unittest.TestCase):
+    """Two hand-maintained copies of the spread table drifted apart once
+    already (neither gained the 2026-07 pairs). Assert one source of truth."""
+
+    def test_poc_sb_stops_reexports_the_canonical_table(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        import poc_sb_stops
+        self.assertIs(poc_sb_stops.SPREADS, FBS_SPREAD_TICKS)
+
+    def test_backtest_engine_defines_no_local_table(self):
+        path = os.path.join(REPO, "tests", "backtest", "backtest_engine.py")
+        with open(path) as f:
+            src = f.read()
+        self.assertNotIn("SPREADS = {", src,
+                         "backtest_engine must import the canonical table, not define one")
+
+    def test_research_run_reads_the_canonical_table(self):
+        sys.path.insert(0, os.path.join(REPO, "scripts"))
+        sys.path.insert(0, os.path.join(REPO, "tests", "backtest"))
+        import research_run
+        self.assertIs(research_run.FBS_SPREADS, FBS_SPREAD_TICKS)
+
+
 if __name__ == "__main__":
     unittest.main()

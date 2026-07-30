@@ -43,7 +43,7 @@ import yaml  # noqa: E402
 
 import backtest_engine as bt  # noqa: E402
 from lake_import import sniff_and_read, infer_symbol_tf  # noqa: E402
-from poc_sb_stops import SPREADS as FBS_SPREADS  # noqa: E402
+from src.research.costs import FBS_SPREAD_TICKS as FBS_SPREADS  # noqa: E402
 from src.data.lake import Lake, LakeError  # noqa: E402
 from src.research.kernel_replay import replay, load_h1_from_m5  # noqa: E402
 from src.strategies.manifest import load_manifests, ManifestError  # noqa: E402

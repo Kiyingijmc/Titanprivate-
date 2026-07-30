@@ -40,10 +40,12 @@ RR = 2.0
 TTL_BARS = 12
 BODY_MIN_ATR = 0.8          # SilverBullet's momentum gate
 NY_SHIFT = -7               # broker(GMT+3ish) -> NY approx; +/-1h DST wobble accepted
-SPREADS = {                 # indicative FBS spread in ticks (same table as harness)
-    "EURUSD": 8, "GBPUSD": 12, "USDJPY": 10, "AUDUSD": 10, "USDCAD": 12,
-    "GBPCAD": 30, "GBPJPY": 25, "XAUUSD": 20, "US30": 200, "BTCUSD": 1000, "XBRUSD": 30,
-}
+# Canonical spread assumptions live in src/research/costs.py (single source of
+# truth; this module and tests/backtest/backtest_engine.py each used to carry
+# their own 11-symbol copy). Re-exported under the historical name so existing
+# importers -- scripts/research_run.py, the universe-screen harness -- keep
+# working unchanged.
+from src.research.costs import FBS_SPREAD_TICKS as SPREADS  # noqa: E402
 COMMISSION_USD_PER_LOT = 7.0
 
 STOP_MODELS = ["LIVE", "ATR05", "ATR10", "STRUCT"]

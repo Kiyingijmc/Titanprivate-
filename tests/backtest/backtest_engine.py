@@ -427,10 +427,7 @@ class Backtester:
 
         # Attach dollar PnL + costs to resolved trades when specs are available.
         import json
-        SPREADS = {  # indicative spread in price-ticks; tune later
-            "EURUSD": 8, "GBPUSD": 12, "USDJPY": 10, "AUDUSD": 10, "USDCAD": 12,
-            "GBPCAD": 30, "GBPJPY": 25, "XAUUSD": 20, "US30": 200, "BTCUSD": 1000, "XBRUSD": 30,
-        }
+        from src.research.costs import FBS_SPREAD_TICKS as SPREADS
         specs = {}
         if costs and os.path.exists(specs_path):
             with open(specs_path) as f:

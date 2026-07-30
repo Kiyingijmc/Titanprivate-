@@ -458,7 +458,7 @@ def main(argv=None) -> int:
             },
             "spread_assumption": {
                 "cost_model": "trade_dollars", "spread_mult": args.spread_mult,
-                "spread_table": "scripts/poc_sb_stops.SPREADS",
+                "spread_table": "src/research/costs.FBS_SPREAD_TICKS",
                 "commission_per_lot": commission_per_lot,
                 "risk_dollars": DEFAULT_RISK_DOLLARS, "max_lots": max_lots,
             },

@@ -43,7 +43,7 @@ import yaml  # noqa: E402
 
 import backtest_engine as bt  # noqa: E402
 from lake_import import sniff_and_read, infer_symbol_tf  # noqa: E402
-from src.research.costs import FBS_SPREAD_TICKS as FBS_SPREADS  # noqa: E402
+from src.research.costs import FBS_SPREAD_TICKS as FBS_SPREADS, tick_spec  # noqa: E402
 from src.data.lake import Lake, LakeError  # noqa: E402
 from src.research.kernel_replay import replay, load_h1_from_m5  # noqa: E402
 from src.strategies.manifest import load_manifests, ManifestError  # noqa: E402
@@ -109,11 +109,45 @@ def _spec_source(specs_path, symbol, specs) -> str:
     that file. Previously this was a hardcoded "data/specs.json" string
     regardless of --specs (P06 minor) -- now it names the file really read."""
     if symbol not in specs:
-        return "default"
+        # data/specs.json is gitignored and machine-local, so pairs adopted
+        # after the last cache_specs run resolve from the tracked fallback.
+        return ("src/research/costs.RESEARCH_TICK_SPECS"
+                if tick_spec(symbol) is not None else "default")
     try:
         return os.path.relpath(specs_path, REPO_ROOT)
     except ValueError:
         return specs_path
+
+
+def _resolve_spec(specs, symbol, allow_default):
+    """Broker tick spec for `symbol`, or None to signal a hard stop.
+
+    Precedence: the --specs file (machine-local, freshest, gitignored) ->
+    src.research.costs.RESEARCH_TICK_SPECS (tracked, reproducible, covers pairs
+    specs.json cannot) -> refuse.
+
+    Mirrors RiskManager.calculate_lot_size's live fail-safe: never guess a
+    spec. _DEFAULT_SPEC is EURUSD-shaped (tick_size 1e-5), so defaulting it for
+    an index or crypto pair misstates the sizing denominator by ~1000x -- and
+    net R with it -- while printing nothing to say so.
+    """
+    if symbol in specs:
+        return specs[symbol]
+    fallback = tick_spec(symbol)
+    if fallback is not None:
+        return fallback
+    if allow_default:
+        print(f"[RESEARCH_RUN] WARNING: no tick spec for {symbol!r}; using "
+              f"_DEFAULT_SPEC because --allow-default-spec was passed. Net R is "
+              f"meaningful only if {symbol!r} really is forex-shaped "
+              f"(tick_size {_DEFAULT_SPEC['tick_size']}).")
+        return _DEFAULT_SPEC
+    print(f"[RESEARCH_RUN] ERROR: no tick spec for {symbol!r}. Known in the "
+          f"specs file: {sorted(specs)}. Run scripts/cache_specs.py against a "
+          f"live bridge, add it to src/research/costs.RESEARCH_TICK_SPECS, or "
+          f"pass --allow-default-spec to accept EURUSD-shaped defaults (net R "
+          f"will be wrong for non-forex symbols).")
+    return None
 
 
 def _ensure_tick_volume(df):
@@ -254,6 +288,16 @@ def _signals_to_trades(records, df_h1, spread_points, spec, commission_per_lot, 
     lands in `skipped`; with grader-passed decisions that is theoretical.)
     """
     bars = df_h1.to_dict("records")
+    # Spread tables are denominated in broker TICKS; resolve_trade wants PRICE
+    # units. Without this conversion the corrected fill trigger
+    # (backtest_engine.resolve_trade, direction-aware since 151188b) never sees
+    # a spread and silently reverts to bid-touch semantics -- buy limits fill
+    # one whole spread too easily and a re-baseline measures nothing. A
+    # non-positive tick_size means we cannot price the spread, so pass 0.0
+    # rather than inventing one; the sizing guard in _resolve_spec is what
+    # keeps an unpriceable symbol from reaching here in the first place.
+    tick_size = float(spec.get("tick_size") or 0.0)
+    spread_price = float(spread_points) * tick_size if tick_size > 0 else 0.0
     sigs = []
     for rec in records:
         if rec["signal"] is None:
@@ -268,7 +312,7 @@ def _signals_to_trades(records, df_h1, spread_points, spec, commission_per_lot, 
             entry = float(rec["price"])
         sigs.append({**rec, "bar_idx": bar_idx, "dir": rec["signal"], "cmd": cmd,
                      "entry": entry, "sl": float(rec["sl"]), "tp": float(rec["tp"]),
-                     "ttl_bars": 12})
+                     "ttl_bars": 12, "spread": spread_price})
 
     resolved = bt.simulate_signals(sigs, bars)
     taken_idx = {t["bar_idx"] for t in resolved}
@@ -357,6 +401,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     p.add_argument("--manifest-dir", default=DEFAULT_MANIFEST_DIR)
     p.add_argument("--specs", default=DEFAULT_SPECS_PATH)
+    p.add_argument("--allow-default-spec", action="store_true",
+                   help="permit the EURUSD-shaped _DEFAULT_SPEC when a symbol is "
+                        "absent from both --specs and "
+                        "src/research/costs.RESEARCH_TICK_SPECS. OFF by default: "
+                        "a guessed tick_size silently mis-sizes every trade "
+                        "(~1000x for index pairs) and yields confidently wrong net R.")
     return p
 
 
@@ -406,7 +456,9 @@ def main(argv=None) -> int:
                 return 1
             data_sha = _sha256_bytes(df_h1.to_csv(index=False).encode())
             records = replay(df_h1, sym, [strategy], config, window=300, start=60)
-            spec = specs.get(sym, _DEFAULT_SPEC)
+            spec = _resolve_spec(specs, sym, args.allow_default_spec)
+            if spec is None:
+                return 1
             spec_source = _spec_source(args.specs, sym, specs)
             spread_points = FBS_SPREADS[sym] * args.spread_mult
             trades, skipped = _signals_to_trades(
@@ -505,7 +557,9 @@ def main(argv=None) -> int:
     n_signals = sum(1 for r in records if r["signal"] is not None)
 
     specs = _load_specs(args.specs)
-    spec = specs.get(symbol, _DEFAULT_SPEC)
+    spec = _resolve_spec(specs, symbol, args.allow_default_spec)
+    if spec is None:
+        return 1
     spec_source = _spec_source(args.specs, symbol, specs)
     risk_cfg = config.get("risk", {}).get("trade", {})
     commission_per_lot = float(risk_cfg.get("static_commission_usd", 7.0))

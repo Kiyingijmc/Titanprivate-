@@ -472,3 +472,92 @@ class TestPooledEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpreadReachesResolver(unittest.TestCase):
+    """Tasks 2-3 corrected resolve_trade's fill trigger, but the trigger only
+    bites when a per-signal `spread` actually arrives. Assert the plumbing,
+    not the intent: without this, the whole fill-model correction is inert on
+    the real study path and a re-baseline would measure nothing."""
+
+    SPEC = {"tick_size": 0.01, "tick_value": 0.1, "vol_step": 0.01}
+
+    def _records_and_df(self, n=20):
+        bars = [{"time": f"2026-01-01 {i:02d}:00:00", "open": 100.0, "high": 100.2,
+                 "low": 99.5, "close": 100.0} for i in range(n)]
+        records = [{"i": 1, "signal": "BUY", "price": 99.5, "sl": 98.5, "tp": 101.5,
+                    "type": "LIMIT", "grade": "A", "strategy": "silver_bullet",
+                    "bias": "BULLISH", "time": bars[0]["time"]}]
+        return records, pd.DataFrame(bars)
+
+    def test_signals_carry_spread_in_price_units(self):
+        records, df = self._records_and_df()
+        trades, skipped = _signals_to_trades(
+            records, df, 50, self.SPEC, 7.0, 5.0)
+        self.assertTrue(trades or skipped, "fixture produced no signals at all")
+        for row in trades + skipped:
+            # 50 ticks * 0.01 tick_size = 0.50 price units
+            self.assertAlmostEqual(row["spread"], 0.50)
+
+    def test_wider_spread_suppresses_a_marginal_fill(self):
+        """The behavioural consequence. Bid low touches the limit exactly, so
+        it fills at spread 0; at a 0.50 spread the ask never reaches it."""
+        records, df = self._records_and_df()
+        cheap, _ = _signals_to_trades(records, df, 0, self.SPEC, 7.0, 5.0)
+        dear, _ = _signals_to_trades(records, df, 50, self.SPEC, 7.0, 5.0)
+        self.assertTrue(any(t["filled"] for t in cheap),
+                        "bid low touches the limit; must fill at spread 0")
+        self.assertFalse(any(t["filled"] for t in dear),
+                         "ask never reaches the limit at a 0.50 spread")
+
+    def test_zero_tick_size_does_not_crash_or_invent_a_spread(self):
+        records, df = self._records_and_df()
+        trades, skipped = _signals_to_trades(
+            records, df, 50, {"tick_size": 0.0, "tick_value": 0.1, "vol_step": 0.01},
+            7.0, 5.0)
+        for row in trades + skipped:
+            self.assertEqual(row["spread"], 0.0)
+
+
+class MissingSpecFailsClosed(unittest.TestCase):
+    """_DEFAULT_SPEC is EURUSD-shaped (tick_size 1e-5). Substituting it for an
+    index pair misstates the sizing denominator by 1000x and net R with it,
+    silently. The live RiskManager refuses to guess; so must research."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.out_dir = Path(self._tmpdir) / "out"
+        self.specs_path = Path(self._tmpdir) / "specs.json"
+        self.specs_path.write_text(json.dumps(
+            {"EURUSD": {"tick_size": 1e-05, "tick_value": 1.0, "vol_step": 0.01}}))
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _run(self, *extra):
+        argv = ["--csv", TEST_DATA_CSV, "--symbol", "BTCUSD", "--tf", "H1",
+                "--strategy", "silver_bullet", "--spread-pips", "20",
+                "--out", str(self.out_dir), "--specs", str(self.specs_path)]
+        with redirect_stdout(io.StringIO()) as buf:
+            rc = research_main(argv + list(extra))
+        return rc, buf.getvalue()
+
+    def test_symbol_absent_from_specs_is_an_error(self):
+        rc, out = self._run()
+        self.assertNotEqual(rc, 0, "missing tick spec must not silently default")
+        self.assertIn("BTCUSD", out)
+
+    def test_allow_default_spec_opts_back_in(self):
+        rc, out = self._run("--allow-default-spec")
+        self.assertEqual(rc, 0)
+        self.assertIn("WARNING", out)
+
+    def test_probed_fallback_covers_a_pair_absent_from_specs_json(self):
+        """US100 is in the tracked RESEARCH_TICK_SPECS but not in this fixture.
+        It must resolve from the fallback WITHOUT --allow-default-spec, and
+        must not silently take EURUSD's 1e-5 tick_size."""
+        from src.research.costs import tick_spec
+        spec = tick_spec("US100")
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec["tick_size"], 0.01)
+        self.assertNotEqual(spec["tick_size"], _DEFAULT_SPEC["tick_size"])

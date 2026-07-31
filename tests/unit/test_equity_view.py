@@ -113,6 +113,28 @@ class SeriesAssembly(unittest.TestCase):
         self.assertIsNone(out["coverage"]["first_sample_ts"])
         self.assertEqual(out["coverage"]["n"], 0)
 
+    def test_last_aggregation_picks_the_later_sample_not_the_larger_value(self):
+        """Two rows land in the SAME downsample bucket and equity falls across
+        them. 'last' must return the value at the later timestamp (100), not
+        the larger value (500) a bare SQL MAX() would return. This pins the
+        exact correctness property the brief calls out: a regression that
+        swapped the correlated subquery for MAX() would still pass every
+        other test in this file, because they never put two rows in one
+        bucket."""
+        now = 1_000_000.0
+        earlier_ts = int(now) - 250   # bucket index 3332 for bucket_s=300
+        later_ts = int(now) - 200     # same bucket index 3332, later in time
+        rows = [
+            (earlier_ts, 500.0, 500.0, 500.0, 100.0, 500.0),
+            (later_ts, 100.0, 100.0, 500.0, 100.0, 500.0),
+        ]
+        conn = _seeded(rows)
+        out = equity_series(conn, "1d", now=now)
+        self.assertEqual(len(out["points"]), 1)
+        point = out["points"][0]
+        self.assertEqual(point["equity"], 100.0)
+        self.assertEqual(point["balance"], 100.0)
+
     def test_short_range_reads_the_fine_table(self):
         now = 1_000_000.0
         rows = [(now - i * 10, 100.0 + i, 90.0, 200.0) for i in range(4)]

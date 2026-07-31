@@ -8,11 +8,14 @@ from __future__ import annotations
 import math
 import time
 
-from src.ops.equity_recorder import COARSE_TABLE, FINE_TABLE, series_for
+from src.ops.equity_recorder import _DEFAULTS, COARSE_TABLE, FINE_TABLE, series_for
 
 MAX_POINTS = 300
-FINE_CADENCE_S = 10
-COARSE_CADENCE_S = 300
+# Single source of truth: the recorder's own defaults (ops.equity.fine_cadence_s /
+# coarse_bucket_s in config/config.yaml). Hardcoding a second copy here would let
+# a config change silently desync the view's bucket math from what was stored.
+FINE_CADENCE_S = int(_DEFAULTS["fine_cadence_s"])
+COARSE_CADENCE_S = int(_DEFAULTS["coarse_bucket_s"])
 FINE_MAX_RANGE_S = 43_200          # 12h — above this we read the coarse tier
 DEFAULT_RANGE = "1d"
 

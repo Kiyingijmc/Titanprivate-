@@ -58,6 +58,40 @@ body {
   animation: titan-dialog-out var(--motion-fast) var(--ease-out);
 }
 
+/* ── ⌘K command palette ────────────────────────────────────────────────────
+   Same mechanism as the dialogs: cmdk's Command.Dialog is Radix Dialog
+   underneath, so it defers unmount on animationend and @keyframes give a real
+   enter AND exit. cmdk exposes no className/data-prop route to its
+   Dialog.Content (extra props go to the inner Command), so these rules hook
+   the cmdk-dialog / cmdk-overlay attributes it stamps itself.
+
+   Enter from scale(0.98), not 0.95: the palette is an input surface the
+   operator summoned on purpose — it should feel nearer to hand than a modal
+   interruption, present almost before the keys are up. The X translate is
+   what centres it (left-1/2 + -translate-x-1/2) so it rides on every frame;
+   there is no Y translate to carry — top-24 is a box offset, not a
+   transform.                                                               */
+@keyframes titan-palette-in {
+  from { opacity: 0; transform: translate(-50%, 0) scale(0.98) }
+  to   { opacity: 1; transform: translate(-50%, 0) scale(1) }
+}
+@keyframes titan-palette-out {
+  from { opacity: 1; transform: translate(-50%, 0) scale(1) }
+  to   { opacity: 0; transform: translate(-50%, 0) scale(0.98) }
+}
+[cmdk-overlay][data-state="open"] {
+  animation: titan-overlay-in var(--motion-base) var(--ease-out);
+}
+[cmdk-overlay][data-state="closed"] {
+  animation: titan-overlay-out var(--motion-fast) var(--ease-out);
+}
+[cmdk-dialog][data-state="open"] {
+  animation: titan-palette-in var(--motion-base) var(--ease-out);
+}
+[cmdk-dialog][data-state="closed"] {
+  animation: titan-palette-out var(--motion-fast) var(--ease-out);
+}
+
 /* ── Command-failure toast ─────────────────────────────────────────────────
    This surface exists ONLY when something failed. Appearing instantly makes a
    failure indistinguishable from a repaint — it must arrive, so the operator

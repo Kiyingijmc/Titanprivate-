@@ -145,6 +145,27 @@ describe("the failure toast does not blink into existence", () => {
   });
 });
 
+describe("the command palette animates like the dialogs", () => {
+  it("binds enter and exit keyframes to cmdk's own attributes", () => {
+    const css = read("src/index.css");
+    // cmdk's Command.Dialog stamps cmdk-dialog / cmdk-overlay on the Radix
+    // content/overlay it renders — the only styling hooks it exposes, since
+    // extra props go to the inner Command, not Dialog.Content.
+    expect(css).toContain('[cmdk-dialog][data-state="open"]');
+    expect(css).toContain('[cmdk-dialog][data-state="closed"]');
+    expect(css).toContain('[cmdk-overlay][data-state="open"]');
+    expect(css).toContain('[cmdk-overlay][data-state="closed"]');
+    // The palette is centred by translateX alone (left-1/2 + -translate-x-1/2;
+    // top-24 is a box offset, not a transform) — the X half must ride along on
+    // every frame or the scale would recentre it mid-animation.
+    const block = css.slice(css.indexOf("@keyframes titan-palette-in"));
+    expect(block).toContain("translate(-50%, 0) scale(0.98)");
+    // Same curve discipline as the dialogs: ease-out, token-timed.
+    expect(css).toMatch(/\[cmdk-dialog\]\[data-state="open"\]\s*\{[^}]*var\(--ease-out\)/);
+    expect(css).toMatch(/\[cmdk-dialog\]\[data-state="closed"\]\s*\{[^}]*var\(--motion-fast\)/);
+  });
+});
+
 describe("loading skeletons read as a wave, not a block", () => {
   it("staggers the three bars", () => {
     render(<Panel status="loading" />);

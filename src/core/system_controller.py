@@ -191,6 +191,18 @@ class SystemController:
         # Default safety
         if not self.active_symbols: self.active_symbols.add("BTCUSD")
 
+    # RISK-01. The daily DD anchor is keyed by TRADING day, not calendar day.
+    # The bot already re-anchors at 23:45 Africa/Kampala (the Uganda report block
+    # in the main loop), so a restore that used a midnight boundary would
+    # disagree with that reset for 15 minutes every night -- long enough for a
+    # restart in that window to resurrect an anchor the reset had superseded.
+    # Shifting the clock forward 15 minutes makes plain strftime roll over at
+    # exactly 23:45.
+    @staticmethod
+    def _trading_day_key(now_uganda):
+        """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
+        return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
     def _load_env(self):
         env_path = self.root_dir / ".env"
         load_dotenv(dotenv_path=env_path)

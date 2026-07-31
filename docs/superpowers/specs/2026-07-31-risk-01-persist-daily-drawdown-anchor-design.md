@@ -122,13 +122,23 @@ controller.
 This is strictly monotone: it can only ever *keep* an anchor that today's code throws
 away. There is no input for which it is more permissive than current behaviour.
 
-**Persist on change, not per heartbeat.** A `self._last_persisted_anchor` cache guards
-two call sites so the write happens roughly twice a day rather than every ~5 s:
+**Persist on change, from the main loop.** *(Revised during implementation — the original
+design put this in the HEARTBEAT branch; see §4.1 for why that was wrong.)*
 
-- after `update_account_info(bal, eq)` in the HEARTBEAT branch (`:713`) — captures the
-  boot anchor once it exists;
-- after `reset_daily_metrics()` in the 23:45 block (`:355`) — captures the new day's
-  anchor immediately, so a restart seconds later restores the *reset* value.
+A single call site in the main loop, immediately after `now_uganda` is computed and
+before the 23:45 block, passing that timestamp in so no extra clock read is added:
+
+```python
+self._persist_daily_anchor(now_uganda)
+```
+
+A `self._last_persisted_anchor` cache on `(trading_day_key, equity)` makes this a cheap
+comparison on each of the loop's ~1 ms iterations and a real database write only twice a
+day — once when the boot anchor first appears, once after the 23:45 reset (picked up on
+the iteration following the reset).
+
+This keeps `_process_incoming_data` pure data-routing, which matters because a raise on
+that path would stop position tracking, pending-order sync and the equity feed.
 
 ## 3 · Systemd hardening (static, no runtime effect today)
 
@@ -179,11 +189,40 @@ TDD: each test is written first and observed RED against unmodified code.
 - 00:30 EAT → still the previous calendar date's key, i.e. the same trading day the
   23:45 reset opened.
 
-**Not instantiation-tested:** the ~6 lines of controller glue. Nothing in this repo
-constructs a full `SystemController` in a unit test, and starting that pattern here
-would open the **live bot's real `data/db/trade_state.db`** from the test suite. The
-glue is reviewed by inspection; the boundary function and both storage/anchor
-primitives it calls are covered directly.
+**Controller glue coverage — corrected 2026-07-31 after implementation.** This section
+originally claimed "nothing in this repo constructs a full `SystemController` in a unit
+test." **That was wrong**, and the error mattered: it was used to justify not testing the
+glue. Three modules do construct one, via `object.__new__(SystemController)` (or
+`SystemController.__new__`) plus hand-set attributes, and then drive real controller
+methods:
+
+- `tests/unit/test_controller_events.py` (`MagicMock` risk_manager/state_manager)
+- `tests/unit/test_controller_routing.py` (`FakeRisk`, `FakeState`)
+- `tests/unit/test_risk_manager_exposure_cap.py` (a real `RiskManager`)
+
+A grep for `SystemController(` misses all three. They caught two real defects in the
+first implementation (see §4.1), so the glue **is** covered on the paths those tests
+exercise. What remains genuinely uncovered is the boot-restore block in `__init__`,
+which no test reaches because none of these fixtures runs `__init__`.
+
+`_persist_daily_anchor` is additionally covered directly by calling it with a stub
+`self` (`tests/unit/test_trading_day_key.py`), which needs no controller instance —
+constructing a real one would open the **live bot's** `data/db/trade_state.db` and bind
+its ports.
+
+### 4.1 · Defects the full suite caught that per-module runs did not
+
+Recorded because both are instructive:
+
+1. `_persist_daily_anchor` compared `equity <= 0` directly, raising `TypeError` on a
+   non-numeric `day_start_equity`. Fixed by coercing through `float()` +
+   `math.isfinite`, the same discipline `restore_daily_anchor` uses.
+2. It was called from `_process_incoming_data`'s HEARTBEAT branch — bookkeeping on the
+   data-routing path, where a raise stops position tracking, pending-order sync and the
+   equity feed. Moved into the main loop beside the Sync Guard and ghost cleanup, taking
+   `now_uganda` as a parameter so it adds no extra clock read. The separate 23:45 call
+   was then redundant and removed: the loop picks the post-reset anchor up on the next
+   iteration (~1 ms later). The HEARTBEAT branch is now byte-identical to `main`.
 
 **Mutation check (mandatory before claiming done):** this repo has shipped confirmed
 bugs past a green suite. After the suite is green, each of these must be mutated and

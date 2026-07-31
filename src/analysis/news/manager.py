@@ -19,6 +19,7 @@ class NewsManager:
         self.logger = logger
         self.enabled = bool(cfg.get("enabled", True))
         self.refresh_interval_s = float(cfg.get("refresh_interval_min", 60)) * 60.0
+        self.stale_retry_interval_s = float(cfg.get("stale_retry_interval_min", 1)) * 60.0
         self.policy = NewsPolicy(config)
         self.policy.logger = logger
         self.source = source or ForexFactoryCsvSource(logger)
@@ -29,8 +30,14 @@ class NewsManager:
 
     async def update_calendar(self) -> None:
         now = datetime.now(timezone.utc)
+        # While the cache is stale the book is HALTED -- and a halted bot also
+        # stops managing open positions -- so retry every minute instead of
+        # every hour. (Retrying on every loop iteration, as the retired module
+        # did while failed-closed, would hammer the endpoint.)
+        halted, _ = self.is_globally_blocked(now)
+        interval = self.stale_retry_interval_s if halted else self.refresh_interval_s
         if self._last_attempt is not None:
-            if (now - self._last_attempt).total_seconds() < self.refresh_interval_s:
+            if (now - self._last_attempt).total_seconds() < interval:
                 return
         self._last_attempt = now
         try:

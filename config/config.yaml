@@ -175,6 +175,10 @@ ops:
 news:
   enabled: true
   refresh_interval_min: 60
+  # Retry cadence while trading is halted on a stale cache -- much shorter
+  # than refresh_interval_min so a boot-time fetch failure recovers in
+  # minutes, not up to an hour, without hammering the feed every loop tick.
+  stale_retry_interval_min: 1
   window_pre_min: 60
   window_post_min: 30
   max_cache_age_hours: 48

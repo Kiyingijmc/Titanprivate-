@@ -27,8 +27,10 @@ class _Source:
     def __init__(self, events=None, error=None):
         self.events = events or []
         self.error = error
+        self.calls = 0
 
     async def fetch(self):
+        self.calls += 1
         if self.error:
             raise self.error
         return self.events
@@ -125,6 +127,29 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(snap["status"], "ok")
         self.assertEqual(snap["next"]["title"], "Core PCE")
         self.assertIn("EURUSD", snap["next"]["affects"])
+
+
+class HaltedRetriesQuickly(unittest.TestCase):
+    """A halted bot must not wait out the hourly interval to recover."""
+
+    def test_retries_within_the_hour_while_halted(self):
+        source = _Source(error=NewsFetchError("down"))
+        manager = _manager(source)          # empty store -> stale -> halted
+        _run(manager.update_calendar())
+        manager._last_attempt = datetime.now(timezone.utc) - timedelta(seconds=90)
+        calls_before = source.calls
+        _run(manager.update_calendar())
+        self.assertGreater(source.calls, calls_before)
+        self.assertTrue(manager.is_globally_blocked()[0])
+        self.assertIsNotNone(manager._last_attempt)
+
+    def test_does_not_hammer_while_halted(self):
+        source = _Source(error=NewsFetchError("down"))
+        manager = _manager(source)
+        _run(manager.update_calendar())
+        stamped = manager._last_attempt
+        _run(manager.update_calendar())      # immediately again
+        self.assertEqual(manager._last_attempt, stamped)  # skipped, not retried
 
 
 if __name__ == "__main__":

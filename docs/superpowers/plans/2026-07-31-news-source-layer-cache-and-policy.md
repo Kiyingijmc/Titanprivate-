@@ -883,8 +883,10 @@ git commit -m "feat(news): disk-persisted CalendarStore with atomic write and pe
 - Produces: `NewsPolicy(config: dict | None = None)` with
   `currencies_for(symbol: str) -> list[str]`,
   `blocking_event(events, symbol, now_utc) -> CalendarEvent | None`,
-  `reason_for(event, now_utc) -> str`, and `is_stale(age: timedelta | None) -> bool`.
-  Exposes `.window_pre`, `.window_post` as `timedelta`, and `.max_cache_age` as `timedelta`.
+  `reason_for(event, now_utc) -> str`, `is_stale(age: timedelta | None) -> bool`, and
+  `mapped_symbols() -> list[str]` (the configured symbols, so callers never reach into
+  private state). Exposes `.window_pre`, `.window_post` as `timedelta`, and `.max_cache_age`
+  as `timedelta`.
 
 This unit is pure — no I/O, no ambient clock. That is what makes code that can stop the book
 testable; the module it replaces had zero tests.
@@ -930,6 +932,10 @@ class CurrencyMapping(unittest.TestCase):
     def test_uninferrable_symbol_defaults_to_usd_not_empty(self):
         """An empty list would fail OPEN -- nothing would ever block."""
         self.assertEqual(NewsPolicy({}).currencies_for("US30"), ["USD"])
+
+    def test_mapped_symbols_lists_configured_symbols(self):
+        self.assertEqual(sorted(NewsPolicy(CONFIG).mapped_symbols()),
+                         ["EURUSD", "GBPJPY", "XAUUSD"])
 
 
 class OnlyRedFolderBlocks(unittest.TestCase):
@@ -1051,6 +1057,10 @@ class NewsPolicy:
         self._warned: set[str] = set()
         self.logger = None  # optional; set by NewsManager so fallbacks are visible
 
+    def mapped_symbols(self) -> list[str]:
+        """The configured symbols, so callers need not reach into private state."""
+        return list(self._map.keys())
+
     def currencies_for(self, symbol: str) -> list[str]:
         name = (symbol or "").upper()
         mapped = self._map.get(name)
@@ -1094,7 +1104,7 @@ class NewsPolicy:
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `.venv/bin/python -m unittest tests.unit.test_news_policy -v`
-Expected: PASS (21 tests)
+Expected: PASS (22 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1356,7 +1366,11 @@ class NewsManager:
             upcoming = [e for e in self.store.events()
                         if e.importance == "HIGH" and e.when_utc >= now]
             nxt = upcoming[0] if upcoming else None
-            symbols = list(self.policy._map.keys())
+            symbols = self.policy.mapped_symbols()
+            # Evaluate the gate ONCE per symbol -- calling check_symbol twice per
+            # entry (once for the test, once for the value) doubles the work and
+            # can disagree with itself if `now` is not pinned.
+            gates = {s: self.check_symbol(s, now) for s in symbols}
             return {
                 "status": "stale" if self.policy.is_stale(age)
                           else ("degraded" if self.feed_degraded else "ok"),
@@ -1372,8 +1386,7 @@ class NewsManager:
                                 if nxt.currency in self.policy.currencies_for(s)],
                 },
                 "blocked_symbols": {
-                    s: self.check_symbol(s, now)[1] for s in symbols
-                    if self.check_symbol(s, now)[0]
+                    s: reason for s, (blocked, reason) in gates.items() if blocked
                 },
             }
         except Exception as exc:  # the GUI payload must never break on news
@@ -1627,8 +1640,8 @@ setsid nohup bash -c ".venv/bin/python -m unittest discover -s tests/unit -p 'te
 until grep -q '^EXIT=' $L; do sleep 15; done; grep -E '^(Ran|OK|FAILED|EXIT=)' $L
 ```
 
-Expected: `OK`, `EXIT=0`. Baseline before this session was 687 tests. This plan adds 67
-(4 + 8 + 5 + 14 + 21 + 9 + 6) and deletes 4, so expect **750**. A count materially below
+Expected: `OK`, `EXIT=0`. Baseline before this session was 687 tests. This plan adds 68
+(4 + 8 + 5 + 14 + 22 + 9 + 6) and deletes 4, so expect **751**. A count materially below
 that means a module failed to collect — investigate before proceeding. Do not proceed on a
 red suite.
 
@@ -1660,6 +1673,12 @@ Task 6. `NewsFetchError` is defined in Task 3 and imported in Task 6's test.
 `store.age()` returns `timedelta | None` in Task 4 and `policy.is_stale()` accepts exactly
 that in Task 5. `NAME` exists on the source in Tasks 2–3 and is read in Task 6.
 
-**Known wart.** `snapshot()` in Task 6 reads `self.policy._map`, a private attribute, to
-enumerate configured symbols. Acceptable within one package; if Session 2 needs it more
-widely, promote it to a `policy.mapped_symbols()` accessor then rather than speculatively now.
+**Pre-flight corrections (applied before execution began).** Two defects in the first draft
+of this plan were found during the pre-flight conflict scan and fixed here, so no implementer
+inherits them:
+
+1. `snapshot()` reached into `self.policy._map`, a private attribute. Task 5 now exposes
+   `mapped_symbols()` and Task 6 uses it.
+2. `snapshot()`'s `blocked_symbols` comprehension called `check_symbol` twice per symbol —
+   once for the predicate and once for the value. Beyond the wasted work, the two calls could
+   disagree if `now` were ever left unpinned. It now evaluates each gate once into `gates`.

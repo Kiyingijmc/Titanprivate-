@@ -139,6 +139,12 @@ class MT5Client:
             trade_mode=info.trade_mode,
             tick_value=info.trade_tick_value,
             tick_size=info.trade_tick_size,
+            swap_mode=info.swap_mode,
+            swap_long=info.swap_long,
+            swap_short=info.swap_short,
+            swap_rollover3days=info.swap_rollover3days,
+            currency_base=info.currency_base,
+            currency_profit=info.currency_profit,
         )
 
     def list_symbols(self) -> list[str]:

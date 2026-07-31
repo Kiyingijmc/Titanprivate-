@@ -95,8 +95,18 @@ export function Sidebar({ collapsed, onToggleCollapse }: SidebarProps) {
 
   return (
     <aside
+      // The collapse is instant on purpose. This <aside> is in flow, so its
+      // width IS the width of <main> — transitioning it relayouts and repaints
+      // the whole dashboard (Recharts equity chart + positions table) on every
+      // frame of the animation. The obvious alternative, a transform-based
+      // collapse, does not apply here: a translated element keeps its layout
+      // box, so main would never reclaim the space. Between animating layout on
+      // a live trading view and snapping, snapping wins — this is a deliberate,
+      // low-frequency action where the operator is looking at the result, and
+      // an instant result is never "slow". Width and labels change in the same
+      // frame, so there is no half-collapsed state to look wrong.
       className={cn(
-        "flex h-full flex-col border-r border-border bg-surface-1 transition-[width]",
+        "flex h-full flex-col border-r border-border bg-surface-1",
         collapsed ? "w-16" : "w-60"
       )}
     >

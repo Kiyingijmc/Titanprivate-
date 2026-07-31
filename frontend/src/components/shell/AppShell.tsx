@@ -138,7 +138,8 @@ export function AppShell() {
       {actionError && (
         <div
           role="alert"
-          className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border border-loss/40 bg-elevated px-4 py-2 text-sm text-loss shadow-2"
+          data-titan-toast=""
+          className="fixed bottom-4 left-1/2 z-50 flex items-center gap-3 rounded-md border border-loss/40 bg-elevated px-4 py-2 text-sm text-loss shadow-2"
         >
           <span>Command failed: {actionError}</span>
           <button

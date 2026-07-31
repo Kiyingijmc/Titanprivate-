@@ -2,6 +2,10 @@ import type { Config } from "tailwindcss";
 
 export default {
   darkMode: ["class"],
+  // Wraps every `hover:` utility in @media (hover: hover) and (pointer: fine).
+  // BottomTabs proves phones are a real target, and on touch a tap fires :hover
+  // and leaves the element stuck in its hover state until the next tap.
+  future: { hoverOnlyWhenSupported: true },
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
@@ -50,6 +54,20 @@ export default {
       boxShadow: {
         1: "var(--shadow-1)",
         2: "var(--shadow-2)",
+      },
+      // Motion tokens, bound the same way as borderRadius/boxShadow above.
+      // Overriding DEFAULT is the point: without it every bare `transition-*`
+      // silently falls back to Tailwind's own 150ms / cubic-bezier(.4,0,.2,1)
+      // and the tokens govern nothing.
+      transitionTimingFunction: {
+        DEFAULT: "var(--ease)",
+        out: "var(--ease-out)",
+        "in-out": "var(--ease-in-out)",
+      },
+      transitionDuration: {
+        DEFAULT: "var(--motion-fast)",
+        fast: "var(--motion-fast)",
+        base: "var(--motion-base)",
       },
     },
   },

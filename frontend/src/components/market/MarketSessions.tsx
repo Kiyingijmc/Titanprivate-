@@ -177,8 +177,13 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
           className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
           style={{ backgroundColor: `${color}26`, color }}
         >
+          {/* Static dot. It used to pulse forever, which is the highest-
+              frequency animation in the app: always on screen, always moving,
+              on a surface the operator watches for hours. The chip already
+              says "Open" in the session colour, so the motion carried no
+              information it was not already showing. */}
           <span
-            className="size-1.5 animate-pulse rounded-full"
+            className="size-1.5 rounded-full"
             style={{ backgroundColor: color }}
             aria-hidden
           />

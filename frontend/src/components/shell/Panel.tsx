@@ -20,10 +20,14 @@ export interface PanelProps {
 
 function PanelSkeleton() {
   return (
+    // Staggered ~60ms apart: pulsing in unison reads as one mechanical block,
+    // offset it reads as a wave and suggests content streaming in. Purely
+    // decorative and non-blocking; reduced motion stops it outright via the
+    // iteration-count rule in index.css.
     <div data-testid="skeleton" className="space-y-2" aria-hidden="true">
-      <div className="h-4 w-full animate-pulse rounded-md bg-surface-2" />
-      <div className="h-4 w-5/6 animate-pulse rounded-md bg-surface-2" />
-      <div className="h-4 w-2/3 animate-pulse rounded-md bg-surface-2" />
+      <div className="h-4 w-full animate-pulse rounded-md bg-surface-2" style={{ animationDelay: "0ms" }} />
+      <div className="h-4 w-5/6 animate-pulse rounded-md bg-surface-2" style={{ animationDelay: "60ms" }} />
+      <div className="h-4 w-2/3 animate-pulse rounded-md bg-surface-2" style={{ animationDelay: "120ms" }} />
     </div>
   );
 }

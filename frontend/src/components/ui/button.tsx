@@ -5,7 +5,17 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  // Press feedback: every pressable surface here is consequential (panic,
+  // close-all, confirm), and a button that does not answer the press leaves the
+  // operator unsure the app heard them. scale(0.97) at --motion-fast is the
+  // smallest change that reads as an answer. transform is named explicitly in
+  // the transition — a scale outside transition-property snaps instead of
+  // easing. ease-out (not the default --ease) because a press is a press/enter
+  // case: the movement must be visible in the first frame, which is exactly
+  // when the operator is looking. Touch devices are covered by
+  // hoverOnlyWhenSupported, which gates :hover but deliberately not :active —
+  // a tap SHOULD press.
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-[color,background-color,border-color,text-decoration-color,fill,stroke,opacity,box-shadow,transform] duration-fast ease-out active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {

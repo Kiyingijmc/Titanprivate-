@@ -27,9 +27,13 @@ function Tile({
       data-testid={testId}
       data-tone={dataTone}
       className={cn(
-        // Resting depth + a subtle lift on hover gives the KPI row a premium,
-        // layered feel (reduced-motion users get the end state, no transition).
-        "shadow-1 transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong hover:shadow-2",
+        // Resting depth, and on hover the border and shadow firm up. The lift
+        // (hover:-translate-y-0.5) was removed deliberately: an operator scans
+        // this KPI row constantly, and at that frequency a tile that springs
+        // reads as noise. A dense trading dashboard should feel crisp, not
+        // playful. Properties are named rather than transition-all so a later
+        // className override cannot silently animate layout.
+        "shadow-1 transition-[border-color,box-shadow] duration-fast hover:border-border-strong hover:shadow-2",
         // A hairline accent rail marks the primary live figure (Open P&L).
         accent && "border-l-2 border-l-accent"
       )}

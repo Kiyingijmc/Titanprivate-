@@ -114,6 +114,32 @@ class NewsManager:
         return True, self.policy.reason_for(event, now)
 
     # --- presentation (consumed by Session 2) ------------------------------
+    def digest(self, now=None) -> dict:
+        """Today's red-folder events as plain data, for Telegram and the GUI.
+        Never raises -- a rendering aid must not be able to break a caller."""
+        now = now or datetime.now(timezone.utc)
+        try:
+            day = now.date()
+            symbols = self.policy.mapped_symbols()
+            events = []
+            for event in self.store.events():
+                if event.importance != "HIGH" or event.when_utc.date() != day:
+                    continue
+                events.append({
+                    "when_utc": event.when_utc.isoformat(),
+                    "currency": event.currency,
+                    "title": event.title,
+                    "forecast": event.forecast,
+                    "previous": event.previous,
+                    "affects": [s for s in symbols
+                                if event.currency in self.policy.currencies_for(s)],
+                })
+            return {"date": day.isoformat(), "count": len(events), "events": events}
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Digest failed: {exc}")
+            return {"date": now.date().isoformat(), "count": 0, "events": [],
+                    "status": "unavailable"}
+
     def snapshot(self, now=None) -> dict:
         try:
             now = now or datetime.now(timezone.utc)

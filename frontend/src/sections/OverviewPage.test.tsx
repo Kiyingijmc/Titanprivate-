@@ -4,9 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ReadOnlyProvider } from "@/context/ReadOnlyContext";
 import { ControllerProvider } from "@/context/ControllerContext";
+import { EquitySparkline } from "@/components/EquitySparkline";
 import type { Snapshot, FeedEvent, EquitySeries } from "@/lib/types";
 import type { Api } from "@/lib/api";
-import OverviewPage from "./OverviewPage";
+import OverviewPage, { withLiveTail } from "./OverviewPage";
 
 // Freeze the clock the market widgets read. 2026-07-29 13:00 UTC (Wednesday,
 // not a weekend) has London + New York open, so session chips render.
@@ -192,5 +193,62 @@ describe("OverviewPage", () => {
 
     // 3. the fetch was re-issued for the newly picked range
     await waitFor(() => expect(api.getEquity).toHaveBeenCalledWith("4h"));
+  });
+});
+
+function fineSeries(overrides: Partial<EquitySeries> = {}): EquitySeries {
+  return {
+    range: "4h",
+    tier: "fine",
+    bucket_s: 30,
+    series: ["equity", "balance", "peak"],
+    points: [
+      { ts: 1000, equity: 10000, balance: 9990, peak: 10000 },
+      { ts: 1030, equity: 10010, balance: 9990, peak: 10010 },
+    ],
+    coverage: { first_sample_ts: 1000, n: 2, series_first_ts: {}, gaps: [] },
+    ...overrides,
+  };
+}
+
+describe("withLiveTail", () => {
+  it("appends a live tail point strictly newer than the series' last real ts", () => {
+    const series = fineSeries();
+    const merged = withLiveTail(series, [{ ts: 1060, equity: 10020 }]);
+    expect(merged!.points).toHaveLength(3);
+    expect(merged!.points[2]).toEqual({ ts: 1060, equity: 10020, balance: 9990, peak: 10020 });
+  });
+
+  it("drops a tail point at or before the series' last real ts (no double-counting the same instant)", () => {
+    const series = fineSeries();
+    const atLastTs = withLiveTail(series, [{ ts: 1030, equity: 99999 }]);
+    expect(atLastTs!.points).toHaveLength(2); // unchanged — same instant already represented
+
+    const beforeLastTs = withLiveTail(series, [{ ts: 900, equity: 99999 }]);
+    expect(beforeLastTs!.points).toHaveLength(2);
+  });
+
+  it("leaves a coarse range untouched — a bucketed line must not sprout a high-res spike", () => {
+    const series = fineSeries({ range: "1d", tier: "coarse", bucket_s: 300 });
+    const merged = withLiveTail(series, [{ ts: 1060, equity: 10020 }]);
+    expect(merged).toBe(series); // same reference — nothing appended, nothing copied
+  });
+
+  it("keeps points ascending in ts — appended tail points cannot reorder the series", () => {
+    const series = fineSeries();
+    // fed out of order; the merge must sort the fresh tail before appending
+    const merged = withLiveTail(series, [
+      { ts: 1090, equity: 10040 },
+      { ts: 1060, equity: 10020 },
+    ]);
+    const tsValues = merged!.points.map((p) => p!.ts);
+    expect(tsValues).toEqual([...tsValues].sort((a, b) => a - b));
+  });
+
+  it("the augmented series still renders", () => {
+    const series = fineSeries();
+    const merged = withLiveTail(series, [{ ts: 1060, equity: 10020 }]);
+    render(<EquitySparkline points={[]} series={merged!} width={400} height={200} />);
+    expect(screen.getByTestId("equity-sparkline")).toBeInTheDocument();
   });
 });

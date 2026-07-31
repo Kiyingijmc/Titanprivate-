@@ -26,7 +26,7 @@ from src.execution.bridge_zmq import ZMQBridge
 from src.core.data_store import MultiTimeframeStore
 from src.analysis.bias_engine import BiasEngine
 from src.analysis.time_math import TimeNormalizer
-from src.analysis.news_manager import NewsManager
+from src.analysis.news import NewsManager
 from src.analysis.smc_analyzer import SMCAnalyzer
 from src.analysis.signal_grader import SignalGrader
 from src.risk.risk_manager import RiskManager
@@ -121,7 +121,7 @@ class SystemController:
         
         self.risk_manager = RiskManager(self.config, self.logger)
         self.exposure_manager = ExposureManager(self.config, self.market_data)
-        self.news_manager = NewsManager(self.logger)
+        self.news_manager = NewsManager(self.logger, self.config)
         self.signal_grader = SignalGrader(self.config)
 
         # --- Trading OS B0: bus, structured log, golden tape ---
@@ -275,8 +275,11 @@ class SystemController:
         await self._wait_for_bridge_connection()
 
         self._init_strategies()
-        await self.news_manager.update_calendar()
-        
+        try:
+            await self.news_manager.update_calendar()
+        except Exception as e:
+            self.logger.log_event("WARN", "NEWS", f"Boot calendar fetch failed: {e}")
+
         for sym in self.active_symbols:
             self.market_data[sym] = MultiTimeframeStore(sym)
 
@@ -334,7 +337,10 @@ class SystemController:
 
                 # --- C. CONTROL & TELEMETRY ---
                 await self.telemetry.poll_commands()
-                await self._check_news_status() 
+                try:
+                    await self._check_news_status()
+                except Exception as e:
+                    self.logger.log_event("WARN", "NEWS", f"News status check failed: {e}")
 
                 # --- D. DATA INGESTION ---
                 if self.bridge:
@@ -395,7 +401,22 @@ class SystemController:
             self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
+    def _news_blocks_symbol(self, symbol):
+        """Per-symbol red-folder gate. Never raises: a news fault must not
+        crash the trade path, so an internal error degrades to 'not blocked'
+        while the global stale-cache guard remains in force."""
+        try:
+            return self.news_manager.check_symbol(symbol)
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Symbol gate failed for {symbol}: {exc}")
+            return False, None
+
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
+        news_blocked, news_reason = self._news_blocks_symbol(symbol)
+        if news_blocked:
+            self.logger.log_event("INFO", "NEWS", f"{symbol} signal skipped: {news_reason}")
+            return
+
         p = self.risk_manager.normalize_price(decision['price'], symbol)
         sl = self.risk_manager.normalize_price(decision['sl'], symbol)
         tp = self.risk_manager.normalize_price(decision['tp'], symbol)
@@ -941,16 +962,21 @@ class SystemController:
             await asyncio.sleep(0.5)
 
     async def _check_news_status(self):
+        """Global pause is reserved for the ONE genuinely global condition: a
+        calendar too stale to trust. Ordinary red-folder blackouts are applied
+        per symbol in _execute_signal, so a BOE release cannot halt US100."""
         await self.news_manager.update_calendar()
-        blocked, reason = self.news_manager.check_news_block() 
+        blocked, reason = self.news_manager.is_globally_blocked()
         if blocked and self.state == BotState.ACTIVE:
             self.state = BotState.PAUSED
             self._publish(SystemStateChanged(state="PAUSED"))
-            await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}", parse_mode="Markdown")
+            await self.telemetry.send_message(
+                f"🛑 **NEWS DATA STALE**: {reason}", parse_mode="Markdown")
         elif not blocked and self.state == BotState.PAUSED and not self.is_manual_pause:
             self.state = BotState.ACTIVE
             self._publish(SystemStateChanged(state="ACTIVE"))
-            await self.telemetry.send_message("✅ News Cleared. Resuming.", parse_mode="Markdown")
+            await self.telemetry.send_message(
+                "✅ News calendar refreshed. Resuming.", parse_mode="Markdown")
 
     def get_status_report(self):
         eq = self.risk_manager.current_equity

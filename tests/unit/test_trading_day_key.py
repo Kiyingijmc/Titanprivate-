@@ -65,5 +65,71 @@ class TradingDayKey(unittest.TestCase):
             SystemController.__dict__["_trading_day_key"], staticmethod)
 
 
+class _FakeRisk:
+    def __init__(self, equity):
+        self.day_start_equity = equity
+
+
+class _FakeStore:
+    def __init__(self):
+        self.writes = []
+
+    def save_risk_anchor(self, key, equity):
+        self.writes.append((key, equity))
+
+
+class _Stub:
+    """Enough of SystemController to drive _persist_daily_anchor.
+
+    The real class is never constructed in tests: doing so would open the LIVE
+    bot's data/db/trade_state.db and bind its ports. _persist_daily_anchor is a
+    plain function on the class, so it can be called with a stub `self`.
+    """
+
+    def __init__(self, equity):
+        self.risk_manager = _FakeRisk(equity)
+        self.state_manager = _FakeStore()
+        self.uganda_tz = EAT
+        self._last_persisted_anchor = None
+
+    _trading_day_key = SystemController.__dict__["_trading_day_key"]
+
+    def run(self):
+        SystemController._persist_daily_anchor(self)
+
+
+class PersistDailyAnchorIsCached(unittest.TestCase):
+    """RISK-01: this sits on the heartbeat path (~every 5s). It must write when
+    the anchor CHANGES, not on every pulse."""
+
+    def test_writes_once_then_suppresses_identical_repeats(self):
+        s = _Stub(1000.0)
+        for _ in range(50):          # 50 heartbeats, one anchor
+            s.run()
+        self.assertEqual(len(s.state_manager.writes), 1)
+        self.assertAlmostEqual(s.state_manager.writes[0][1], 1000.0)
+
+    def test_writes_again_when_the_anchor_changes(self):
+        s = _Stub(1000.0)
+        s.run()
+        s.risk_manager.day_start_equity = 1100.0   # e.g. the 23:45 reset
+        s.run()
+        s.run()
+        self.assertEqual([w[1] for w in s.state_manager.writes], [1000.0, 1100.0])
+
+    def test_never_writes_an_unset_or_negative_anchor(self):
+        for equity in (0.0, -1.0):
+            s = _Stub(equity)
+            s.run()
+            self.assertEqual(s.state_manager.writes, [],
+                             msg=f"wrote a bad anchor {equity}")
+
+    def test_writes_under_todays_trading_day_key(self):
+        s = _Stub(1000.0)
+        s.run()
+        expected = SystemController._trading_day_key(datetime.now(EAT))
+        self.assertEqual(s.state_manager.writes[0][0], expected)
+
+
 if __name__ == "__main__":
     unittest.main()

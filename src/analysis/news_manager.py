@@ -14,7 +14,7 @@ import requests
 import io
 import asyncio
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 class NewsManager:
     """
@@ -135,7 +135,14 @@ class NewsManager:
                     
                     # Precision parsing from oper.txt
                     # "11-03-2023 10:00am" format
-                    event_dt = datetime.strptime(full_date_str, "%m-%d-%Y %I:%M%p")
+                    #
+                    # ForexFactory publishes these times in UTC (verified against
+                    # FOMC 6:00pm = 18:00Z = 14:00 ET). They MUST be made tz-aware
+                    # here: previously they stayed naive and were compared against
+                    # a local-time now(), firing every blackout 3h early on a
+                    # UTC+3 host and leaving the real release unprotected.
+                    event_dt = datetime.strptime(
+                        full_date_str, "%m-%d-%Y %I:%M%p").replace(tzinfo=timezone.utc)
                     
                     new_events.append({
                         "title": row['Title'],
@@ -153,10 +160,13 @@ class NewsManager:
             self.logger.log_event("ERROR", "NEWS", f"Parse Error: {e}")
             return False
 
-    def check_news_block(self):
+    def check_news_block(self, now=None):
         """
         Logic for blocking trading.
         Combines oper.txt Time Windows + V14 Fail-Safe logic.
+
+        `now` is injectable (tz-aware UTC) so the blackout windows can be
+        tested against fixed release times instead of the wall clock.
         """
         # 1. Audit Fail-Safe Check (Primary Guard)
         if self.fail_safe_active:
@@ -166,8 +176,9 @@ class NewsManager:
         if not self.high_impact_events: 
             return False, None
             
-        now = datetime.now()
-        
+        # Compared against tz-aware UTC event times -- never a naive local now().
+        now = now or datetime.now(timezone.utc)
+
         # 3. Time Window logic restored from oper.txt
         for event in self.high_impact_events:
             # Simple timedelta math in minutes

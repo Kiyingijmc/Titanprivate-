@@ -54,6 +54,19 @@ export default {
       // Motion tokens, bound the same way as borderRadius/boxShadow above —
       // without this a bare `duration-fast`/`ease-out` class has nothing to
       // resolve to and the token in tokens.css is dead CSS.
+      //
+      // DELIBERATE: `out` is Tailwind's stock key for the `ease-out` utility
+      // (built-in value `cubic-bezier(0, 0, 0.2, 1)`). This entry REPLACES
+      // that stock curve app-wide with Titan's `--ease-out`
+      // (`cubic-bezier(0.23, 1, 0.32, 1)`) so the design system has one
+      // easing vocabulary — Tailwind's built-in easings are too weak/linear
+      // for UI motion, and the point of a token layer is that the system's
+      // curve is what you get by default, not something every call site has
+      // to opt into by hand. A component that genuinely wants Tailwind's
+      // original stock curve must reach for the arbitrary-value form
+      // (`ease-[cubic-bezier(0,0,0.2,1)]`) rather than assume `ease-out`
+      // still means Tailwind's default — it doesn't, anywhere in this app.
+      // Pinned by frontend/src/design/motion-tokens.test.ts.
       transitionTimingFunction: {
         out: "var(--ease-out)",
       },

@@ -1,4 +1,4 @@
-import { Area, AreaChart, CartesianGrid, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
@@ -167,6 +167,17 @@ function SeriesChart({
   // Same auto-fit padding rule as the legacy path, but fit over equity AND
   // balance together — otherwise the balance line can sit outside the band.
   const pad = max - min > 0 ? (max - min) * 0.18 : Math.max(1, Math.abs(max) * 0.0015);
+
+  // Drawdown gets its OWN y-axis (id "dd"), never the equity/balance one: on a
+  // shared axis a realistic drawdown (tens of units against an equity in the
+  // thousands) collapses to a 1-2px sliver pinned to the bottom edge — visible
+  // in source, invisible on screen. Domain is [floor, 0] with headroom below
+  // the deepest drawdown in the window; when every drawdown is 0 (no losses
+  // yet) fall back to a small fixed band so the axis stays well-formed.
+  const drawdownValues = rows.map((r) => r.drawdown).filter((v): v is number => v !== null);
+  const minDrawdown = drawdownValues.length > 0 ? Math.min(...drawdownValues) : 0;
+  const ddFloor = minDrawdown < 0 ? minDrawdown * 1.18 : -1;
+
   const last = equityValues[equityValues.length - 1] ?? 0;
   const first = equityValues[0] ?? last;
   const delta = last - first;
@@ -188,7 +199,12 @@ function SeriesChart({
         </span>
       </div>
       <ResponsiveContainer width={width} height={height}>
-        <AreaChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
+        {/* ComposedChart, not AreaChart: recharts' AreaChart only recognizes
+            Area as a graphical child, so the balance Line below silently fails
+            to render inside it (0 recharts-line nodes in the DOM, no error).
+            ComposedChart supports mixing Area/Line/Bar/Scatter and renders
+            both series correctly. */}
+        <ComposedChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id="equity-series-fill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
@@ -208,6 +224,7 @@ function SeriesChart({
             tickFormatter={(v: number) => formatTick(v, series.range)}
           />
           <YAxis
+            yAxisId="equity"
             domain={[min - pad, max + pad]}
             stroke="hsl(var(--text-muted))"
             tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
@@ -216,6 +233,7 @@ function SeriesChart({
             width={52}
             tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
           />
+          <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />
           <Tooltip
             cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
             contentStyle={{
@@ -232,6 +250,7 @@ function SeriesChart({
             ] as [string, string]}
           />
           <Area
+            yAxisId="dd"
             type="monotone"
             dataKey="drawdown"
             stroke="none"
@@ -242,6 +261,7 @@ function SeriesChart({
             activeDot={false}
           />
           <Line
+            yAxisId="equity"
             type="monotone"
             dataKey="balance"
             stroke="hsl(var(--text-muted))"
@@ -251,6 +271,7 @@ function SeriesChart({
             activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
           />
           <Area
+            yAxisId="equity"
             type="monotone"
             dataKey="equity"
             stroke="hsl(var(--accent))"
@@ -260,7 +281,7 @@ function SeriesChart({
             isAnimationActive={false}
             activeDot={{ r: 3.5, fill: "hsl(var(--accent))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
           />
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );

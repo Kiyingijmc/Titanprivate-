@@ -40,4 +40,36 @@ describe("toChartRows", () => {
     expect(rows[1].ts).toBe(200);
     expect(rows[3].ts).toBe(700);
   });
+
+  it("interpolates a null with no matching gap entry from its real neighbours, never ts:0", () => {
+    // two nulls, only one reported gap — the second null has nothing to pair with
+    const rows = toChartRows(base({
+      points: [
+        { ts: 5_000_100, equity: 1, balance: 1, peak: 1 } as never,
+        null,
+        { ts: 5_000_200, equity: 1, balance: 1, peak: 1 } as never,
+        null,
+        { ts: 5_000_300, equity: 1, balance: 1, peak: 1 } as never,
+      ],
+      coverage: { first_sample_ts: 5_000_100, n: 3, series_first_ts: {}, gaps: [[5_000_100, 5_000_200]] },
+    }));
+    expect(rows).toHaveLength(5);
+    expect(rows[1].ts).toBe(5_000_150); // paired with the reported gap
+    expect(rows[3].ts).toBe(5_000_250); // no gap entry — midpoint of its real neighbours
+    expect(rows.some((r) => r.ts === 0)).toBe(false);
+  });
+
+  it("drops a trailing null that has no matching gap and no following real point", () => {
+    const rows = toChartRows(base({
+      points: [
+        { ts: 5_000_100, equity: 1, balance: 1, peak: 1 } as never,
+        null,
+        { ts: 5_000_200, equity: 1, balance: 1, peak: 1 } as never,
+        null, // trailing — no gap entry, nothing real after it
+      ],
+      coverage: { first_sample_ts: 5_000_100, n: 2, series_first_ts: {}, gaps: [[5_000_100, 5_000_200]] },
+    }));
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.ts)).toEqual([5_000_100, 5_000_150, 5_000_200]);
+  });
 });

@@ -36,7 +36,6 @@ export function useEquitySeries(api: Pick<Api, "getEquity">, range: string,
       try {
         const s = await apiRef.current.getEquity(range);
         if (!alive || wanted.current !== range) return;   // stale range — drop it
-        if (s == null) return;                            // no payload — leave prior state alone
         setData(s);
         setError(null);
       } catch (e) {

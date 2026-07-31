@@ -33,7 +33,7 @@ describe("useEquitySeries", () => {
   it("surfaces an error without clearing the last good data", async () => {
     const getEquity = vi.fn()
       .mockResolvedValueOnce(series("1d"))
-      .mockRejectedValueOnce({ status: 500, kind: "error", detail: "boom" });
+      .mockRejectedValue({ status: 500, kind: "error", detail: "boom" });
     const { result } = renderHook(() => useEquitySeries({ getEquity } as never, "1d", { pollMs: 10 }));
     await waitFor(() => expect(result.current.data).not.toBeNull());
     await waitFor(() => expect(result.current.error).not.toBeNull(), { timeout: 2000 });

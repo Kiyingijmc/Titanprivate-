@@ -249,6 +249,16 @@ class FakeStateManager:
         pass
 
 
+class FakeEquityRecorder:
+    """Only the surface the HEARTBEAT branch touches."""
+
+    def __init__(self):
+        self.recorded = []
+
+    def record(self, balance, equity):
+        self.recorded.append((balance, equity))
+
+
 def _controller(open_positions, cap=5.0, equity=10000.0, resting=None):
     c = object.__new__(SystemController)
     c.config = _config(cap)
@@ -258,6 +268,7 @@ def _controller(open_positions, cap=5.0, equity=10000.0, resting=None):
     c.risk_manager = _risk_manager(equity)
     c.exposure_manager = ExposureManager(c.config, {})
     c.state_manager = FakeStateManager(resting)
+    c.equity_recorder = FakeEquityRecorder()
     c.current_open_positions = open_positions
     c.current_pending_orders = []
     c.live_prices = {}

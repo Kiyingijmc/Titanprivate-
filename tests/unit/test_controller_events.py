@@ -18,6 +18,7 @@ from src.core.bus import EventBus
 from src.core.events import (TickReceived, HeartbeatReceived,
                              ExecutionReceived, SpecsUpdated, BarClosed,
                              SystemStateChanged)
+from src.ops.equity_recorder import EquityRecorder
 
 
 async def _async_noop(*a, **k):
@@ -35,6 +36,7 @@ def make_controller():
     c.risk_manager = MagicMock()
     c.state_manager = MagicMock()
     c.state_manager.exists.return_value = True
+    c.equity_recorder = EquityRecorder(":memory:", config={"enabled": True})
     c.telemetry = MagicMock()
     c.telemetry.notify_execution = _async_noop
     c.telemetry.notify_close = _async_noop

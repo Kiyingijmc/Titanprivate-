@@ -1,6 +1,13 @@
 [Unit]
 Description=Titan trading engine (LIVE)
 After=network-online.target
+# RISK-01: cap the crash-restart loop. With Restart=on-failure below, an
+# unbounded loop would restart the process indefinitely, and each boot
+# re-anchors the daily drawdown breaker -- laundering one bad day into an
+# unlimited number of fresh 3% allowances. Three starts per five minutes,
+# then systemd gives up and leaves it failed for an operator to look at.
+StartLimitBurst=3
+StartLimitIntervalSec=300
 
 [Service]
 Type=notify

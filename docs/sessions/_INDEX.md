@@ -15,6 +15,7 @@
 | S013 | 2026-07-29 | cross-symbol-exposure-cap-missing-v15 | DONE | risk_management | finalized via mig (review CHANGES) | parent: none |
 | S014 | 2026-07-29 | gui-bind-failure-on-8770-must | DONE | infra | finalized via mig (review PASS) | parent: none |
 | S015 | 2026-07-30 | gui-websocket-double-close-raises-runtimeerror | DONE | api | finalized via mig (review PASS) | parent: none |
+| S017 | 2026-07-31 | sec-05-zmq-unauthenticated-bound-tcp | DONE | risk_management | finalized via mig (review PASS) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -33,4 +34,5 @@
 | RS013 | 2026-07-29 | S013 (cross-symbol-exposure-cap-missing-v15) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS013.md](../session-reviews/RS013.md) |
 | RS014 | 2026-07-29 | S014 (gui-bind-failure-on-8770-must) | DONE | PASS (mig orchestrator in-session independent review) | [RS014.md](../session-reviews/RS014.md) |
 | RS015 | 2026-07-30 | S015 (gui-websocket-double-close-raises-runtimeerror) | DONE | PASS (opus, manually dispatched after the orchestrator's reviewer hit a rate limit) | [RS015.md](../session-reviews/RS015.md) |
+| RS017 | 2026-07-31 | S017 (sec-05-zmq-unauthenticated-bound-tcp) | DONE | PASS (mig orchestrator in-session independent review) | [RS017.md](../session-reviews/RS017.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

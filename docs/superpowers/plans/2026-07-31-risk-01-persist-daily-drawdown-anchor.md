@@ -11,7 +11,17 @@
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-07-31-risk-01-persist-daily-drawdown-anchor-design.md`.
-- Tests run with `.venv/bin/python -m unittest`, never `pytest`. The venv is at `.venv` in the worktree root.
+- Tests run with `unittest`, never `pytest`.
+- **The worktree has no `.venv`.** `.venv` is untracked, and a git worktree only
+  materialises tracked files. Use the repo root's interpreter by absolute path — this is
+  exactly what `mig`'s `VERIFY_CMD` does:
+
+  ```bash
+  PY=/home/kiyingijmc/projects/Titan_ICT_Bot_v14_3pro/.venv/bin/python
+  ```
+
+  Run it with the **worktree as cwd** so imports resolve to the worktree's `src/`, not the
+  root checkout's. Every `.venv/bin/python` below means `$PY`.
 - Work happens in the worktree `…/scratchpad/risk01-wt` on branch `feat/risk-01-daily-anchor`, based on `main` @ `3679680`. **Never run anything against the repo root checkout** — a live demo-forward bot is running from it.
 - Every test must use `tempfile.TemporaryDirectory()` for databases. **Never** let a test open `data/db/trade_state.db`; that is the live bot's database.
 - `RiskManager` must remain I/O-free: no `db_path`, no sqlite import, no new required constructor arguments.

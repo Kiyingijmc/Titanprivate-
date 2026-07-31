@@ -1257,6 +1257,7 @@ git commit -m "feat(equity): GET /api/equity route and recorder counters on /api
 ```python
 # tests/unit/test_equity_controller_wiring.py
 """The recorder is constructed, fed by HEARTBEAT, and pruned on the recon timer."""
+import asyncio
 import os
 import sys
 import tempfile
@@ -1271,6 +1272,16 @@ from src.ops.equity_recorder import EquityRecorder
 class _NullLogger:
     def log_event(self, *a, **k):
         pass
+
+
+def _run(coro):
+    """Drive a coroutine on a fresh loop.
+
+    Matches tests/unit/test_controller_routing.py:72. Do NOT use
+    asyncio.get_event_loop() — this venv is Python 3.12, where calling it with
+    no running loop is deprecated and slated to raise.
+    """
+    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
 def _bare_controller(recorder):
@@ -1294,19 +1305,17 @@ class HeartbeatFeedsRecorder(unittest.TestCase):
                                   config={"enabled": True, "fine_cadence_s": 0})
 
     def test_heartbeat_records_balance_and_equity(self):
-        import asyncio
         c = _bare_controller(self.rec)
         msg = {"type": "HEARTBEAT", "bal": 1221.59, "eq": 1327.0, "pos": [], "orders": []}
-        asyncio.get_event_loop().run_until_complete(c._process_incoming_data(msg))
+        _run(c._process_incoming_data(msg))
         self.assertEqual(len(self.rec.buffer), 1)
         self.assertEqual(self.rec.buffer[0].equity, 1327.0)
         self.assertEqual(self.rec.buffer[0].balance, 1221.59)
 
     def test_zero_equity_heartbeat_records_nothing(self):
-        import asyncio
         c = _bare_controller(self.rec)
         msg = {"type": "HEARTBEAT", "bal": 1221.59, "eq": 0.0, "pos": [], "orders": []}
-        asyncio.get_event_loop().run_until_complete(c._process_incoming_data(msg))
+        _run(c._process_incoming_data(msg))
         self.assertEqual(self.rec.buffer, [])
 
 

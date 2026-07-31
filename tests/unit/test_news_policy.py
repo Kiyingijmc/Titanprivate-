@@ -103,6 +103,20 @@ class BlackoutWindow(unittest.TestCase):
         event = policy.blocking_event([_event()], "EURUSD", RELEASE)
         self.assertIn("Core PCE", policy.reason_for(event, RELEASE))
 
+    def test_blocked_exactly_at_the_window_open(self):
+        """Exactly 60m before the release is INSIDE the blackout (inclusive edge)."""
+        self.assertTrue(self._blocked_at(-60))
+
+    def test_clear_one_minute_before_the_window_opens(self):
+        self.assertFalse(self._blocked_at(-61))
+
+    def test_blocked_exactly_at_the_window_close(self):
+        """Exactly 30m after the release is still INSIDE the blackout (inclusive edge)."""
+        self.assertTrue(self._blocked_at(30))
+
+    def test_clear_one_minute_after_the_window_closes(self):
+        self.assertFalse(self._blocked_at(31))
+
 
 class Staleness(unittest.TestCase):
     def test_never_refreshed_counts_as_stale(self):

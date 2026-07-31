@@ -131,7 +131,7 @@ class SeriesAssembly(unittest.TestCase):
         gap = out["coverage"]["gaps"][0]
         self.assertEqual(gap, [int(now) - 3000, int(now) - 300])
 
-    def test_gap_is_measured_in_TIME_not_in_bucket_indices(self):
+    def test_gap_threshold_is_two_bucket_widths(self):
         """Spec §7: a gap is consecutive samples more than 2 x bucket_s apart.
         Just over the threshold -> gap; exactly on it -> not a gap."""
         now = 1_000_000.0
@@ -144,6 +144,31 @@ class SeriesAssembly(unittest.TestCase):
         on = _seeded([(int(now) - 900, 100.0, 90.0, 100.0, 100.0, 100.0),
                       (int(now) - 300, 110.0, 90.0, 110.0, 110.0, 110.0)])
         self.assertEqual(equity_series(on, "1d", now=now)["coverage"]["gaps"], [])
+
+    def test_gap_is_measured_in_TIME_not_in_bucket_indices(self):
+        """The case that separates the two rules.
+
+        Coarse rows are bucket-ALIGNED, so their time delta is always a whole
+        multiple of bucket_s and (ts - prev) > 2*bucket_s and (b - prev_b) > 2
+        agree on every one of them — the earlier threshold test above passes
+        under BOTH rules and cannot see this bug. Fine rows are not aligned to
+        the query bucket: 21s apart at bucket_s=10 is a gap by the spec's clock
+        (21 > 20) but only TWO bucket indices apart, which the old index rule
+        reported as contiguous. Two samples 6 minutes apart in a 15m window are
+        exactly the outage shape this endpoint exists to show.
+        """
+        now = 1_000_000.0
+        base = int(now) - 400                             # aligned to bucket 10
+        conn = _seeded([(float(base), 100.0, 90.0, 100.0),
+                        (float(base + 21), 110.0, 90.0, 110.0)],
+                       table="equity_fine")
+        out = equity_series(conn, "15m", now=now)
+        self.assertEqual(out["bucket_s"], 10)
+        # index rule: 40 -> 42, a difference of 2, i.e. "not a gap"
+        self.assertEqual((base + 21) // 10 - base // 10, 2)
+        self.assertEqual(len(out["coverage"]["gaps"]), 1)
+        self.assertEqual(out["coverage"]["gaps"][0], [base, base + 21])
+        self.assertIn(None, out["points"])
 
     def test_real_outage_shape_is_reported_as_one_gap(self):
         """The 2026-07-29 demo outage: ~9h of no samples inside a 1d window."""

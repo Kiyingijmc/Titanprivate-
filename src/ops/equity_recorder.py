@@ -6,14 +6,18 @@ later is one tuple entry plus an automatic ALTER TABLE.
 
 All timestamps are UTC epoch seconds. Never naive local datetimes: RISK-10 in the
 2026-07-30 audit is a live bug caused by mixing the two in one buffer.
+
+Migration mechanism: `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` in
+ensure_schema(). There is deliberately no schema-version counter — `user_version`
+is a single per-DATABASE integer and titan_core.db is shared with AuditLogger,
+so writing it here would clobber another owner's value to record something the
+table_info path never reads.
 """
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from typing import Callable
-
-SCHEMA_VERSION = 1
 
 FINE_TABLE = "equity_fine"
 COARSE_TABLE = "equity_coarse"
@@ -68,7 +72,6 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         for s in series_for(tier):
             if s.name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {s.name} REAL")
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
 
@@ -76,11 +79,22 @@ import math
 import time
 from pathlib import Path
 
+# ── STRUCTURAL CONSTANTS — deliberately NOT operator-tunable ─────────────────
+# These two values are baked into every row already on disk: the fine tier is
+# written at FINE_CADENCE_S and the coarse tier is keyed by a bucket start
+# floored to COARSE_BUCKET_S. Changing either at runtime would leave the DB
+# holding rows aligned to the OLD size while the view buckets at the NEW one, so
+# a query bucket would straddle a fraction of a stored row (spec §3) — silently,
+# and permanently for the historical rows. There is no migration for that, so
+# the knob does not exist. equity_view imports these; it must never keep a
+# second copy. Everything that does NOT affect stored alignment (enabled,
+# fine_retention_h, flush_interval_s, max_buffer_samples) stays in config.
+FINE_CADENCE_S = 10       # one stored fine sample per 10s
+COARSE_BUCKET_S = 300     # 5-minute retained buckets
+
 _DEFAULTS = {
     "enabled": True,
-    "fine_cadence_s": 10,
     "fine_retention_h": 48,
-    "coarse_bucket_s": 300,
     "flush_interval_s": 60,
     "max_buffer_samples": 600,
 }
@@ -109,13 +123,17 @@ class EquityRecorder:
 
     def __init__(self, db_path, config=None, logger=None,
                  clock=time.time, monotonic=time.monotonic):
-        cfg = dict(_DEFAULTS)
-        cfg.update(config or {})
-        self.cfg = cfg
-        self.enabled = bool(cfg["enabled"])
+        # Everything the rest of the class touches is seeded BEFORE the first
+        # line that can fail. A malformed ops.equity block (a bare `true`, a
+        # string, a list) makes dict.update() raise, and this object is built
+        # inside SystemController.__init__ — an escape here is a bot that does
+        # not boot (same failure class as the S014 GUI-bind incident). A typo in
+        # a chart's config must cost the chart, never the engine.
+        self.cfg = dict(_DEFAULTS)
         self.logger = logger
         self._clock = clock
         self._monotonic = monotonic
+        self.db_path = str(db_path)
 
         self.buffer: list[Sample] = []
         self.peak = 0.0
@@ -125,20 +143,27 @@ class EquityRecorder:
         self._last_ts = 0.0
         self._last_sample_mono = None
         self._last_flush_mono = self._monotonic()
+        self.last_flush_ts = None
 
         self.conn = None
-        if self.enabled:
-            try:
+        self.enabled = False
+        try:
+            self.cfg.update(config or {})
+            self.enabled = bool(self.cfg["enabled"])
+            if self.enabled:
                 Path(db_path).parent.mkdir(parents=True, exist_ok=True)
                 self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
                 self.conn.execute("PRAGMA journal_mode=WAL;")
                 self.conn.execute("PRAGMA synchronous=NORMAL;")
+                # titan_core.db now has two writers (AuditLogger + this). The
+                # default 5s busy stall would land on the asyncio trading loop.
+                self.conn.execute("PRAGMA busy_timeout=1000;")
                 ensure_schema(self.conn)
                 self.peak = self._load_peak()
-            except Exception as e:                      # never fatal
-                self._log(f"init failed: {e}")
-                self.conn = None
-                self.enabled = False
+        except Exception as e:                      # never fatal
+            self._log(f"init failed ({type(e).__name__}: {e}); recorder disabled")
+            self.conn = None
+            self.enabled = False
 
     # ── internals ────────────────────────────────────────────────────────────
     def _log(self, msg):
@@ -168,7 +193,7 @@ class EquityRecorder:
         try:
             mono = self._monotonic()
             if (self._last_sample_mono is not None
-                    and 0 <= mono - self._last_sample_mono < self.cfg["fine_cadence_s"]):
+                    and 0 <= mono - self._last_sample_mono < FINE_CADENCE_S):
                 return False                            # by design, not a loss
 
             if not self._valid(equity) or not self._valid(balance):
@@ -221,7 +246,7 @@ class EquityRecorder:
             )
 
             coarse = series_for("coarse")
-            size = int(self.cfg["coarse_bucket_s"])
+            size = COARSE_BUCKET_S
             coarse_cols = ", ".join(s.name for s in coarse)
             coarse_ph = ", ".join("?" for _ in coarse)
             updates = ", ".join(
@@ -239,7 +264,17 @@ class EquityRecorder:
 
             self.conn.commit()
             del self.buffer[:len(pending)]
+            self.last_flush_ts = float(self._clock())
         except Exception as e:
+            # Discard the partially-applied transaction. Without this the fine
+            # rows written before the failure stay pending on the connection and
+            # the NEXT commit (prune()'s, say) would silently persist them —
+            # and, because the buffer is retained and replayed, the 'sum' agg
+            # would double-count them into the coarse bucket.
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
             self.counters["flush_errors"] += 1
             self._log(f"flush failed: {e}")
 

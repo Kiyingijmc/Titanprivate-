@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Panel, type PanelStatus } from "@/components/shell/Panel";
 import { StatTiles } from "@/components/StatTiles";
 import { EquitySparkline } from "@/components/EquitySparkline";
+import { RangeSelector } from "@/components/RangeSelector";
 import { Controls } from "@/components/Controls";
 import { MarketSessions } from "@/components/market/MarketSessions";
 import { LocalityClock } from "@/components/market/LocalityClock";
@@ -11,8 +13,9 @@ import { SideChip } from "@/components/SideChip";
 import { useController } from "@/context/ControllerContext";
 import { useReadOnly } from "@/context/ReadOnlyContext";
 import { useEquityBuffer } from "@/lib/useEquityBuffer";
+import { useEquitySeries } from "@/lib/useEquitySeries";
 import { signedPnl, pnlToneClass } from "@/lib/format";
-import type { Position, FeedEvent } from "@/lib/types";
+import type { Position, FeedEvent, RangeName } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 function TopPositionRow({ position }: { position: Position }) {
@@ -68,6 +71,8 @@ export default function OverviewPage() {
   const { snapshot, events, connectionStatus, api } = useController();
   const { readOnly, setReadOnly } = useReadOnly();
   const equityPoints = useEquityBuffer(snapshot?.account.equity);
+  const [range, setRange] = useState<RangeName>("1d");
+  const equity = useEquitySeries(api, range);
 
   const baseStatus: PanelStatus = snapshot === null ? "loading" : connectionStatus.stale ? "stale" : "populated";
 
@@ -105,7 +110,21 @@ export default function OverviewPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel status={baseStatus} title="Equity">
-          <EquitySparkline points={equityPoints} />
+          <div className="mb-3 flex justify-end">
+            <RangeSelector
+              value={range}
+              onChange={setRange}
+              firstSampleTs={equity.data?.coverage.first_sample_ts ?? null}
+            />
+          </div>
+          <div
+            className={cn(
+              "transition-opacity duration-[var(--motion-fast)]",
+              equity.loading && equity.data && "opacity-60",
+            )}
+          >
+            <EquitySparkline points={equityPoints} series={equity.data ?? undefined} />
+          </div>
         </Panel>
         <Panel status={baseStatus} title="Controls">
           <Controls

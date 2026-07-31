@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ReadOnlyProvider } from "@/context/ReadOnlyContext";
 import { ControllerProvider } from "@/context/ControllerContext";
-import type { Snapshot, FeedEvent } from "@/lib/types";
+import type { Snapshot, FeedEvent, EquitySeries } from "@/lib/types";
 import type { Api } from "@/lib/api";
 import OverviewPage from "./OverviewPage";
 
@@ -31,11 +31,23 @@ const events: FeedEvent[] = [
   { topic: "IntentBlocked", ts: 1001, rule: "opposition" },
 ];
 
+function makeEquitySeries(range: string): EquitySeries {
+  return {
+    range,
+    tier: "coarse",
+    bucket_s: 300,
+    series: ["equity", "balance", "peak"],
+    points: [{ ts: 1000, equity: 10250.5, balance: 10000, peak: 10300 }],
+    coverage: { first_sample_ts: 500, n: 1, series_first_ts: {}, gaps: [] },
+  };
+}
+
 function fakeApi(): Api {
   return {
     getState: vi.fn(),
     getEvents: vi.fn(),
     getHistory: vi.fn(),
+    getEquity: vi.fn((range: string) => Promise.resolve(makeEquitySeries(range))),
     getSettings: vi.fn(),
     getRegistry: vi.fn(),
     postCommand: vi.fn().mockResolvedValue({ status: "ok" }),
@@ -125,9 +137,13 @@ describe("OverviewPage", () => {
     expect(await screen.findByText(/no open positions/i)).toBeInTheDocument();
   });
 
-  it("shows loading state before the first snapshot arrives", () => {
+  it("shows loading state before the first snapshot arrives", async () => {
     renderOverview({ snapshot: null });
     expect(screen.getAllByTestId("skeleton").length).toBeGreaterThan(0);
+    // The equity fetch (independent of `snapshot`) still resolves in the
+    // background; flush it under `act` so its state update doesn't land after
+    // the test has already returned.
+    await act(async () => {});
   });
 
   it("renders the top Market Context strip with sessions and the dollar bias", async () => {
@@ -141,5 +157,40 @@ describe("OverviewPage", () => {
     // Full DollarBias widget renders on the page.
     expect(screen.getAllByTestId("dollar-bias").length).toBeGreaterThan(0);
     expect(screen.getByText(/33/)).toBeInTheDocument();
+  });
+
+  it("shows the range selector defaulted to 1d and swaps the series when a range is picked", async () => {
+    const api = fakeApi();
+
+    render(
+      <MemoryRouter>
+        <ReadOnlyProvider>
+          <ControllerProvider
+            value={{
+              snapshot: makeSnapshot(),
+              events,
+              connectionStatus: { status: "live", stale: false },
+              api,
+            }}
+          >
+            <OverviewPage />
+          </ControllerProvider>
+        </ReadOnlyProvider>
+      </MemoryRouter>
+    );
+
+    // 1. the selector is present, defaulted to 1d
+    const selector = await screen.findByTestId("range-selector");
+    await waitFor(() => expect(api.getEquity).toHaveBeenCalledWith("1d"));
+    expect(within(selector).getByRole("radio", { name: "1d" })).toHaveAttribute("aria-checked", "true");
+
+    // 2. click "4h" (wait for it to unlock — the selector only enables ranges the
+    // fetched coverage actually reaches, which lands one tick after mount)
+    const fourHour = within(selector).getByRole("radio", { name: "4h" });
+    await waitFor(() => expect(fourHour).not.toBeDisabled());
+    await userEvent.click(fourHour);
+
+    // 3. the fetch was re-issued for the newly picked range
+    await waitFor(() => expect(api.getEquity).toHaveBeenCalledWith("4h"));
   });
 });

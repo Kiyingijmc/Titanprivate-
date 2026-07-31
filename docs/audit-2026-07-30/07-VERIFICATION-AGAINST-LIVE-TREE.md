@@ -75,6 +75,19 @@ So at some point the configured token changed. **This does not close the P0**, b
 
 If `807727…` was never revoked, it is a live credential in a pushed public-or-private history and in HEAD, and every impact in §3 of `01-SECURITY-INCIDENT-P0.md` applies to it. **The single check that resolves this is `getMe` on the old token: a 401 closes it, a 200 means the P0 is fully live.** Until that is run, treat the P0 as open.
 
+> **✅ RESOLVED 2026-07-31 10:14 EAT.** The operator ran the check from their own shell
+> (token extracted from `HEAD:data/logs/titan_system.log`):
+>
+> ```text
+> curl -s "https://api.telegram.org/bot<807727…>/getMe"
+> → {"ok":false,"error_code":404,"description":"Not Found"}
+> ```
+>
+> No bot answers to the leaked token — it is **dead**. **The P0 is CLOSED.** The remaining
+> items are hygiene, not incident response: untrack/scrub `data/logs/system.log` (179
+> occurrences of the dead token) and, optionally, rewrite the `7dd9527` baseline history.
+> Neither is urgent now that the credential is inert.
+
 Good news either way: the *current* token (`862623…`) does not appear in any tracked file.
 
 ### 2.3 `verify_integrity.py` is at the repo root

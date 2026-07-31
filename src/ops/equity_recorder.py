@@ -70,3 +70,123 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {s.name} REAL")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
+
+
+import math
+import time
+from pathlib import Path
+
+_DEFAULTS = {
+    "enabled": True,
+    "fine_cadence_s": 10,
+    "fine_retention_h": 48,
+    "coarse_bucket_s": 300,
+    "flush_interval_s": 60,
+    "max_buffer_samples": 600,
+}
+
+
+class EquityRecorder:
+    """Samples equity/balance from the heartbeat into a durable two-tier series.
+
+    Contract: record() and flush() never raise into the trading loop. Every loss
+    is counted and surfaced on /api/state — a silent-loss counter nobody reads is
+    not an observability mechanism (audit OBS-02).
+    """
+
+    def __init__(self, db_path, config=None, logger=None,
+                 clock=time.time, monotonic=time.monotonic):
+        cfg = dict(_DEFAULTS)
+        cfg.update(config or {})
+        self.cfg = cfg
+        self.enabled = bool(cfg["enabled"])
+        self.logger = logger
+        self._clock = clock
+        self._monotonic = monotonic
+
+        self.buffer: list[Sample] = []
+        self.peak = 0.0
+        self.counters = {"dropped_stale": 0, "dropped_invalid": 0,
+                         "dropped_overflow": 0, "flush_errors": 0}
+
+        self._last_ts = 0.0
+        self._last_sample_mono = None
+        self._last_flush_mono = self._monotonic()
+
+        self.conn = None
+        if self.enabled:
+            try:
+                Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+                self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+                self.conn.execute("PRAGMA journal_mode=WAL;")
+                self.conn.execute("PRAGMA synchronous=NORMAL;")
+                ensure_schema(self.conn)
+                self.peak = self._load_peak()
+            except Exception as e:                      # never fatal
+                self._log(f"init failed: {e}")
+                self.conn = None
+                self.enabled = False
+
+    # ── internals ────────────────────────────────────────────────────────────
+    def _log(self, msg):
+        try:
+            if self.logger:
+                self.logger.log_event("OPS", "EQUITY", msg)
+        except Exception:
+            pass
+
+    def _load_peak(self) -> float:
+        row = self.conn.execute(f"SELECT MAX(peak) FROM {COARSE_TABLE}").fetchone()
+        return float(row[0]) if row and row[0] is not None else 0.0
+
+    @staticmethod
+    def _valid(x) -> bool:
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(v) and v > 0
+
+    # ── public ───────────────────────────────────────────────────────────────
+    def record(self, balance, equity) -> bool:
+        """Accept one heartbeat sample. Returns True if buffered."""
+        if not self.enabled:
+            return False
+        try:
+            mono = self._monotonic()
+            if (self._last_sample_mono is not None
+                    and 0 <= mono - self._last_sample_mono < self.cfg["fine_cadence_s"]):
+                return False                            # by design, not a loss
+
+            if not self._valid(equity) or not self._valid(balance):
+                self.counters["dropped_invalid"] += 1
+                return False
+
+            ts = float(self._clock())
+            if ts <= self._last_ts:
+                self.counters["dropped_stale"] += 1
+                return False
+
+            equity = float(equity)
+            self.peak = max(self.peak, equity)
+            self.buffer.append(Sample(ts=ts, equity=equity,
+                                      balance=float(balance), peak=self.peak))
+            self._last_ts = ts
+            self._last_sample_mono = mono
+
+            cap = int(self.cfg["max_buffer_samples"])
+            while len(self.buffer) > cap:
+                self.buffer.pop(0)
+                self.counters["dropped_overflow"] += 1
+
+            if mono - self._last_flush_mono >= self.cfg["flush_interval_s"]:
+                self.flush()
+            return True
+        except Exception as e:                          # never raise into the loop
+            self.counters["flush_errors"] += 1
+            self._log(f"record failed: {e}")
+            return False
+
+    def flush(self) -> None:
+        """Placeholder until Task 3."""
+        self._last_flush_mono = self._monotonic()

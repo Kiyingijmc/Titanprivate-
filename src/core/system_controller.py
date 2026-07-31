@@ -12,6 +12,7 @@ import asyncio
 import yaml
 import sys
 import os
+import math
 import subprocess
 import pytz
 import time
@@ -170,7 +171,34 @@ class SystemController:
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
-        
+
+        # RISK-01: restore today's drawdown anchor before the first heartbeat.
+        # Without this, every restart re-anchored the 3% breaker to whatever
+        # equity happened to be live at boot, discarding the day's realised
+        # drawdown. Strictly monotone: an absent or stale row changes nothing,
+        # so this can only ever KEEP an anchor the old code threw away.
+        self._last_persisted_anchor = None
+        try:
+            saved = self.state_manager.get_risk_anchor()
+            today_key = self._trading_day_key(datetime.now(self.uganda_tz))
+            if saved and saved.get('trading_day_key') == today_key:
+                self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
+                self._last_persisted_anchor = (today_key,
+                                               self.risk_manager.day_start_equity)
+                self.logger.log_event(
+                    "RISK", "ANCHOR",
+                    f"Restored daily DD anchor {self.risk_manager.day_start_equity:.2f} "
+                    f"for trading day {today_key} (survived restart).")
+            elif saved:
+                self.logger.log_event(
+                    "RISK", "ANCHOR",
+                    f"Persisted anchor is for {saved.get('trading_day_key')}, "
+                    f"today is {today_key}; anchoring fresh.")
+        except Exception as e:
+            # Never let anchor restore stop the bot booting; falling through
+            # lands on today's existing first-heartbeat behaviour.
+            self.logger.log_event("RISK", "ANCHOR", f"Anchor restore skipped: {e}")
+
         self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
                                           config=self.config)
         
@@ -190,6 +218,46 @@ class SystemController:
         
         # Default safety
         if not self.active_symbols: self.active_symbols.add("BTCUSD")
+
+    # RISK-01. The daily DD anchor is keyed by TRADING day, not calendar day.
+    # The bot already re-anchors at 23:45 Africa/Kampala (the Uganda report block
+    # in the main loop), so a restore that used a midnight boundary would
+    # disagree with that reset for 15 minutes every night -- long enough for a
+    # restart in that window to resurrect an anchor the reset had superseded.
+    # Shifting the clock forward 15 minutes makes plain strftime roll over at
+    # exactly 23:45.
+    @staticmethod
+    def _trading_day_key(now_uganda):
+        """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
+        return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
+    def _persist_daily_anchor(self, now_uganda):
+        """Write the DD anchor when it CHANGES (RISK-01).
+
+        Driven from the main loop rather than the HEARTBEAT branch: this is
+        periodic bookkeeping, and _process_incoming_data stays pure
+        data-routing. The loop already holds `now_uganda`, so this adds no
+        extra clock read.
+
+        The loop spins roughly every millisecond, so the (key, equity) cache
+        is what keeps this to a real write twice a day -- once when the boot
+        anchor first appears, once after the 23:45 reset.
+
+        An anchor that is not a usable positive number is skipped rather than
+        written, exactly as RiskManager.restore_daily_anchor skips one: a
+        malformed value must not be able to overwrite a good persisted anchor.
+        """
+        try:
+            equity = float(self.risk_manager.day_start_equity)
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(equity) and equity > 0):
+            return
+        key = self._trading_day_key(now_uganda)
+        if self._last_persisted_anchor == (key, equity):
+            return
+        self.state_manager.save_risk_anchor(key, equity)
+        self._last_persisted_anchor = (key, equity)
 
     def _load_env(self):
         env_path = self.root_dir / ".env"
@@ -354,6 +422,14 @@ class SystemController:
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
+
+                # RISK-01: persist the daily DD anchor. Kept out of the
+                # HEARTBEAT branch on purpose -- this is periodic bookkeeping
+                # like the Sync Guard and ghost cleanup above, and
+                # _process_incoming_data must stay pure data-routing. Placed
+                # before the 23:45 block so the post-reset anchor is picked up
+                # on the very next iteration (~1ms later).
+                self._persist_daily_anchor(now_uganda)
                 if now_uganda.hour == 23 and now_uganda.minute == 45:
                     if not self.report_sent_today:
                         await self._send_detailed_performance_report()

@@ -78,6 +78,19 @@ class StateManager:
                 )
             ''')
 
+            # RISK-01: the daily drawdown anchor, so a restart cannot re-anchor
+            # the circuit breaker to mid-day equity and mint a fresh allowance.
+            # CHECK (id = 1) makes "exactly one row" a schema invariant, so a bug
+            # elsewhere can never make "which anchor is current?" ambiguous.
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS risk_state (
+                    id               INTEGER PRIMARY KEY CHECK (id = 1),
+                    trading_day_key  TEXT,
+                    day_start_equity REAL DEFAULT 0.0,
+                    updated_at       REAL
+                )
+            ''')
+
             # --- MIGRATION GUARD (Retained) ---
             # Checks for columns added in newer versions (v14.1/14.2/14.4)
             cursor = self.conn.execute("PRAGMA table_info(active_orders)")
@@ -252,6 +265,36 @@ class StateManager:
             rows = self.conn.execute("SELECT * FROM active_orders WHERE status='PENDING'").fetchall()
             return [dict(r) for r in rows]
         except: return []
+
+    def save_risk_anchor(self, trading_day_key, day_start_equity):
+        """Persist today's drawdown anchor (RISK-01).
+
+        Called on change, not per heartbeat: once when the boot anchor is first
+        established and once at the 23:45 daily reset.
+        """
+        try:
+            self.conn.execute("""
+                INSERT OR REPLACE INTO risk_state
+                (id, trading_day_key, day_start_equity, updated_at)
+                VALUES (1, ?, ?, ?)
+            """, (str(trading_day_key), float(day_start_equity), time.time()))
+            self.conn.commit()
+        except Exception as e:
+            print(f"[DB ERROR] SaveRiskAnchor: {e}")
+
+    def get_risk_anchor(self):
+        """The persisted drawdown anchor, or None if never saved / unreadable.
+
+        None means "no usable anchor" and the caller must fall back to the
+        existing first-heartbeat behaviour -- never to a guessed number.
+        """
+        try:
+            r = self.conn.execute(
+                "SELECT trading_day_key, day_start_equity, updated_at "
+                "FROM risk_state WHERE id=1").fetchone()
+            return dict(r) if r else None
+        except Exception:
+            return None
 
     def get_ratchet_state(self, t):
         try:

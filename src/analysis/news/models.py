@@ -7,8 +7,9 @@ VALID_IMPORTANCE = ("HIGH", "MEDIUM", "LOW")
 
 
 def make_key(currency: str, title: str, when_utc: datetime) -> str:
-    """Stable cross-source identity. Times are rounded to 5 minutes so two
-    sources that disagree slightly about a release time still dedup."""
+    """Stable cross-source identity. Times are floored into fixed 5-minute buckets.
+    Note: two sources straddling a 5-minute bucket boundary will NOT dedup, even
+    if they differ by only a minute or two."""
     if when_utc.tzinfo is None:
         raise ValueError("when_utc must be timezone-aware UTC")
     stamp = when_utc.astimezone(timezone.utc).replace(second=0, microsecond=0)
@@ -29,6 +30,11 @@ class CalendarEvent:
     actual: str | None = None
     url: str | None = None
     source: str = "forexfactory"
+
+    def __post_init__(self) -> None:
+        if self.when_utc.tzinfo is None:
+            raise ValueError("when_utc must be timezone-aware UTC")
+        object.__setattr__(self, "when_utc", self.when_utc.astimezone(timezone.utc))
 
     def to_dict(self) -> dict:
         d = asdict(self)

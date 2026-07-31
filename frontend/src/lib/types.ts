@@ -27,3 +27,31 @@ export interface SettingRow { key: string; value: unknown; source: "default" | "
 export interface HistoryRow { [k: string]: unknown; }
 export interface CommandResult { status: string; result?: unknown; detail?: string; command?: string; }
 export interface SettingsPatchResult { applied?: string; restart_required?: boolean; value?: unknown; detail?: string; }
+
+export const RANGE_NAMES = ["15m","30m","1h","4h","12h","1d","1w","1mo","4mo","6mo","1y"] as const;
+export type RangeName = (typeof RANGE_NAMES)[number];
+
+/** One downsampled bucket. A `null` entry in EquitySeries.points is a data gap. */
+export interface EquityPoint {
+  ts: number;                 // UTC epoch seconds
+  equity: number;
+  balance: number;
+  peak: number;
+  [series: string]: number;   // future registry series arrive here
+}
+
+export interface EquityCoverage {
+  first_sample_ts: number | null;
+  n: number;
+  series_first_ts: Record<string, number | null>;
+  gaps: [number, number][];
+}
+
+export interface EquitySeries {
+  range: string;
+  tier: "fine" | "coarse";
+  bucket_s: number | null;
+  series: string[];
+  points: (EquityPoint | null)[];
+  coverage: EquityCoverage;
+}

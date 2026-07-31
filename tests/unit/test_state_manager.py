@@ -93,5 +93,71 @@ class SchemaMigration(unittest.TestCase):
         sm.close(); tmp.cleanup()
 
 
+class RiskAnchorPersistence(unittest.TestCase):
+    """RISK-01: the daily DD anchor must survive a process restart.
+
+    day_start_equity was in-memory only, so every restart re-anchored the 3%
+    circuit breaker to whatever equity the first post-boot heartbeat reported,
+    discarding the day's realised drawdown.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "state.db")
+        self.sm = StateManager(self.path)
+
+    def tearDown(self):
+        self.sm.close()
+        self.tmp.cleanup()
+
+    def test_no_anchor_on_fresh_db(self):
+        self.assertIsNone(self.sm.get_risk_anchor())
+
+    def test_save_then_read_round_trip(self):
+        self.sm.save_risk_anchor("2026-07-31", 1234.56)
+        row = self.sm.get_risk_anchor()
+        self.assertEqual(row["trading_day_key"], "2026-07-31")
+        self.assertAlmostEqual(row["day_start_equity"], 1234.56)
+        self.assertGreater(row["updated_at"], 0)
+
+    def test_second_save_replaces_and_never_appends(self):
+        self.sm.save_risk_anchor("2026-07-31", 1000.0)
+        self.sm.save_risk_anchor("2026-08-01", 1100.0)
+        n = self.sm.conn.execute("SELECT COUNT(*) FROM risk_state").fetchone()[0]
+        self.assertEqual(n, 1)  # single-row table, not an append log
+        row = self.sm.get_risk_anchor()
+        self.assertEqual(row["trading_day_key"], "2026-08-01")
+        self.assertAlmostEqual(row["day_start_equity"], 1100.0)
+
+    def test_anchor_survives_reopening_the_database(self):
+        """The actual restart scenario: new StateManager, same file."""
+        self.sm.save_risk_anchor("2026-07-31", 987.65)
+        self.sm.close()
+        reopened = StateManager(self.path)
+        try:
+            row = reopened.get_risk_anchor()
+            self.assertEqual(row["trading_day_key"], "2026-07-31")
+            self.assertAlmostEqual(row["day_start_equity"], 987.65)
+        finally:
+            reopened.close()
+            self.sm = StateManager(self.path)  # so tearDown's close() is valid
+
+    def test_table_is_added_to_a_preexisting_database(self):
+        """An existing trade_state.db must gain risk_state on next boot."""
+        import sqlite3
+        tmp = tempfile.TemporaryDirectory()
+        path = os.path.join(tmp.name, "old.db")
+        conn = sqlite3.connect(path)
+        conn.execute("""CREATE TABLE active_orders (
+            ticket_id INTEGER PRIMARY KEY, symbol TEXT, strategy TEXT, order_type TEXT,
+            time_placed REAL, status TEXT, phase INTEGER DEFAULT 0)""")
+        conn.commit(); conn.close()
+
+        sm = StateManager(path)
+        sm.save_risk_anchor("2026-07-31", 500.0)
+        self.assertAlmostEqual(sm.get_risk_anchor()["day_start_equity"], 500.0)
+        sm.close(); tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

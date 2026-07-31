@@ -60,31 +60,35 @@ backlog row — not to this feature.
 
 "Timeframe" means **lookback window**, not bar size — a one-year bar would be a single point.
 
-| Range | Seconds | Tier | Target points | Bucket |
+Only two things are configured: the eleven range durations, and `MAX_POINTS = 300`. Everything else
+is derived by one rule, so the table below is an *output*, not an input:
+
+> **Tier** is `fine` when `range_seconds <= 43 200` (12 h), else `coarse`.
+> **Bucket** is the smallest whole multiple of that tier's storage cadence — 10 s fine, 300 s
+> coarse — for which `range_seconds / bucket <= MAX_POINTS`.
+
+Rounding to a multiple of the storage cadence means a query bucket never straddles a fraction of a
+stored row. Deriving rather than tabulating means changing a cadence or `MAX_POINTS` cannot leave a
+stale hand-computed number behind.
+
+| Range | Seconds | Tier | Bucket | Points |
 |---|---|---|---|---|
-| 15m | 900 | fine | ~90 | 10 s |
-| 30m | 1 800 | fine | ~180 | 10 s |
-| 1h | 3 600 | fine | ~180 | 20 s |
-| 4h | 14 400 | fine | ~240 | 60 s |
-| 12h | 43 200 | fine | ~240 | 180 s |
-| **1d (default)** | 86 400 | coarse | ~288 | 300 s |
-| 1w | 604 800 | coarse | ~224 | 2 700 s |
-| 1mo | 2 592 000 | coarse | ~240 | 10 800 s |
-| 4mo | 10 368 000 | coarse | ~240 | 43 200 s |
-| 6mo | 15 552 000 | coarse | ~240 | 64 800 s |
-| 1y | 31 536 000 | coarse | ~240 | 131 400 s |
+| 15m | 900 | fine | 10 s | 90 |
+| 30m | 1 800 | fine | 10 s | 180 |
+| 1h | 3 600 | fine | 20 s | 180 |
+| 4h | 14 400 | fine | 50 s | 288 |
+| 12h | 43 200 | fine | 150 s | 288 |
+| **1d (default)** | 86 400 | coarse | 300 s | 288 |
+| 1w | 604 800 | coarse | 2 100 s | 288 |
+| 1mo | 2 592 000 | coarse | 8 700 s | 298 |
+| 4mo | 10 368 000 | coarse | 34 800 s | 298 |
+| 6mo | 15 552 000 | coarse | 51 900 s | 300 |
+| 1y | 31 536 000 | coarse | 105 300 s | 300 |
 
-Tier boundary: ranges ≤ 12 h read `equity_fine`, the rest read `equity_coarse`.
-
-1d sits on the coarse tier even though the fine tier retains 48 h and could serve it. The coarse
-tier already holds exactly one row per 300 s **with `equity_min`/`equity_max` preserved**, so a 1d
-query reads ~288 rows instead of downsampling 8 640 — cheaper, with no fidelity lost, and it is the
-default range so it runs most often.
-
-Bucket sizes are derived (`range_seconds / target_points`), not hardcoded per range, then rounded up
-to a whole multiple of the tier's storage cadence — 10 s for fine, 300 s for coarse — so a query
-bucket never straddles a fraction of a stored row. That rounding is why 1w yields ~224 points rather
-than 240 (2 520 s → 2 700 s); every other range divides evenly.
+1d lands on the coarse tier even though the fine tier retains 48 h and could serve it. The rule puts
+it there, and that is the right answer: the coarse tier already holds exactly one row per 300 s
+**with `equity_min`/`equity_max` preserved**, so a 1d query reads 288 rows instead of downsampling
+8 640 — cheaper, no fidelity lost, and it is the default range so it runs most often.
 
 ## 4 · Storage
 
@@ -96,22 +100,19 @@ Not `trade_state.db`: the audit panel's recommendation is to move that database 
 writes/day would undercut that.
 
 ```sql
-CREATE TABLE equity_fine (      -- 10 s cadence, pruned at 48 h
-  ts       REAL PRIMARY KEY,    -- UTC epoch seconds
-  equity   REAL NOT NULL,
-  balance  REAL NOT NULL,
-  peak     REAL NOT NULL
-);
-
-CREATE TABLE equity_coarse (    -- 300 s buckets, retained
-  bucket_ts  INTEGER PRIMARY KEY,  -- floor(ts / 300) * 300, UTC epoch seconds
-  equity     REAL NOT NULL,        -- last sample in bucket
-  balance    REAL NOT NULL,
-  equity_min REAL NOT NULL,
-  equity_max REAL NOT NULL,
-  peak       REAL NOT NULL
-);
+CREATE TABLE equity_fine   (ts        REAL    PRIMARY KEY);  -- 10 s cadence, pruned at 48 h
+CREATE TABLE equity_coarse (bucket_ts INTEGER PRIMARY KEY);  -- 300 s buckets, retained
+-- every other column is added from the registry (§5) as a nullable REAL:
+--   fine:   equity, balance, peak
+--   coarse: equity, balance, peak, equity_min, equity_max
 ```
+
+Only the key column is declared in DDL. Every series column is added by the registry-driven
+migration as a **nullable** `REAL`, which is both what `ALTER TABLE … ADD COLUMN` supports without a
+default and exactly the semantics §5 needs: a series registered later reads back `NULL` for rows
+written before it existed. Validity is enforced by the recorder's rejection rules (§6), not by
+`NOT NULL` — a rejected sample is never written at all, so there is nothing for the constraint to
+catch.
 
 `equity_min` / `equity_max` per bucket exist because on a six-month view one pixel covers hours.
 Last-value sampling would hide the swing that actually happened.
@@ -193,7 +194,9 @@ are already parsed there and the `if eq > 0` guard already exists. One added cal
 - `equity` or `balance` non-finite, or `<= 0`. Same fail-closed posture as the SEC-05 spec bounds.
 
 **Counters are surfaced** in the `/api/state` health block as
-`equity_recorder: {dropped_stale, dropped_invalid, dropped_overflow, dropped_db}`. Audit OBS-02
+`equity_recorder: {dropped_stale, dropped_invalid, dropped_overflow, flush_errors}`. A failed flush
+keeps its buffer and retries on the next cycle — it is an error, not yet a loss — so it counts
+separately from the three drop reasons, which are losses. Audit OBS-02
 caught that `jsonlog._Writer.drops` is incremented and read by nothing; a silent-loss counter
 nobody reads is not an observability mechanism.
 
@@ -204,9 +207,13 @@ survives restarts — which `risk_manager.equity_max` currently does not.
 **Prune:** `DELETE FROM equity_fine WHERE ts < now - fine_retention_s`, run on the existing 60 s
 reconciliation timer in `run()`.
 
-**Config** under `gui.equity` in `config/config.yaml`, not constants:
-`fine_cadence_s: 10`, `fine_retention_h: 48`, `coarse_bucket_s: 300`, `flush_interval_s: 60`,
-`max_buffer_samples: 600`.
+**Config** under `ops.equity` in `config/config.yaml`, not constants:
+`enabled: true`, `fine_cadence_s: 10`, `fine_retention_h: 48`, `coarse_bucket_s: 300`,
+`flush_interval_s: 60`, `max_buffer_samples: 600`.
+
+`ops.` rather than `gui.`: there is no `gui:` key in `config/config.yaml`, and `ops.journal` and
+`ops.health` already sit there. The recorder is the same kind of subsystem — observability that the
+GUI happens to read — so it belongs beside them.
 
 ## 7 · API
 
@@ -239,7 +246,7 @@ reconciliation timer in `run()`.
 - `coverage.first_sample_ts` drives range enablement. The frontend enables a range when
   `now - first_sample_ts >= range_seconds`.
 - Downsampling happens in SQL using each series' declared `agg`, so the response is bounded at
-  ~240 points regardless of range.
+  `MAX_POINTS = 300` regardless of range.
 
 Query cost is bounded by the coarse tier's size and runs on the controller's event loop, like
 `/api/history` does today. At ~105 k rows/year against an indexed primary key this is sub-millisecond;

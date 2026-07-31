@@ -17,10 +17,26 @@ _DOLLAR_BIAS_SCALE = 40.0  # scales avg %-change contribution into the [-100,100
 
 
 def _equity_recorder_health(controller):
-    """Recorder loss counters, or None when the recorder is absent/disabled."""
+    """Recorder liveness + loss counters, or None when there is no recorder.
+
+    The counters alone cannot tell a HEALTHY recorder from one that silently
+    disabled itself at boot (unwritable DB, malformed ops.equity block): both
+    report four zeros. The ledger's own operational instruction -- "after a
+    restart check /api/state health.equity_recorder to confirm it initialised"
+    -- is unfollowable without `enabled`/`connected`, so they ship here.
+    """
     rec = getattr(controller, "equity_recorder", None)
     counters = getattr(rec, "counters", None)
-    return dict(counters) if isinstance(counters, dict) else None
+    if not isinstance(counters, dict):
+        return None
+    health = dict(counters)
+    health.update({
+        "enabled": bool(getattr(rec, "enabled", False)),
+        "connected": getattr(rec, "conn", None) is not None,
+        "buffered": len(getattr(rec, "buffer", None) or []),
+        "last_flush_ts": getattr(rec, "last_flush_ts", None),
+    })
+    return health
 
 
 def build_snapshot(controller) -> dict:

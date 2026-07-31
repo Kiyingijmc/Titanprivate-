@@ -105,13 +105,19 @@ class ForexFactoryCsvSource:
         """Returns parsed events, or raises NewsFetchError if the feed never answered."""
         last = "no attempt made"
         for attempt in range(self.max_retries):
+            body = None
             try:
                 response = await asyncio.to_thread(self._get)
                 if response.status_code == 200:
-                    return self.parse(response.content.decode("utf-8", "replace"))
-                last = f"HTTP {response.status_code}"
+                    body = response.content.decode("utf-8", "replace")
+                else:
+                    last = f"HTTP {response.status_code}"
             except Exception as exc:
                 last = f"{type(exc).__name__}: {exc}"
+            if body is not None:
+                # Deliberately outside the except above: a bug in parse() must
+                # surface as itself, never be retried and relabelled an outage.
+                return self.parse(body)
             self.logger.log_event("WARN", "NEWS", f"Attempt {attempt + 1}: {last}")
             if attempt < self.max_retries - 1 and self.backoff_base_s:
                 await asyncio.sleep(self.backoff_base_s * (2 ** attempt))

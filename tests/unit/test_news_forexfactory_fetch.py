@@ -85,5 +85,27 @@ class FetchFails(unittest.TestCase):
         self.assertEqual(_run(src.fetch()), [])
 
 
+class ParseBugsAreNotOutages(unittest.TestCase):
+    def test_parse_error_propagates_and_is_not_retried(self):
+        """A programming error in parse() must not masquerade as a feed outage."""
+        src = ForexFactoryCsvSource(_StubLogger())
+        src.backoff_base_s = 0
+        calls = {"n": 0}
+
+        def counted():
+            calls["n"] += 1
+            return _Response(200, CSV)
+
+        src._get = counted
+
+        def boom(_text):
+            raise TypeError("bug in parse")
+
+        src.parse = boom
+        with self.assertRaises(TypeError):
+            _run(src.fetch())
+        self.assertEqual(calls["n"], 1)  # not retried
+
+
 if __name__ == "__main__":
     unittest.main()

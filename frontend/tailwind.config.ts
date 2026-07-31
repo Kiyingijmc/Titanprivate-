@@ -51,6 +51,15 @@ export default {
         1: "var(--shadow-1)",
         2: "var(--shadow-2)",
       },
+      // Motion tokens, bound the same way as borderRadius/boxShadow above —
+      // without this a bare `duration-fast`/`ease-out` class has nothing to
+      // resolve to and the token in tokens.css is dead CSS.
+      transitionTimingFunction: {
+        out: "var(--ease-out)",
+      },
+      transitionDuration: {
+        fast: "var(--motion-fast)",
+      },
     },
   },
   plugins: [],

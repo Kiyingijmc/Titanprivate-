@@ -32,6 +32,7 @@
   --shadow-1: 0 1px 2px 0 hsl(225 20% 3% / 0.5);
   --shadow-2: 0 10px 30px -8px hsl(225 20% 2% / 0.6);
   --motion-fast: 150ms; --motion-base: 220ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* entering/exiting/pressing — bound in tailwind.config.ts (ease-out, duration-fast) */
 }
 
 /* Alternate signature accent — ELECTRIC BLUE (operator toggle via <AccentToggle>;

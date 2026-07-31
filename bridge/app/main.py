@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T")
 
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.2.0"  # swap fields in SymbolInfo
 DEFAULT_TIMEOUT = 5.0
 INIT_TIMEOUT = 15.0
 

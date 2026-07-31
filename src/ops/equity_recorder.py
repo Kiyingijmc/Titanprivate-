@@ -86,6 +86,19 @@ _DEFAULTS = {
 }
 
 
+def bucket_of(ts: float, size: int) -> int:
+    """Floor a UTC epoch timestamp to its bucket start."""
+    return int(ts // size) * size
+
+
+_AGG_SQL = {
+    "last": "excluded.{n}",
+    "max": "MAX(COALESCE({t}.{n}, excluded.{n}), excluded.{n})",
+    "min": "MIN(COALESCE({t}.{n}, excluded.{n}), excluded.{n})",
+    "sum": "COALESCE({t}.{n}, 0) + excluded.{n}",
+}
+
+
 class EquityRecorder:
     """Samples equity/balance from the heartbeat into a durable two-tier series.
 
@@ -188,5 +201,44 @@ class EquityRecorder:
             return False
 
     def flush(self) -> None:
-        """Placeholder until Task 3."""
+        """Write buffered samples to both tiers in one transaction.
+
+        On failure the buffer is RETAINED so a transient error self-heals on the
+        next cycle; only the overflow cap can actually discard a sample.
+        """
         self._last_flush_mono = self._monotonic()
+        if not self.enabled or self.conn is None or not self.buffer:
+            return
+        pending = list(self.buffer)
+        try:
+            fine = series_for("fine")
+            fine_cols = ", ".join(s.name for s in fine)
+            fine_ph = ", ".join("?" for _ in fine)
+            self.conn.executemany(
+                f"INSERT OR IGNORE INTO {FINE_TABLE} (ts, {fine_cols}) "
+                f"VALUES (?, {fine_ph})",
+                [(s.ts, *[c.source(s) for c in fine]) for s in pending],
+            )
+
+            coarse = series_for("coarse")
+            size = int(self.cfg["coarse_bucket_s"])
+            coarse_cols = ", ".join(s.name for s in coarse)
+            coarse_ph = ", ".join("?" for _ in coarse)
+            updates = ", ".join(
+                f"{s.name}=" + _AGG_SQL[s.agg].format(t=COARSE_TABLE, n=s.name)
+                for s in coarse
+            )
+            sql = (f"INSERT INTO {COARSE_TABLE} (bucket_ts, {coarse_cols}) "
+                   f"VALUES (?, {coarse_ph}) "
+                   f"ON CONFLICT(bucket_ts) DO UPDATE SET {updates}")
+            # One row per sample, in order: the ON CONFLICT clause folds them.
+            self.conn.executemany(
+                sql,
+                [(bucket_of(s.ts, size), *[c.source(s) for c in coarse]) for s in pending],
+            )
+
+            self.conn.commit()
+            del self.buffer[:len(pending)]
+        except Exception as e:
+            self.counters["flush_errors"] += 1
+            self._log(f"flush failed: {e}")

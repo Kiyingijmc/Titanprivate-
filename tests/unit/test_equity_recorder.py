@@ -164,5 +164,96 @@ class RecordCadenceAndValidation(unittest.TestCase):
         self.assertEqual(sum(rec.counters.values()), 0)
 
 
+from src.ops.equity_recorder import bucket_of
+
+
+class FlushAndRollup(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+
+    def test_bucket_of_floors_to_size(self):
+        self.assertEqual(bucket_of(1_000_000.0, 300), 999_900)
+        self.assertEqual(bucket_of(999_900.0, 300), 999_900)
+        self.assertEqual(bucket_of(1_000_199.9, 300), 999_900)
+
+    def test_flush_writes_fine_rows_and_clears_the_buffer(self):
+        rec, clock = _recorder(self.tmp)
+        rec.record(100.0, 100.0)
+        clock.tick(10)
+        rec.record(100.0, 110.0)
+        rec.flush()
+        self.assertEqual(rec.buffer, [])
+        rows = rec.conn.execute(
+            "SELECT ts, equity, balance, peak FROM equity_fine ORDER BY ts").fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][1], 100.0)
+        self.assertEqual(rows[1][1], 110.0)
+        self.assertEqual(rows[1][3], 110.0)
+
+    def test_coarse_bucket_collapses_by_declared_agg(self):
+        """last=final value, min/max=extremes, peak=running max — all in one bucket."""
+        rec, clock = _recorder(self.tmp)
+        for eq in (100.0, 130.0, 90.0, 120.0):
+            rec.record(100.0, eq)
+            clock.tick(10)
+        rec.flush()
+        row = rec.conn.execute(
+            "SELECT bucket_ts, equity, balance, peak, equity_min, equity_max "
+            "FROM equity_coarse").fetchall()
+        self.assertEqual(len(row), 1)
+        _, equity, balance, peak, emin, emax = row[0]
+        self.assertEqual(equity, 120.0)      # last
+        self.assertEqual(balance, 100.0)     # last
+        self.assertEqual(peak, 130.0)        # max
+        self.assertEqual(emin, 90.0)         # min
+        self.assertEqual(emax, 130.0)        # max
+
+    def test_second_flush_into_same_bucket_updates_without_zeroing(self):
+        rec, clock = _recorder(self.tmp)
+        rec.record(100.0, 100.0)
+        rec.flush()
+        clock.tick(10)
+        rec.record(100.0, 140.0)
+        rec.flush()
+        row = rec.conn.execute(
+            "SELECT equity, peak, equity_min, equity_max FROM equity_coarse").fetchone()
+        self.assertEqual(row, (140.0, 140.0, 100.0, 140.0))
+
+    def test_samples_spanning_two_buckets_write_two_rows(self):
+        rec, clock = _recorder(self.tmp)
+        rec.record(100.0, 100.0)
+        clock.tick(310)                      # past the 300 s bucket edge
+        rec.record(100.0, 200.0)
+        rec.flush()
+        rows = rec.conn.execute(
+            "SELECT bucket_ts, equity FROM equity_coarse ORDER BY bucket_ts").fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r[1] for r in rows], [100.0, 200.0])
+
+    def test_flush_error_keeps_the_buffer_and_counts(self):
+        rec, clock = _recorder(self.tmp)
+        rec.record(100.0, 100.0)
+        rec.conn.close()                     # force a write failure
+        rec.flush()
+        self.assertEqual(rec.counters["flush_errors"], 1)
+        self.assertEqual(len(rec.buffer), 1)   # retained for the next attempt
+
+    def test_peak_is_reseeded_from_storage_on_restart(self):
+        rec, clock = _recorder(self.tmp)
+        rec.record(100.0, 175.0)
+        rec.flush()
+        db = rec.conn
+        db.commit()
+        rec2 = EquityRecorder(os.path.join(self.tmp, "core.db"),
+                              config={"enabled": True}, clock=clock.time, monotonic=clock.time)
+        self.assertEqual(rec2.peak, 175.0)
+
+    def test_empty_flush_is_a_noop(self):
+        rec, _ = _recorder(self.tmp)
+        rec.flush()
+        self.assertEqual(rec.counters["flush_errors"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

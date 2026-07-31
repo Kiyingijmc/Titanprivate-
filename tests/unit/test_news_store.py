@@ -123,5 +123,32 @@ class Staleness(unittest.TestCase):
         self.assertEqual(store.age(NOW), timedelta(hours=2))
 
 
+class LoadIsTotal(unittest.TestCase):
+    """A cache file must never be able to crash startup, whatever it contains."""
+
+    def _load_from(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "calendar.json")
+            with open(path, "w") as fh:
+                fh.write(text)
+            store = CalendarStore(path)
+            store.load()          # must not raise
+            return store
+
+    def test_non_dict_root_is_treated_as_empty(self):
+        for text in ("[]", "[1,2,3]", "5", '"hello"', "null"):
+            with self.subTest(text=text):
+                self.assertEqual(self._load_from(text).events(), [])
+
+    def test_non_dict_last_success_is_treated_as_empty(self):
+        store = self._load_from('{"events": [], "last_success": [1,2,3]}')
+        self.assertEqual(store.events(), [])
+        self.assertIsNone(store.age(NOW))
+
+    def test_events_not_a_list_is_treated_as_empty(self):
+        store = self._load_from('{"events": "abc", "last_success": {}}')
+        self.assertEqual(store.events(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -64,16 +64,21 @@ class CalendarStore:
                 payload = json.load(fh)
         except (OSError, ValueError):
             return
+        if not isinstance(payload, dict):
+            return
         try:
             self._events = {}
             for raw in payload.get("events", []):
                 event = CalendarEvent.from_dict(raw)
                 self._events[event.key] = event
+            raw_last = payload.get("last_success")
+            if not isinstance(raw_last, dict):
+                raw_last = {}
             self._last_success = {
                 k: _as_utc(datetime.fromisoformat(v))
-                for k, v in (payload.get("last_success") or {}).items()
+                for k, v in raw_last.items()
             }
-        except (TypeError, ValueError, KeyError):
+        except (TypeError, ValueError, KeyError, AttributeError):
             self._events = {}
             self._last_success = {}
 

@@ -82,5 +82,31 @@ class DigestNeverRaises(unittest.TestCase):
         self.assertEqual(d["events"], [])
 
 
+class DigestDayIsAlwaysUtc(unittest.TestCase):
+    def test_non_utc_aware_now_selects_the_utc_day(self):
+        """23:30 at -04:00 is 03:30 UTC the NEXT day; the event that day must appear."""
+        when = datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc)
+        manager = _manager([_event("Overnight", when=when)])
+        local = datetime(2026, 7, 30, 23, 30, tzinfo=timezone(timedelta(hours=-4)))
+        d = manager.digest(now=local)
+        self.assertEqual(d["date"], "2026-07-31")
+        self.assertEqual(d["count"], 1)
+
+    def test_naive_now_is_treated_as_utc_not_local_time(self):
+        """Must not shift by the host's offset -- this box is UTC+3."""
+        manager = _manager([_event("Core PCE")])          # event at 2026-07-30 12:30Z
+        d = manager.digest(now=datetime(2026, 7, 30, 12, 30))
+        self.assertEqual(d["date"], "2026-07-30")
+        self.assertEqual(d["count"], 1)
+
+    def test_unavailable_fallback_also_reports_the_utc_date(self):
+        manager = _manager([_event("Core PCE")])
+        manager.store.events = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        local = datetime(2026, 7, 30, 23, 30, tzinfo=timezone(timedelta(hours=-4)))
+        d = manager.digest(now=local)
+        self.assertEqual(d["status"], "unavailable")
+        self.assertEqual(d["date"], "2026-07-31")
+
+
 if __name__ == "__main__":
     unittest.main()

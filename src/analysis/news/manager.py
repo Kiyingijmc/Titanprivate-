@@ -118,6 +118,12 @@ class NewsManager:
         """Today's red-folder events as plain data, for Telegram and the GUI.
         Never raises -- a rendering aid must not be able to break a caller."""
         now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            # Treat a naive value as UTC, consistent with CalendarEvent.from_dict and
+            # CalendarStore._as_utc. Do NOT use .astimezone() on a naive datetime -- it
+            # would assume LOCAL time and shift by the host offset.
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
         try:
             day = now.date()
             symbols = self.policy.mapped_symbols()

@@ -70,4 +70,37 @@ beyond random" — registered as supporting evidence, not a gate.
 
 ## Results
 
-*(appended after the registered run — nothing above this line changes)*
+**Run:** 2026-07-31, rig commit `c21ed5c`, registered parameters exactly
+(H1 / ATR10 / 11 symbols / reps=20 / seeds 11–30). Per-rep CSV:
+`data/results/exp0_coinflip/reps_H1_ATR10.csv`.
+
+Rig fidelity check: the real-SilverBullet arms reproduce the stop study to the
+third decimal — n=2217, FIXED −0.122R, RATCHET +0.087R, RATCHET+RUNNER +0.109R.
+
+| Arm | Real SB | Placebo mean (sd) | Placebo p5…p95 | reps > 0 | reps ≥ real |
+|---|---|---|---|---|---|
+| FIXED 2R | −0.122R | **−0.324R** (0.020) | −0.357…−0.298 | 0/20 | 0/20 |
+| RATCHET | +0.087R | **−0.267R** (0.014) | −0.288…−0.246 | 0/20 | 0/20 |
+| RATCHET+RUNNER | +0.109R | **−0.249R** (0.015) | −0.271…−0.227 | 0/20 | 0/20 |
+
+### Verdict: **OUTCOME 1** (μ = −0.249R ≤ −0.05R)
+
+Random entries plus the full exit engine are decisively negative in every one
+of 20 replications. The SilverBullet entry does genuine work; the arsenal
+programme proceeds as designed.
+
+### What the numbers additionally say (post-hoc, labelled as such)
+
+1. **The exit engine is an amplifier, not a subsidy.** On real entries the
+   ratchet+runner adds +0.231R (−0.122 → +0.109); on random entries it adds
+   only +0.075R (−0.324 → −0.249). The arsenal doc's framing that any
+   conforming entry "inherits +0.316R of proven machinery" is wrong in the
+   additive sense — a new entry inherits ~+0.08R of cost-drag mitigation and
+   must earn the rest by actually catching moves the ratchet can monetise.
+   Candidate strategies should be screened on skew potential, not on the
+   assumption the exits will carry them.
+2. **The entry has selection value even before management:** real beats random
+   by +0.202R under identical fixed exits.
+3. Permutation-style read: 0/20 placebo reps reach the real figure in any arm —
+   the entry's contribution is significant at p < 0.05 by this registered
+   secondary criterion.

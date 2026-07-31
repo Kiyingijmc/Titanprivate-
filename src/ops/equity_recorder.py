@@ -242,3 +242,25 @@ class EquityRecorder:
         except Exception as e:
             self.counters["flush_errors"] += 1
             self._log(f"flush failed: {e}")
+
+    def prune(self) -> int:
+        """Delete fine-tier rows older than retention. Returns rows deleted."""
+        if not self.enabled or self.conn is None:
+            return 0
+        try:
+            cutoff = float(self._clock()) - int(self.cfg["fine_retention_h"]) * 3600
+            cur = self.conn.execute(f"DELETE FROM {FINE_TABLE} WHERE ts < ?", (cutoff,))
+            self.conn.commit()
+            return cur.rowcount or 0
+        except Exception as e:
+            self.counters["flush_errors"] += 1
+            self._log(f"prune failed: {e}")
+            return 0
+
+    def close(self) -> None:
+        try:
+            self.flush()
+            if self.conn:
+                self.conn.close()
+        except Exception:
+            pass

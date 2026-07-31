@@ -255,5 +255,42 @@ class FlushAndRollup(unittest.TestCase):
         self.assertEqual(rec.counters["flush_errors"], 0)
 
 
+class Prune(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+
+    def test_prune_deletes_only_rows_older_than_retention(self):
+        rec, clock = _recorder(self.tmp, fine_retention_h=1)
+        now = clock.now
+        rec.conn.execute("INSERT INTO equity_fine (ts, equity, balance, peak) VALUES (?,?,?,?)",
+                         (now - 3601, 1, 1, 1))        # older than 1h -> deleted
+        rec.conn.execute("INSERT INTO equity_fine (ts, equity, balance, peak) VALUES (?,?,?,?)",
+                         (now - 3600, 2, 2, 2))        # exactly 1h -> kept
+        rec.conn.execute("INSERT INTO equity_fine (ts, equity, balance, peak) VALUES (?,?,?,?)",
+                         (now - 10, 3, 3, 3))          # recent -> kept
+        rec.conn.commit()
+
+        deleted = rec.prune()
+        self.assertEqual(deleted, 1)
+        kept = [r[0] for r in rec.conn.execute("SELECT equity FROM equity_fine ORDER BY ts")]
+        self.assertEqual(kept, [2.0, 3.0])
+
+    def test_prune_never_touches_the_coarse_tier(self):
+        rec, clock = _recorder(self.tmp, fine_retention_h=1)
+        rec.conn.execute(
+            "INSERT INTO equity_coarse (bucket_ts, equity, balance, peak, equity_min, equity_max) "
+            "VALUES (?,?,?,?,?,?)", (int(clock.now) - 999_999, 1, 1, 1, 1, 1))
+        rec.conn.commit()
+        rec.prune()
+        self.assertEqual(rec.conn.execute("SELECT COUNT(*) FROM equity_coarse").fetchone()[0], 1)
+
+    def test_prune_on_a_dead_connection_counts_and_does_not_raise(self):
+        rec, _ = _recorder(self.tmp)
+        rec.conn.close()
+        self.assertEqual(rec.prune(), 0)
+        self.assertEqual(rec.counters["flush_errors"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

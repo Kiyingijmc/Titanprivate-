@@ -5,14 +5,33 @@ FOMC 6:00pm = 18:00Z (14:00 ET), FOMC presser 6:30pm = 18:30Z, Advance GDP and
 Core PCE 12:30pm = 12:30Z (08:30 ET). Were the feed US Eastern, FOMC would read
 2:00pm. Treating these as local time is the defect fixed in commit ec883ae.
 """
+import asyncio
 import csv
 import io
+import random
 from datetime import datetime, timezone
+
+import requests
 
 from ..models import CalendarEvent, make_key
 
 _REQUIRED = ("Title", "Country", "Date", "Time", "Impact")
 _IMPORTANCE = {"high": "HIGH", "medium": "MEDIUM", "moderate": "MEDIUM", "low": "LOW"}
+
+
+class NewsFetchError(Exception):
+    """All retries exhausted. Distinct from 'the feed returned no events'."""
+
+
+_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+)
 
 
 class ForexFactoryCsvSource:
@@ -23,6 +42,9 @@ class ForexFactoryCsvSource:
         self.logger = logger
         self.url = url or self.URL
         self.tz = tz
+        self.max_retries = 3
+        self.backoff_base_s = 1.0
+        self.timeout_s = 15
 
     def parse(self, csv_text: str) -> list[CalendarEvent]:
         """Pure: CSV text -> events. Never raises; returns [] on bad input."""
@@ -67,6 +89,33 @@ class ForexFactoryCsvSource:
             url=_clean(row.get("URL")),
             source=self.NAME,
         )
+
+    def _headers(self) -> dict:
+        return {
+            "User-Agent": random.choice(_USER_AGENTS),
+            "Accept": "text/csv,text/plain;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+    def _get(self):
+        """Blocking HTTP. Isolated so tests can substitute it."""
+        return requests.get(self.url, headers=self._headers(), timeout=self.timeout_s)
+
+    async def fetch(self) -> list[CalendarEvent]:
+        """Returns parsed events, or raises NewsFetchError if the feed never answered."""
+        last = "no attempt made"
+        for attempt in range(self.max_retries):
+            try:
+                response = await asyncio.to_thread(self._get)
+                if response.status_code == 200:
+                    return self.parse(response.content.decode("utf-8", "replace"))
+                last = f"HTTP {response.status_code}"
+            except Exception as exc:
+                last = f"{type(exc).__name__}: {exc}"
+            self.logger.log_event("WARN", "NEWS", f"Attempt {attempt + 1}: {last}")
+            if attempt < self.max_retries - 1 and self.backoff_base_s:
+                await asyncio.sleep(self.backoff_base_s * (2 ** attempt))
+        raise NewsFetchError(last)
 
 
 def _clean(value) -> str | None:

@@ -12,6 +12,7 @@ import asyncio
 import yaml
 import sys
 import os
+import math
 import subprocess
 import pytz
 import time
@@ -230,17 +231,29 @@ class SystemController:
         """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
         return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
 
-    def _persist_daily_anchor(self):
+    def _persist_daily_anchor(self, now_uganda):
         """Write the DD anchor when it CHANGES (RISK-01).
 
-        Called from the heartbeat path, so it must not write every ~5s: the
-        cache below reduces this to roughly two writes a day -- once when the
-        boot anchor first appears, once at the 23:45 reset.
+        Driven from the main loop rather than the HEARTBEAT branch: this is
+        periodic bookkeeping, and _process_incoming_data stays pure
+        data-routing. The loop already holds `now_uganda`, so this adds no
+        extra clock read.
+
+        The loop spins roughly every millisecond, so the (key, equity) cache
+        is what keeps this to a real write twice a day -- once when the boot
+        anchor first appears, once after the 23:45 reset.
+
+        An anchor that is not a usable positive number is skipped rather than
+        written, exactly as RiskManager.restore_daily_anchor skips one: a
+        malformed value must not be able to overwrite a good persisted anchor.
         """
-        equity = self.risk_manager.day_start_equity
-        if equity <= 0:
+        try:
+            equity = float(self.risk_manager.day_start_equity)
+        except (TypeError, ValueError):
             return
-        key = self._trading_day_key(datetime.now(self.uganda_tz))
+        if not (math.isfinite(equity) and equity > 0):
+            return
+        key = self._trading_day_key(now_uganda)
         if self._last_persisted_anchor == (key, equity):
             return
         self.state_manager.save_risk_anchor(key, equity)
@@ -409,12 +422,19 @@ class SystemController:
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
+
+                # RISK-01: persist the daily DD anchor. Kept out of the
+                # HEARTBEAT branch on purpose -- this is periodic bookkeeping
+                # like the Sync Guard and ghost cleanup above, and
+                # _process_incoming_data must stay pure data-routing. Placed
+                # before the 23:45 block so the post-reset anchor is picked up
+                # on the very next iteration (~1ms later).
+                self._persist_daily_anchor(now_uganda)
                 if now_uganda.hour == 23 and now_uganda.minute == 45:
                     if not self.report_sent_today:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
-                        self._persist_daily_anchor()  # RISK-01: capture the new day
                 
                 if now_uganda.hour == 0: self.report_sent_today = False
 
@@ -789,7 +809,6 @@ class SystemController:
             if eq > 0: 
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
-                self._persist_daily_anchor()  # RISK-01: no-op unless it changed
             
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])

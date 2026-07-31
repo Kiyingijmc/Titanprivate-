@@ -94,8 +94,8 @@ class _Stub:
 
     _trading_day_key = SystemController.__dict__["_trading_day_key"]
 
-    def run(self):
-        SystemController._persist_daily_anchor(self)
+    def run(self, now=None):
+        SystemController._persist_daily_anchor(self, now or datetime.now(EAT))
 
 
 class PersistDailyAnchorIsCached(unittest.TestCase):
@@ -123,6 +123,28 @@ class PersistDailyAnchorIsCached(unittest.TestCase):
             s.run()
             self.assertEqual(s.state_manager.writes, [],
                              msg=f"wrote a bad anchor {equity}")
+
+    def test_never_raises_into_the_main_loop(self):
+        """_persist_daily_anchor runs inside the main `async while True` loop,
+        whose only exception handler Telegrams a FATAL SYSTEM CRASH and exits.
+        A bookkeeping write must never be able to stop the trading engine, so
+        an unusable day_start_equity is skipped rather than propagated.
+
+        Regression: the first version compared `equity <= 0` directly, which
+        raised TypeError on any non-numeric value and broke five existing
+        controller tests.
+        """
+        class _Unusable:
+            def __le__(self, other):
+                raise TypeError("not comparable")
+
+        for equity in (_Unusable(), None, "abc", object(), float("nan"),
+                       float("inf")):
+            s = _Stub(0.0)
+            s.risk_manager.day_start_equity = equity
+            s.run()          # must not raise
+            self.assertEqual(s.state_manager.writes, [],
+                             msg=f"persisted an unusable anchor {equity!r}")
 
     def test_writes_under_todays_trading_day_key(self):
         s = _Stub(1000.0)

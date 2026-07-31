@@ -45,8 +45,9 @@ def _bare_controller(recorder):
 class HeartbeatFeedsRecorder(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        # No cadence key: the sample cadence is a structural constant now.
         self.rec = EquityRecorder(os.path.join(self.tmp, "core.db"),
-                                  config={"enabled": True, "fine_cadence_s": 0})
+                                  config={"enabled": True})
 
     def test_heartbeat_records_balance_and_equity(self):
         c = _bare_controller(self.rec)
@@ -63,27 +64,85 @@ class HeartbeatFeedsRecorder(unittest.TestCase):
         self.assertEqual(self.rec.buffer, [])
 
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 class ConfigBlock(unittest.TestCase):
     def test_config_yaml_declares_ops_equity(self):
         import yaml
-        with open("config/config.yaml") as fh:
+        # Resolved from THIS FILE, not the cwd: the suite is run from the repo
+        # root today, but a worktree/CI runner invoking it from anywhere else
+        # would have made this open() fail on a path, not on a contract.
+        with open(os.path.join(_REPO_ROOT, "config", "config.yaml")) as fh:
             cfg = yaml.safe_load(fh)
         eq = cfg["ops"]["equity"]
         self.assertTrue(eq["enabled"])
-        self.assertEqual(eq["fine_cadence_s"], 10)
         self.assertEqual(eq["fine_retention_h"], 48)
-        self.assertEqual(eq["coarse_bucket_s"], 300)
         self.assertEqual(eq["flush_interval_s"], 60)
         self.assertEqual(eq["max_buffer_samples"], 600)
 
+    def test_config_yaml_does_not_expose_the_structural_constants(self):
+        """The sample cadence and the coarse bucket size are baked into every
+        row already on disk. Exposing them as knobs let an operator run a week
+        at 600 and switch back to 300, leaving the DB permanently holding
+        600-aligned rows the view buckets at 300 — spec §3's "a query bucket
+        never straddles a fraction of a stored row", violated silently and with
+        no migration. They live in equity_recorder as constants instead."""
+        import yaml
+        with open(os.path.join(_REPO_ROOT, "config", "config.yaml")) as fh:
+            eq = yaml.safe_load(fh)["ops"]["equity"]
+        self.assertNotIn("fine_cadence_s", eq)
+        self.assertNotIn("coarse_bucket_s", eq)
+
 
 class FakeControllerSeries(unittest.TestCase):
-    def test_fake_controller_serves_a_populated_series(self):
-        from src.ops.web.equity_view import equity_series
+    """The devserver must drive ALL eleven ranges offline (spec §8). Seeding
+    only equity_coarse left every range <= 12h with zero points and made the
+    phase-2 range selector undrivable with MT5 down."""
+
+    @classmethod
+    def setUpClass(cls):
         from src.ops.web.fake_controller import FakeController
-        c = FakeController()
-        out = equity_series(c.equity_recorder.conn, "1d")
+        cls.controller = FakeController()
+
+    def test_fake_controller_serves_a_populated_coarse_series(self):
+        from src.ops.web.equity_view import equity_series
+        out = equity_series(self.controller.equity_recorder.conn, "1d")
+        self.assertEqual(out["tier"], "coarse")
         self.assertGreater(len([p for p in out["points"] if p]), 10)
+
+    def test_fake_controller_serves_a_populated_FINE_series(self):
+        from src.ops.web.equity_view import equity_series
+        for name in ("15m", "30m", "1h", "4h", "12h"):
+            out = equity_series(self.controller.equity_recorder.conn, name)
+            self.assertEqual(out["tier"], "fine", name)
+            self.assertGreater(len([p for p in out["points"] if p]), 10, name)
+
+    def test_fake_controller_reports_gaps_and_coverage(self):
+        from src.ops.web.equity_view import equity_series
+        out = equity_series(self.controller.equity_recorder.conn, "12h")
+        self.assertTrue(out["coverage"]["gaps"], "no gap to drive gap rendering")
+        self.assertIsNotNone(out["coverage"]["first_sample_ts"])
+
+    def test_fake_recorder_exposes_the_real_health_surface(self):
+        from src.ops.web.state_view import _equity_recorder_health
+        health = _equity_recorder_health(self.controller)
+        for key in ("enabled", "connected", "buffered", "last_flush_ts",
+                    "dropped_stale", "flush_errors"):
+            self.assertIn(key, health)
+        self.assertTrue(health["enabled"])
+
+    def test_fake_recorder_is_readable_through_the_routes_own_connection(self):
+        """The route opens its own read-only connection BY PATH; an in-memory
+        fake could never exercise that."""
+        from src.ops.web.equity_view import equity_series, read_connection
+        conn, owned = read_connection(self.controller.equity_recorder)
+        self.assertTrue(owned)
+        try:
+            out = equity_series(conn, "15m")
+            self.assertGreater(len([p for p in out["points"] if p]), 10)
+        finally:
+            conn.close()
 
 
 class StateSnapshotEquityHealthWiring(unittest.TestCase):

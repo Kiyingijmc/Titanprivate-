@@ -35,3 +35,6 @@ date	id	role	model	tokens_in	tokens_out
 2026-07-31	S017	build	opus	4564478	40177
 2026-07-31	S017	review	opus	3819733	26892
 2026-07-31	S017	remediate	opus	0	0
+2026-07-31	S018	build	sonnet	3872793	22301
+2026-07-31	S018	review	sonnet	1562657	5809
+2026-07-31	S018	remediate	opus	2223843	13966

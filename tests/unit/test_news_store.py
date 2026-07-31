@@ -4,9 +4,11 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from src.analysis.news import store as store_module
 from src.analysis.news.models import CalendarEvent, make_key
 from src.analysis.news.store import CalendarStore
 
@@ -101,6 +103,101 @@ class Merging(unittest.TestCase):
         self.assertEqual([e.title for e in store.events()], ["Earlier", "Later"])
 
 
+class SourceAwareMergePrecedence(unittest.TestCase):
+    """Spec Sec 2.3: ForexFactory is authoritative. It always wins on
+    importance/when_utc/title/currency/source; a lower-priority source may
+    only fill in fields ForexFactory left blank."""
+
+    def _ff_event(self, importance="HIGH", forecast=None):
+        when = datetime(2026, 7, 30, 12, 30, tzinfo=timezone.utc)
+        return CalendarEvent(key=make_key("USD", "Core PCE", when), when_utc=when,
+                             currency="USD", importance=importance, title="Core PCE",
+                             forecast=forecast, source="forexfactory")
+
+    def test_forexfactory_stored_event_keeps_its_importance_over_another_source(self):
+        store = CalendarStore("unused")
+        ff = self._ff_event(importance="HIGH")
+        store.merge([ff], "forexfactory", NOW)
+
+        other = CalendarEvent(key=ff.key, when_utc=ff.when_utc, currency=ff.currency,
+                              importance="LOW", title=ff.title, source="mt5")
+        store.merge([other], "mt5", NOW)
+
+        self.assertEqual(store.events()[0].importance, "HIGH")
+        self.assertEqual(store.events()[0].source, "forexfactory")
+
+    def test_forexfactory_stored_event_keeps_its_when_utc_over_another_source(self):
+        store = CalendarStore("unused")
+        ff = self._ff_event()
+        store.merge([ff], "forexfactory", NOW)
+
+        drifted = CalendarEvent(key=ff.key, when_utc=ff.when_utc + timedelta(minutes=3),
+                                currency=ff.currency, importance=ff.importance,
+                                title=ff.title, source="mt5")
+        store.merge([drifted], "mt5", NOW)
+
+        self.assertEqual(store.events()[0].when_utc, ff.when_utc)
+
+    def test_other_source_fills_a_field_forexfactory_left_blank(self):
+        store = CalendarStore("unused")
+        ff = self._ff_event(forecast=None)
+        store.merge([ff], "forexfactory", NOW)
+
+        other = CalendarEvent(key=ff.key, when_utc=ff.when_utc, currency=ff.currency,
+                              importance=ff.importance, title=ff.title,
+                              forecast="0.4%", source="mt5")
+        store.merge([other], "mt5", NOW)
+
+        self.assertEqual(store.events()[0].forecast, "0.4%")
+        # Filling a blank field must not hand authority to the other source.
+        self.assertEqual(store.events()[0].source, "forexfactory")
+
+    def test_other_source_cannot_overwrite_a_field_forexfactory_already_set(self):
+        store = CalendarStore("unused")
+        ff = self._ff_event(forecast="0.3%")
+        store.merge([ff], "forexfactory", NOW)
+
+        other = CalendarEvent(key=ff.key, when_utc=ff.when_utc, currency=ff.currency,
+                              importance=ff.importance, title=ff.title,
+                              forecast="0.4%", source="mt5")
+        store.merge([other], "mt5", NOW)
+
+        self.assertEqual(store.events()[0].forecast, "0.3%")
+
+    def test_non_forexfactory_stored_event_is_overwritten_normally(self):
+        """The authority rule is specific to a STORED ForexFactory row; two
+        non-FF sources (or FF arriving after another source) behave exactly
+        as before -- incoming wins."""
+        store = CalendarStore("unused")
+        first = CalendarEvent(key=make_key("USD", "Core PCE", NOW), when_utc=NOW,
+                              currency="USD", importance="LOW", title="Core PCE",
+                              source="mt5")
+        store.merge([first], "mt5", NOW)
+
+        second = CalendarEvent(key=first.key, when_utc=NOW, currency="USD",
+                               importance="HIGH", title="Core PCE", source="mt5")
+        store.merge([second], "mt5", NOW)
+
+        self.assertEqual(store.events()[0].importance, "HIGH")
+
+    def test_forexfactory_incoming_over_non_forexfactory_stored_still_wins_as_incoming(self):
+        """FF arriving AFTER another source is the normal (non-authority)
+        path: incoming (FF) simply wins, same as any other incoming update."""
+        store = CalendarStore("unused")
+        stored_mt5 = CalendarEvent(key=make_key("USD", "Core PCE", NOW), when_utc=NOW,
+                                   currency="USD", importance="LOW", title="Core PCE",
+                                   source="mt5")
+        store.merge([stored_mt5], "mt5", NOW)
+
+        incoming_ff = CalendarEvent(key=stored_mt5.key, when_utc=NOW, currency="USD",
+                                    importance="HIGH", title="Core PCE",
+                                    source="forexfactory")
+        store.merge([incoming_ff], "forexfactory", NOW)
+
+        self.assertEqual(store.events()[0].importance, "HIGH")
+        self.assertEqual(store.events()[0].source, "forexfactory")
+
+
 class Staleness(unittest.TestCase):
     def test_age_is_none_before_any_success(self):
         self.assertIsNone(CalendarStore("unused").age(NOW))
@@ -148,6 +245,35 @@ class LoadIsTotal(unittest.TestCase):
     def test_events_not_a_list_is_treated_as_empty(self):
         store = self._load_from('{"events": "abc", "last_success": {}}')
         self.assertEqual(store.events(), [])
+
+
+class AtomicWriteSurvivesACrash(unittest.TestCase):
+    """Spec Sec 7: save() writes to a temp file and os.replace()s it into
+    place so a crash mid-write can never corrupt or truncate the file a
+    reader might load next. Prove it by making json.dump blow up mid-save
+    on a store whose file already holds good data."""
+
+    def test_original_file_intact_and_no_tmp_file_left_when_dump_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "calendar.json")
+            good_store = CalendarStore(path)
+            good_store.merge([_event()], "forexfactory", NOW)
+            good_store.save()
+            with open(path, encoding="utf-8") as fh:
+                original_bytes = fh.read()
+
+            crashing_store = CalendarStore(path)
+            crashing_store.merge([_event(title="A Different Event")], "forexfactory", NOW)
+
+            with mock.patch.object(store_module.json, "dump",
+                                   side_effect=RuntimeError("disk exploded mid-write")):
+                with self.assertRaises(RuntimeError):
+                    crashing_store.save()
+
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), original_bytes)
+            json.loads(original_bytes)  # sanity: the surviving file is valid JSON
+            self.assertEqual(sorted(os.listdir(tmp)), ["calendar.json"])  # no *.tmp left
 
 
 if __name__ == "__main__":

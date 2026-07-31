@@ -275,8 +275,11 @@ class SystemController:
         await self._wait_for_bridge_connection()
 
         self._init_strategies()
-        await self.news_manager.update_calendar()
-        
+        try:
+            await self.news_manager.update_calendar()
+        except Exception as e:
+            self.logger.log_event("WARN", "NEWS", f"Boot calendar fetch failed: {e}")
+
         for sym in self.active_symbols:
             self.market_data[sym] = MultiTimeframeStore(sym)
 
@@ -334,7 +337,10 @@ class SystemController:
 
                 # --- C. CONTROL & TELEMETRY ---
                 await self.telemetry.poll_commands()
-                await self._check_news_status() 
+                try:
+                    await self._check_news_status()
+                except Exception as e:
+                    self.logger.log_event("WARN", "NEWS", f"News status check failed: {e}")
 
                 # --- D. DATA INGESTION ---
                 if self.bridge:

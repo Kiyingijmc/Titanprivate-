@@ -66,5 +66,39 @@ class HandlesMalformedInput(unittest.TestCase):
         self.assertEqual(ForexFactoryCsvSource(_StubLogger()).parse(""), [])
 
 
+class RowsPresentButUnparseableIsABrokenFeedNotAnEmptyWeek(unittest.TestCase):
+    """A header-only CSV is a legitimate 'no events this week' answer. Rows
+    that are present but every one fails strptime means the feed's date/time
+    format changed underneath us -- that must be distinguishable so the
+    caller can treat it as a failed refresh, not a fresh empty cache."""
+
+    def test_identical_header_with_iso_dates_and_24h_clock_parses_to_zero_events(self):
+        src = ForexFactoryCsvSource(_StubLogger())
+        iso_csv = (
+            "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
+            "FOMC Statement,USD,2026-07-29,18:00,High,,,https://example.test/1\n"
+            "Core PCE Price Index m/m,USD,2026-07-30,12:30,High,0.3%,0.2%,"
+            "https://example.test/2\n"
+        )
+        events = src.parse(iso_csv)
+        self.assertEqual(events, [])
+
+    def test_identical_header_with_iso_dates_records_rows_were_seen(self):
+        src = ForexFactoryCsvSource(_StubLogger())
+        iso_csv = (
+            "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
+            "FOMC Statement,USD,2026-07-29,18:00,High,,,https://example.test/1\n"
+        )
+        src.parse(iso_csv)
+        self.assertGreater(src.last_rows_seen, 0)
+
+    def test_header_only_csv_is_still_a_legitimate_empty_result(self):
+        src = ForexFactoryCsvSource(_StubLogger())
+        header_only = "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
+        events = src.parse(header_only)
+        self.assertEqual(events, [])
+        self.assertEqual(src.last_rows_seen, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

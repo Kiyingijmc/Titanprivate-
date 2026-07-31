@@ -4,6 +4,7 @@
   feed down, cache fresh       -> TRADING CONTINUES, blackouts from cache
   feed down, cache stale/empty -> fail closed globally
 """
+import zoneinfo
 from datetime import datetime, timezone
 
 from .policy import NewsPolicy
@@ -22,11 +23,27 @@ class NewsManager:
         self.stale_retry_interval_s = float(cfg.get("stale_retry_interval_min", 1)) * 60.0
         self.policy = NewsPolicy(config)
         self.policy.logger = logger
-        self.source = source or ForexFactoryCsvSource(logger)
+        self.source = source or ForexFactoryCsvSource(
+            logger, tz=self._resolve_tz(cfg.get("csv_timezone", "UTC")))
         self.store = store or CalendarStore(cfg.get("cache_path", _DEFAULT_CACHE))
         self.store.load()
         self.feed_degraded = False
         self._last_attempt = None
+
+    def _resolve_tz(self, name):
+        """Spec §2.2/§3: an operator hotfix for a feed timezone change, so a
+        drift doesn't need a code deploy. A typo'd name must never crash --
+        it falls back to UTC (the verified-correct default) and is logged."""
+        text = str(name or "UTC").strip()
+        if text.upper() == "UTC":
+            return timezone.utc
+        try:
+            return zoneinfo.ZoneInfo(text)
+        except Exception as exc:
+            self.logger.log_event(
+                "ERROR", "NEWS",
+                f"Invalid csv_timezone '{text}' ({exc}); falling back to UTC.")
+            return timezone.utc
 
     async def update_calendar(self) -> None:
         now = datetime.now(timezone.utc)
@@ -48,6 +65,20 @@ class NewsManager:
                 "WARN", "NEWS",
                 f"Refresh failed ({exc}); serving cached calendar "
                 f"(age {self._age_text(now)}).")
+            return
+        rows_seen = getattr(self.source, "last_rows_seen", 0)
+        if rows_seen and not events:
+            # A valid-schema fetch that parsed to zero events despite having
+            # rows is a BROKEN feed (date/time format drift), not a quiet
+            # week -- do not stamp last_success or the cache would look
+            # perpetually fresh while every symbol trades through every
+            # red-folder event with no warning.
+            self.feed_degraded = True
+            self.logger.log_event(
+                "ERROR", "NEWS",
+                "Refresh produced no usable events from a non-empty feed; NOT marking the "
+                "calendar as refreshed. If this persists the cache will age out and halt "
+                "trading.")
             return
         self.store.merge(events, getattr(self.source, "NAME", "forexfactory"), now)
         try:

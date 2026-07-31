@@ -90,7 +90,29 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def _prefer(incoming: CalendarEvent, stored: CalendarEvent) -> CalendarEvent:
-    """Incoming wins on importance and timing; blanks never erase known values."""
+    """Incoming wins on importance and timing; blanks never erase known values.
+
+    Exception (spec Sec 2.3): ForexFactory is authoritative. If the STORED
+    event came from ForexFactory and the incoming one did not, the stored
+    importance/when_utc/title/currency/source are kept -- a lower-priority
+    source may only fill in forecast/previous/actual/url that ForexFactory
+    left blank. This does not apply the other way around: ForexFactory
+    arriving as the incoming update, or two non-ForexFactory sources, both
+    follow the ordinary "incoming wins" rule below.
+    """
+    if stored.source == "forexfactory" and incoming.source != "forexfactory":
+        return CalendarEvent(
+            key=stored.key,
+            when_utc=stored.when_utc,
+            currency=stored.currency,
+            importance=stored.importance,
+            title=stored.title,
+            forecast=stored.forecast or incoming.forecast,
+            previous=stored.previous or incoming.previous,
+            actual=stored.actual or incoming.actual,
+            url=stored.url or incoming.url,
+            source=stored.source,
+        )
     return CalendarEvent(
         key=incoming.key,
         when_utc=incoming.when_utc,

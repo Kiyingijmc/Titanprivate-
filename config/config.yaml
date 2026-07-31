@@ -183,6 +183,10 @@ news:
   window_post_min: 30
   max_cache_age_hours: 48
   cache_path: "data/news/calendar.json"
+  # The live feed's Date/Time columns are UTC (verified against FOMC 6:00pm =
+  # 18:00Z). This key exists only so an operator can hotfix a future feed
+  # timezone change without a code deploy -- leave it "UTC" otherwise.
+  csv_timezone: "UTC"
   symbol_currencies:
     EURUSD: [EUR, USD]
     GBPUSD: [GBP, USD]

@@ -1,11 +1,14 @@
+import ast
 import asyncio
 import os
 import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+import src.core.system_controller as controller_module
 from src.analysis.news.manager import NewsManager
 from src.analysis.news.models import CalendarEvent, make_key
 from src.analysis.news.store import CalendarStore
@@ -105,6 +108,91 @@ class ExecuteSignalNewsGate(unittest.TestCase):
         c.news_manager = _StubNews(raise_exc=RuntimeError("feed exploded"))
         _run(c._execute_signal("EURUSD", DECISION, "SilverBullet", "BULLISH"))
         self.assertEqual(len(c.bridge.reliable), 1)
+
+
+def _run_method_node():
+    """The AST node for SystemController.run() -- the main loop whose bare
+    `except Exception` re-raises and kills the process (item 3's premise)."""
+    tree = ast.parse(Path(controller_module.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "SystemController":
+            for item in node.body:
+                if isinstance(item, ast.AsyncFunctionDef) and item.name == "run":
+                    return item
+    raise AssertionError("SystemController.run() not found in system_controller.py")
+
+
+def _call_site_is_guarded(root, call_substring):
+    """True if the NEAREST enclosing Try around a call matching
+    `call_substring` catches Exception and does not itself re-raise.
+
+    A naive "is there SOME surrounding Try with an Exception handler"
+    check is fooled by the loop's own outer `except Exception as e: ...
+    raise e`, which textually wraps every call site in run() yet is
+    precisely the re-raise this item exists to keep news faults away from.
+    So this walks the tree tracking the innermost enclosing Try (via an
+    explicit stack, entering only its `body`, not its handlers/orelse/
+    finally) and requires that Try's handler to both catch Exception and
+    contain no `raise` statement anywhere in its handler body.
+    """
+    stack = []
+    nearest_for_matches = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_Try(self, node):
+            stack.append(node)
+            for stmt in node.body:
+                self.visit(stmt)
+            stack.pop()
+            for handler in node.handlers:
+                self.visit(handler)
+            for stmt in node.orelse:
+                self.visit(stmt)
+            for stmt in node.finalbody:
+                self.visit(stmt)
+
+        def visit_Call(self, node):
+            if call_substring in ast.dump(node):
+                nearest_for_matches.append(stack[-1] if stack else None)
+            self.generic_visit(node)
+
+    _Visitor().visit(root)
+    if not nearest_for_matches:
+        raise AssertionError(f"no call site matching {call_substring!r} found in run()")
+
+    def _catches_exception(try_node) -> bool:
+        for handler in try_node.handlers:
+            if handler.type is None:
+                return True
+            if isinstance(handler.type, ast.Name) and handler.type.id == "Exception":
+                return True
+        return False
+
+    def _handler_reraises(try_node) -> bool:
+        for handler in try_node.handlers:
+            for stmt in ast.walk(handler):
+                if isinstance(stmt, ast.Raise):
+                    return True
+        return False
+
+    return all(
+        try_node is not None and _catches_exception(try_node) and not _handler_reraises(try_node)
+        for try_node in nearest_for_matches
+    )
+
+
+class NewsFaultsCannotReachTheLoopsReraise(unittest.TestCase):
+    """Item 3: the main loop's `except Exception` RE-RAISES and kills the
+    process. The boot fetch and the per-tick news status check are the only
+    two unguarded news call sites reachable from that loop; both must be
+    locally try/except'd (matching how GUI start is guarded) so a news fault
+    degrades instead of taking the whole bot down."""
+
+    def test_boot_calendar_fetch_call_site_is_locally_guarded(self):
+        self.assertTrue(_call_site_is_guarded(_run_method_node(), "update_calendar"))
+
+    def test_check_news_status_call_site_is_locally_guarded(self):
+        self.assertTrue(_call_site_is_guarded(_run_method_node(), "_check_news_status"))
 
 
 if __name__ == "__main__":

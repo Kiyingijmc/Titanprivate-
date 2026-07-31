@@ -24,10 +24,11 @@ class _StubLogger:
 class _Source:
     NAME = "forexfactory"
 
-    def __init__(self, events=None, error=None):
+    def __init__(self, events=None, error=None, last_rows_seen=0):
         self.events = events or []
         self.error = error
         self.calls = 0
+        self.last_rows_seen = last_rows_seen
 
     async def fetch(self):
         self.calls += 1
@@ -150,6 +151,103 @@ class HaltedRetriesQuickly(unittest.TestCase):
         stamped = manager._last_attempt
         _run(manager.update_calendar())      # immediately again
         self.assertEqual(manager._last_attempt, stamped)  # skipped, not retried
+
+
+class ZeroEventsFromANonEmptyFeedIsABrokenRefreshNotSuccess(unittest.TestCase):
+    """Item 1: a valid-schema fetch that parses ZERO events from a feed that
+    clearly had rows must not be blessed as a successful sync -- otherwise the
+    cache looks perpetually fresh while every symbol trades through every
+    red-folder event with no warning."""
+
+    def test_rows_seen_but_no_events_marks_the_feed_degraded(self):
+        manager = _manager(_Source([], last_rows_seen=50))
+        _run(manager.update_calendar())
+        self.assertTrue(manager.feed_degraded)
+
+    def test_rows_seen_but_no_events_does_not_stamp_last_success(self):
+        store = CalendarStore(os.devnull)
+        manager = _manager(_Source([], last_rows_seen=50), store)
+        _run(manager.update_calendar())
+        self.assertIsNone(store.age(RELEASE))  # never refreshed, by design
+
+    def test_rows_seen_but_no_events_merges_nothing(self):
+        store = CalendarStore(os.devnull)
+        store.merge([_pce()], "forexfactory", RELEASE - timedelta(hours=1))
+        manager = _manager(_Source([], last_rows_seen=50), store)
+        _run(manager.update_calendar())
+        # The pre-existing cached event must survive untouched -- nothing new
+        # (and certainly not an emptying merge) was applied.
+        self.assertEqual(len(store.events()), 1)
+
+    def test_header_only_feed_zero_rows_zero_events_is_still_a_legitimate_success(self):
+        """The existing, correct case: do not regress it."""
+        store = CalendarStore(os.devnull)
+        manager = _manager(_Source([], last_rows_seen=0), store)
+        _run(manager.update_calendar())
+        self.assertIsNotNone(store.age(RELEASE))
+        self.assertFalse(manager.feed_degraded)
+
+
+class DiskCacheSurvivesRestart(unittest.TestCase):
+    """Item 2: the store persists to disk and NewsManager.__init__ reads it
+    back via self.store.load() -- proving a fresh process boots protected
+    from a prior day's fetch, with zero network calls."""
+
+    def test_fresh_manager_blocks_from_a_disk_cache_with_no_network_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "calendar.json")
+            seed = CalendarStore(path)
+            seed.merge([_pce()], "forexfactory", RELEASE - timedelta(hours=2))
+            seed.save()
+
+            class _ExplodingSource:
+                NAME = "forexfactory"
+
+                async def fetch(self):
+                    raise AssertionError("must not hit the network")
+
+            manager = NewsManager(_StubLogger(), config=CONFIG,
+                                  source=_ExplodingSource(), store=CalendarStore(path))
+
+            blocked, reason = manager.check_symbol("EURUSD", now=RELEASE)
+            self.assertTrue(blocked)
+            self.assertIn("Core PCE", reason)
+            halted, _ = manager.is_globally_blocked(now=RELEASE)
+            self.assertFalse(halted)
+
+
+class CsvTimezoneIsWired(unittest.TestCase):
+    """Item 5: an operator-configurable csv_timezone must actually reach the
+    default source, so a future feed timezone change is a config edit, not a
+    code deploy."""
+
+    def test_configured_timezone_shifts_parsed_times(self):
+        cfg = {"news": {"csv_timezone": "America/New_York",
+                        "symbol_currencies": {"EURUSD": ["EUR", "USD"]}}}
+        manager = NewsManager(_StubLogger(), config=cfg, store=CalendarStore(os.devnull))
+        csv_text = (
+            "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
+            "FOMC Statement,USD,07-29-2026,6:00pm,High,,,https://example.test/1\n"
+        )
+        events = manager.source.parse(csv_text)
+        # 6:00pm America/New_York in July (EDT, UTC-4) -> 22:00 UTC.
+        self.assertEqual(events[0].when_utc, datetime(2026, 7, 29, 22, 0, tzinfo=timezone.utc))
+
+    def test_invalid_timezone_name_falls_back_to_utc_without_raising(self):
+        cfg = {"news": {"csv_timezone": "Not/AZone"}}
+        manager = NewsManager(_StubLogger(), config=cfg, store=CalendarStore(os.devnull))
+        self.assertEqual(manager.source.tz, timezone.utc)
+
+
+class SnapshotDegradesInsteadOfPropagating(unittest.TestCase):
+    """Item 6 (2nd half): the GUI payload must never break because of news."""
+
+    def test_snapshot_returns_unavailable_when_an_internal_call_raises(self):
+        manager = _manager(_Source([_pce()]))
+        _run(manager.update_calendar())
+        manager.policy.mapped_symbols = lambda: (_ for _ in ()).throw(
+            RuntimeError("policy exploded"))
+        self.assertEqual(manager.snapshot(now=RELEASE), {"status": "unavailable"})
 
 
 if __name__ == "__main__":

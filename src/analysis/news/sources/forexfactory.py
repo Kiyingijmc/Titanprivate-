@@ -45,25 +45,43 @@ class ForexFactoryCsvSource:
         self.max_retries = 3
         self.backoff_base_s = 1.0
         self.timeout_s = 15
+        self.last_rows_seen = 0
 
     def parse(self, csv_text: str) -> list[CalendarEvent]:
-        """Pure: CSV text -> events. Never raises; returns [] on bad input."""
+        """Pure: CSV text -> events. Never raises; returns [] on bad input.
+
+        `last_rows_seen` distinguishes a legitimate "no events this week"
+        answer (header only, 0 rows) from a broken feed (rows present, but
+        every one failed to parse -- e.g. the date/time format changed).
+        Only the caller (NewsManager) knows what to do with that distinction.
+        """
         if not csv_text or not csv_text.strip():
+            self.last_rows_seen = 0
             return []
         try:
             reader = csv.DictReader(io.StringIO(csv_text))
             fields = [(f or "").strip() for f in (reader.fieldnames or [])]
             if not all(col in fields for col in _REQUIRED):
                 self.logger.log_event("ERROR", "NEWS", f"CSV schema mismatch: {fields}")
+                self.last_rows_seen = 0
                 return []
             events = []
+            rows_seen = 0
             for row in reader:
+                rows_seen += 1
                 event = self._row_to_event(row)
                 if event is not None:
                     events.append(event)
+            self.last_rows_seen = rows_seen
+            if rows_seen and not events:
+                self.logger.log_event(
+                    "ERROR", "NEWS",
+                    f"Parsed 0 events from {rows_seen} rows -- the feed's date/time format "
+                    f"has likely changed. Treating as a failed refresh.")
             return events
         except Exception as exc:  # malformed CSV must never kill the caller
             self.logger.log_event("ERROR", "NEWS", f"Parse error: {exc}")
+            self.last_rows_seen = 0
             return []
 
     def _row_to_event(self, row: dict) -> CalendarEvent | None:

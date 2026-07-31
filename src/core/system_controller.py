@@ -41,6 +41,7 @@ from src.core.events import (TickReceived, BarClosed, HeartbeatReceived,
 from src.ops.jsonlog import JsonLogger
 from src.ops.event_journal import EventJournal
 from src.ops.health import HealthProbe, sd_notify
+from src.ops.equity_recorder import EquityRecorder
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
 from src.arbiter.arbiter import Arbiter
@@ -170,7 +171,13 @@ class SystemController:
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
-        
+
+        self.equity_recorder = EquityRecorder(
+            str(self.root_dir / "data/db/titan_core.db"),
+            config=(self.config.get("ops", {}) or {}).get("equity", {}),
+            logger=self.logger,
+        )
+
         self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
                                           config=self.config)
         
@@ -321,6 +328,7 @@ class SystemController:
                 # --- A. SYNC GUARD ---
                 if now_ts - self.last_recon_time > self.recon_interval:
                     await self._perform_reconciliation()
+                    self.equity_recorder.prune()
                     self.last_recon_time = now_ts
 
                 # --- B. WATCHDOG ---
@@ -709,9 +717,10 @@ class SystemController:
         elif msg_type == 'HEARTBEAT':
             bal = float(msg.get('bal', 0))
             eq = float(msg.get('eq', 0))
-            if eq > 0: 
+            if eq > 0:
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
+                self.equity_recorder.record(bal, eq)
             
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])

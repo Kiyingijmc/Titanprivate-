@@ -168,3 +168,10 @@ ops:
     enabled: true
     bind: 127.0.0.1
     port: 8787
+  equity:
+    enabled: true
+    fine_cadence_s: 10        # one stored sample per 10s
+    fine_retention_h: 48      # fine tier pruned beyond this
+    coarse_bucket_s: 300      # 5-minute retained buckets
+    flush_interval_s: 60      # buffer -> sqlite
+    max_buffer_samples: 600   # hard cap; overflow drops oldest and counts

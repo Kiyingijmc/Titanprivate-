@@ -49,6 +49,35 @@ _MARKET_PRICES = {
 }
 
 
+def _fake_equity_recorder():
+    """In-memory series: 3 days of 5-minute buckets with one deliberate gap."""
+    import math as _math
+    import sqlite3
+    import time as _time
+
+    from src.ops.equity_recorder import ensure_schema
+
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    ensure_schema(conn)
+    now = int(_time.time())
+    rows = []
+    equity, peak = 10_000.0, 10_000.0
+    for i in range(864):                      # 3 days of 300s buckets
+        ts = now - (864 - i) * 300
+        if 300 < i < 400:                     # a ~8h outage, so gap rendering is drivable
+            continue
+        equity += _math.sin(i / 18.0) * 12.0
+        peak = max(peak, equity)
+        rows.append((ts, equity, equity - 40.0, peak, equity - 6.0, equity + 6.0))
+    conn.executemany(
+        "INSERT INTO equity_coarse "
+        "(bucket_ts, equity, balance, peak, equity_min, equity_max) VALUES (?,?,?,?,?,?)", rows)
+    conn.commit()
+    return type("_FakeRecorder", (), {"conn": conn, "counters": {
+        "dropped_stale": 0, "dropped_invalid": 0,
+        "dropped_overflow": 0, "flush_errors": 0}})()
+
+
 class FakeController:
     """In-memory stand-in for SystemController, for offline GUI dev/demo."""
 
@@ -65,6 +94,7 @@ class FakeController:
         self.market_prices = {k: dict(v) for k, v in _MARKET_PRICES.items()}
         self.applied = []
         self.published = []
+        self.equity_recorder = _fake_equity_recorder()
 
     # --- read-side used by state_view.build_snapshot ---
     def _publish(self, event) -> None:

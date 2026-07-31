@@ -76,6 +76,25 @@ class RestoredAnchorSurvivesRestart(unittest.TestCase):
             rm.update_account_info(1000.0, 1000.0)
             self.assertAlmostEqual(rm.day_start_equity, 1000.0)
 
+    def test_a_bad_value_never_wipes_an_anchor_that_already_exists(self):
+        """The `> 0` guard must reject, not assign.
+
+        Asserting only that day_start_equity stays 0.0 after restoring 0.0
+        cannot tell "rejected" from "assigned 0.0" -- both leave it at 0.0. The
+        difference is only observable once a good anchor is already in place,
+        which is exactly the case that matters: a corrupt persisted row must not
+        be able to erase a live drawdown anchor and re-open the breaker.
+        """
+        for bad in (0.0, -5.0, None, "abc", float("nan"), float("inf")):
+            rm = RiskManager(CFG)
+            rm.update_account_info(1000.0, 1000.0)   # good anchor established
+            rm.restore_daily_anchor(bad)
+            self.assertAlmostEqual(rm.day_start_equity, 1000.0,
+                                   msg=f"{bad!r} wiped the anchor")
+            rm.update_account_info(1000.0, 969.0)    # -3.1%
+            self.assertFalse(rm.check_can_trade(),
+                             msg=f"{bad!r} re-opened the breaker")
+
     def test_restore_is_a_noop_for_unusable_types(self):
         for bad in (None, "", "abc", float("nan"), float("inf")):
             rm = RiskManager(CFG)

@@ -16,6 +16,13 @@ _USD_QUOTE_PAIRS = ("EURUSD", "GBPUSD", "AUDUSD", "NZDUSD")
 _DOLLAR_BIAS_SCALE = 40.0  # scales avg %-change contribution into the [-100,100] band
 
 
+def _equity_recorder_health(controller):
+    """Recorder loss counters, or None when the recorder is absent/disabled."""
+    rec = getattr(controller, "equity_recorder", None)
+    counters = getattr(rec, "counters", None)
+    return dict(counters) if isinstance(counters, dict) else None
+
+
 def build_snapshot(controller) -> dict:
     age = (datetime.now() - controller.last_heartbeat_time).total_seconds()
     rm = controller.risk_manager
@@ -26,6 +33,7 @@ def build_snapshot(controller) -> dict:
             "last_heartbeat_age_s": round(age, 1),
             "paused": bool(getattr(controller, "is_manual_pause", False)),
             "last_error": getattr(controller, "last_error", None),
+            "equity_recorder": _equity_recorder_health(controller),
         },
         "account": {
             "balance": float(getattr(rm, "starting_balance", 0.0) or 0.0),

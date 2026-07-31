@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 from pathlib import Path
 
@@ -12,14 +13,47 @@ from starlette.websockets import WebSocketState
 
 from src.core.events import GuiActionExecuted
 
-from . import auth
+from . import auth, equity_view
 from .commands import execute_command
+from .equity_view import equity_series
 from .registry_view import execute_registry_action, registry_report
 from .state_view import build_snapshot, history_rows
 
 _LOG = logging.getLogger(__name__)
 _WS_AUTH_TIMEOUT_S = 3.0
 _DEFAULT_DIST_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+
+# A structurally valid range token: short and alphanumeric-only. This is
+# deliberately narrower than the set of RECOGNISED range names in
+# equity_view.RANGES -- a well-formed-but-unrecognised token (e.g. "nope")
+# still falls back to the default range with 200; only a value that could
+# not plausibly be a range name at all (too long, or containing characters
+# outside [A-Za-z0-9]) is rejected outright with 422.
+_RANGE_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+
+def _cadence_mismatch(rec) -> dict | None:
+    """Detect drift between equity_view's module-level cadence constants
+    (frozen from equity_recorder._DEFAULTS at import time -- the FALLBACK
+    default) and the live recorder's actual merged config. If an operator
+    sets ops.equity.coarse_bucket_s away from the default, the recorder
+    stores buckets at the new size while equity_view's bucket math still
+    assumes the old one, silently mis-bucketing the chart. Returns None when
+    they agree (the common case); otherwise a dict naming both values per
+    field so the discrepancy is visible in the response rather than silent."""
+    cfg = getattr(rec, "cfg", None)
+    if not isinstance(cfg, dict):
+        return None
+    mismatch: dict = {}
+    live_fine = cfg.get("fine_cadence_s")
+    if live_fine is not None and int(live_fine) != equity_view.FINE_CADENCE_S:
+        mismatch["fine_cadence_s"] = {"live": int(live_fine),
+                                       "view": equity_view.FINE_CADENCE_S}
+    live_coarse = cfg.get("coarse_bucket_s")
+    if live_coarse is not None and int(live_coarse) != equity_view.COARSE_CADENCE_S:
+        mismatch["coarse_bucket_s"] = {"live": int(live_coarse),
+                                        "view": equity_view.COARSE_CADENCE_S}
+    return mismatch or None
 
 
 def _audit(controller, request, action: str, payload, outcome: str) -> None:
@@ -49,6 +83,23 @@ def create_app(controller, settings_store, bridge, dist_dir: Path | None = None)
     @app.get("/api/history", dependencies=read)
     def get_history(limit: int = 50):
         return {"history": history_rows(controller.state_manager.conn, limit=limit)}
+
+    @app.get("/api/equity", dependencies=read)
+    def get_equity(range: str = "1d"):
+        if not _RANGE_TOKEN_RE.match(range):
+            return JSONResponse(status_code=422, content={
+                "detail": f"malformed range value: {range!r}"})
+        rec = getattr(controller, "equity_recorder", None)
+        conn = getattr(rec, "conn", None)
+        if conn is None:
+            return {"range": range, "tier": None, "bucket_s": None, "series": [],
+                    "points": [], "coverage": {"first_sample_ts": None, "n": 0,
+                                               "series_first_ts": {}, "gaps": []}}
+        body = equity_series(conn, range)
+        mismatch = _cadence_mismatch(rec)
+        if mismatch:
+            body["config_mismatch"] = mismatch
+        return body
 
     @app.post("/api/command", dependencies=write)
     async def post_command(payload: dict, request: Request):

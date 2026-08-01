@@ -1,15 +1,15 @@
 ---
 # ── MACHINE-READABLE PROVENANCE (the ledger reads this — do not delete) ──
-session_id:    "S017"
+session_id:    "S018"
 date:          "2026-07-31"
-slug:          "sec-05-zmq-unauthenticated-bound-tcp"
+slug:          "risk-10-live-bars-and-history"
 parent_session: "none"
-task_domain:   "risk_management"
+task_domain:   "data"
 spec_state:    "approved"
 status:        "DRAFT"
 ---
 
-# titan-ict-bot — Session S017 · 2026-07-31 · "sec-05-zmq-unauthenticated-bound-tcp"
+# titan-ict-bot — Session S018 · 2026-07-31 · "risk-10-live-bars-and-history"
 
 ## 0 · CONTEXT LOAD (first, silently)
 Read this project's authority docs (CLAUDE.md / README / docs/) and `.mig/config`.
@@ -17,24 +17,27 @@ The project's own rules override anything generic in this prompt.
 
 ## 2 · THE ONE TASK (scope is sacred)
 
-**Task title:** Fail-closed sanity bounds on broker-supplied symbol specs, and bind the ZMQ sockets to the configured host instead of every interface (SEC-05, parts 1–2)
+**Task title:** Stamp live bars in the same epoch as history bars (naive UTC), so one buffer stops holding two clocks
 
-**Why it matters / what it unblocks:** `update_symbol_specs` accepts whatever floats arrive on an unauthenticated socket, so one bad `HISTORY` message — hostile *or* a broker misquoting `tick_value` after a symbol-spec change — makes `ticks_at_risk ≈ 0` and every subsequent trade size to `hard_max_lots: 5.0` against an intended 1% risk, with `risk_to_stop` validating it as safe off the same poisoned numbers. This is a risk control at least as much as a security control. Verified live on 2026-07-31: the running bot has 32768/32769/32770 bound `0.0.0.0` while holding positions.
+**Why it matters / what it unblocks:** The two bar sources disagree about what a broker epoch means, and they share one buffer. `src/core/data_store.py:79` converts history with `pd.to_datetime(df['time'], unit='s')` → **naive UTC**; `src/core/candle_maker.py:112-115` converts live ticks with `datetime.fromtimestamp(raw_time)` → **naive LOCAL time** (this host is Africa/Kampala, UTC+3). `src/core/data_store.py:92` then assigns the history frame straight onto the maker's buffer (`self.timeframes[tf].candles = df`), and live bars are appended to that same frame — so after every warmup the series carries a phantom ~3h discontinuity at the history/live seam, and the same instant is labelled two different ways depending on where the bar came from. Every strategy, indicator and journal row downstream reads that series. This is the second instance of the same naive-datetime root cause in this codebase (the news blackout was also exactly 3h off and went unnoticed for three days), which is why it is worth fixing properly rather than patching one call site.
 
 **Exact scope (what "doing this task" means):**
-- `src/risk/risk_manager.py` `update_symbol_specs` (currently `:62`): reject an update whose values are non-finite, or where `ts ∉ [1e-6, 100]`, `val ∉ [1e-4, 1e4]`, or `vm <= 0` / `vs <= 0`; additionally reject any value that is a **>10× change** from the last accepted value for that symbol. A rejected update must be a **no-op** — the previously accepted specs stay in place, and a symbol that never had accepted specs stays spec-less — and must emit a `logger.log_event("RISK", …)` naming the symbol, the offending field and the value. Never silently coerce a bad value into the store.
-- `src/execution/bridge_zmq.py` (`:25`, `:36`, `:53`): bind the host declared in config instead of the literal `tcp://*`. `config/config.yaml:27` already declares `host: "127.0.0.1"` under the bridge block and the code never reads it — read it, and default to `127.0.0.1` when the key is absent. Ports are unchanged.
-- Tests under `tests/unit/`: a table of accepted specs; one case per rejection class (each bound, non-finite, `<= 0`, the >10× jump); proof that a rejected update leaves prior specs intact; proof that a symbol whose only update was rejected still makes `calculate_lot_size` return `0.0` (the existing fail-safe must survive); and a bridge test asserting each socket's bind string is built from the configured host.
+- `src/core/candle_maker.py:112-115`: convert the broker epoch to **naive UTC** so it matches `pd.to_datetime(..., unit='s')` exactly — i.e. `datetime.fromtimestamp(x, tz=timezone.utc).replace(tzinfo=None)`. **Both** branches must change: the millisecond branch (`raw_time > 32503680000` → `/1000.0`) and the seconds branch. Bucket flooring, OHLCV logic and the duplicate filter keep their current behaviour; only the epoch interpretation changes.
+- Sweep the rest of this data path for the same defect and fix any instance **inside these two files only**: `grep -n 'fromtimestamp\|utcnow\|datetime.now' src/core/candle_maker.py src/core/data_store.py`. Report what you found even if the answer is "nothing else".
+- New test file `tests/unit/test_candle_time_epoch.py` (there is currently **no** unit coverage for `candle_maker.py` or `data_store.py` at all — confirm that before writing, and do not assume an existing harness). It must cover:
+  1. **Cross-path agreement:** one fixed epoch fed through `DataStore.ingest_history` and through `CandleMaker.process_tick` yields the **same** timestamp.
+  2. **Seam contiguity:** ingest history, then drive a tick belonging to the very next bucket; the gap between the last history bar and the first live bar must be exactly one timeframe interval — not one interval plus the local UTC offset.
+  3. **Millisecond branch parity:** an epoch expressed in ms and the same instant in s produce the same timestamp.
+  4. **Timezone independence (REQUIRED — this is what makes the test bite):** force a non-UTC zone for the duration of the test (e.g. `TZ=Africa/Kampala` via `os.environ` + `time.tzset()`, restored afterwards) and assert the results are unchanged from UTC. **Without this the test passes on a UTC machine even with the bug fully present**, because local and UTC coincide there — so a suite that is green in one environment would be meaningless in another.
 
 **Explicitly OUT of scope (do NOT touch this session):**
-- **The HMAC / shared-secret part of SEC-05 (part 3) and any MQL5 change** — `mql5_bridge/Experts/Titan_Gateway.mq5` and `TitanZmq.mqh` require a manual MetaEditor recompile on Windows, so nothing touching them can be built or verified headlessly. It stays its own backlog row.
-- Every other audit row, including SEC-04 (systemd hardening), SEC-02 (HTTP bridge `0.0.0.0`), RISK-01, RISK-02.
-- `hard_max_lots`, the sizing formula, `aggregate_open_risk`, the exposure caps — do not "improve" them while you are in the file.
-- The running live process: do not stop, restart or reconfigure it.
+- `src/ops/news_manager.py` and anything calendar/blackout related. It is the *sibling* instance of this root cause and it already has its own committed design spec (`docs/superpowers/specs/2026-07-31-news-calendar-dashboard-design.md`, commit `0fe8564`) and its own planned session. Fixing it here would collide with that work.
+- `src/analysis/time_math.py`, the time engine, `ny_time`, and killzone/session-window semantics. Note for the record: the SilverBullet window gate reads `self.time_engine.get_current_ny_string()` (`src/core/system_controller.py:848`), **not** the bar timestamp — so this defect does not move the killzone, and this session must not "improve" that path.
+- `config/config.yaml` `connection.broker.timezone_offset` and any change to what timezone the system *presents* to the operator.
+- How timestamps are displayed anywhere (GUI, Telegram, journal formatting), and any migration/backfill of already-written journal or DB rows.
+- The research/replay stack (`src/research/`), unless a test there goes red — in which case STOP and report rather than adapting it.
 
-**Relevant project docs / decisions:** `docs/audit-2026-07-30/02-AUDIT-REPORT.md` §9.3 (SEC-05) and §10.3 (OPS-07, "specs sanity"); `docs/audit-2026-07-30/07-VERIFICATION-AGAINST-LIVE-TREE.md` §1 and §3; `CLAUDE.md` — sizing is broker-spec driven and **fails safe to 0 when specs have not loaded**; that property is load-bearing and must still hold after this change.
-
-> ⚠️ **Operator note, carry it into the session report:** changing the bind from `*` to `127.0.0.1` is only safe because WSL is in **mirrored** networking mode (the EA's `InpIP` is `127.0.0.1`). If the host is ever moved back to NAT mode the EA will not reach a loopback bind. The next restart after this lands must be validated with `scripts/check_bridge.py` **before** the bot is left unattended.
+**Relevant project docs / decisions:** `CLAUDE.md` (bridge message flow: `HISTORY` bars vs `TICK`); `docs/audit-2026-07-30/` RISK-10 (§3 Risk) and my `07-VERIFICATION-AGAINST-LIVE-TREE.md`; the news-calendar design spec above as the explicitly-excluded sibling.
 
 > Premise check (blocking): before any edit, confirm the gap this task asserts
 > still exists in the live tree (cite file:line). Stale premise → STOP and report;
@@ -42,11 +45,12 @@ The project's own rules override anything generic in this prompt.
 
 ## 4 · DEFINITION OF DONE (testable checklist for THIS task)
 
-- [ ] Premise confirmed in the report with citations: `bridge_zmq.py:25,36,53` still bind `tcp://*`, and `risk_manager.py:62–76` still coerces with `float()` and no bounds.
-- [ ] `update_symbol_specs` rejects non-finite values, `ts ∉ [1e-6, 100]`, `val ∉ [1e-4, 1e4]`, `vm <= 0`, `vs <= 0`, and any >10× change from the last accepted value for that symbol.
-- [ ] A rejected update is a no-op: previously accepted specs are unchanged, and a `RISK` event is logged naming symbol + field + value.
-- [ ] A symbol whose only spec update was rejected still yields `calculate_lot_size(...) == 0.0` — the existing fail-safe is preserved, proven by a test that fails without the change.
-- [ ] All three sockets bind the configured host (default `127.0.0.1`), proven by a test on the bind string; ports unchanged.
-- [ ] New unit tests cover every rejection class plus the accepted-spec happy path, and the full suite is green (`VERIFY_CMD`).
-- [ ] No MQL5 file and no other `src/` module modified.
+- [ ] Premise re-confirmed in the live tree with file:line for **both** conversion sites and for the `data_store.py:92` assignment that makes them share one buffer.
+- [ ] Live and history bars for the same broker epoch produce identical timestamps, in both the seconds and milliseconds branches.
+- [ ] The new test **fails before the fix and passes after it**; quote the exact pre-fix failure output in the session report. A test that was never seen red is not evidence.
+- [ ] The timezone-independence case is present and genuinely forces a non-UTC zone; state in the report what the test does on a UTC-only machine and why it still bites.
+- [ ] The history→live seam shows exactly one timeframe interval, with no offset jump.
+- [ ] Full unit suite green: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py'`. If it reports rc=124 or timing-flavoured failures, check `uptime` and `ps -eo args | grep '[u]nittest discover'` first — concurrent suites from other sessions have repeatedly manufactured false failures on this box.
+- [ ] The report states the **operational consequence explicitly**: whether a running bot picks this up automatically or only re-stamps its buffer at the next restart + warmup, so the operator knows if a restart is required for the fix to take effect on the live demo-forward test.
+- [ ] The report states whether any already-recorded data (journal rows, DB timestamps, the forward-test record since 2026-07-28) is affected, and recommends — without performing — any correction needed at the 2026-08-11 checkpoint.
 - [ ] Changes committed forward-only, by explicit path; no out-of-scope files touched.

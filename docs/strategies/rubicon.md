@@ -251,8 +251,13 @@ stricter than the standard TVP because the existence risk is explicitly unresolv
 - **Slow regime drift with no sharp break is invisible by design** — not a bug, other arsenal members
   (Spring, Gyroscope) are meant to cover that case; Rubicon should not be judged against slow-drift
   regimes it was never meant to trade.
-- **Whipsaw news days producing multiple false breaks** — needs a news lockout (shared prerequisite
-  across the arsenal, not built yet) plus the Student-t likelihood.
+- **Whipsaw news days producing multiple false breaks** — mitigated by the **existing** news lockout
+  (`src/analysis/news/`: NewsManager + ForexFactory CSV source + fail-closed policy; HIGH-importance
+  events only, 60/30-min pre/post windows, multi-currency inference plus the `news.symbol_currencies`
+  map), consulted at `SystemController._news_blocks_symbol` / `_execute_signal`
+  (`src/core/system_controller.py:480,491`), plus the Student-t likelihood. Rubicon inherits the gate
+  with no new plumbing; the open question is only whether HIGH-only filtering is strict enough for a
+  change-point detector that fires on repricing events.
 - **Live self-audit:** realized win-rate and R-multiple of trades taken immediately after a
   characterization stage, tracked separately from trades where the position survived a subsequent
   false-break scare — the two populations should differ if the thesis is real; if they don't, that's

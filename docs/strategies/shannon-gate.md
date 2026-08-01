@@ -32,7 +32,7 @@ an architecture document only. No Shannon-Gate-specific numbers exist to cite.
 
 | Source | Finding | Relevance |
 |---|---|---|
-| Brainstorm §12 comparative matrix, row 6 | Cost survival **1/5 standalone** (the single worst rating of any candidate on the entire matrix, across all 11 concepts, including the graveyard-adjacent ones), rising to **4/5 as a filter**; existence risk **2/5** | The self-rating is the most pessimistic on the board for standalone trading — this is not a hedge, it is the concept's own designer-assigned worst case |
+| Brainstorm §12 comparative matrix, row 6 (`…brainstorm.md:622`) | Cost survival **1/5** — the single worst rating of any candidate on the entire matrix, across all 11 concepts; **expected robustness** is the split rating, "**2 standalone / 4 as filter**"; existence risk **2/5** (joint-lowest, with Constellation and Walclock) | The self-rating is the most pessimistic on the board for standalone trading — this is not a hedge, it is the concept's own designer-assigned worst case. Note the split applies to robustness, not to cost survival: cost survival is a flat 1/5 in either role |
 | Brainstorm §6.10 | "**Cost death is the default expectation** — 1–3 bar H1 holds at retail spread is exactly the profile our OTE research killed" | Direct citation to the repo's own adjudicated NO-GO precedent as the expected outcome, not a hypothetical risk |
 | `docs/research/2026-07-11-ote-canonical-results.md` | OTE canonical NO-GO, −0.158R pooled gross-negative, at similar short-hold H1 cadence | The concrete precedent Shannon Gate's own documentation points to as its likely fate |
 | Brainstorm §6.17, §13 | "Likely outcome to record: NO-GO standalone, ADOPT as a regime filter" (explicit pre-registered expected outcome); §13: "Shannon Gate most likely matures into a shared 'don't trade now' filter" | The source material itself pre-commits to this framing before any data has been collected — this document follows that framing rather than treating standalone viability as an open question |
@@ -120,7 +120,9 @@ trading-arm hypothesis cheaply.
   version: "0.1.0"
   class_path: "src.strategies.models.shannon_gate:ShannonGateStrategy"
   family: stat
-  timeframe: H1            # or M15 — TBD, brainstorm names H1/M15 as the timeframe
+  timeframe: H1            # H1 only in practice: DataStore builds CandleMakers for M5 and H1
+                           # only (src/core/data_store.py:26-27), so an M15 manifest would
+                           # activate and silently never fire (audit ENTRY-03 / P1)
   requires: [info.entropy_deficit]
   status: research
   priority: 85              # lowest priority of this Wave 3 batch, reflecting expected NO-GO
@@ -144,9 +146,18 @@ trading-arm hypothesis cheaply.
   ```
 - **Order types:** MARKET, matching the fixed-horizon short-hold thesis (no time for a resting
   LIMIT to matter at a 1–3 bar horizon).
-- **Grading path (P8 statement):** as a standalone strategy, non-SMC — capped at 35/100 like the
-  other Wave 3 candidates, structurally below `min_grade: B`, shared grader-accommodation
-  prerequisite. **As a FeatureBus resource**, Shannon Gate has a second, more consequential grading
+- **Grading path (P8 statement):** as a standalone strategy, non-SMC — but verified against
+  `src/analysis/signal_grader.py`, the binding constraint is specific rather than a blanket cap.
+  Displacement (≤20) is scored from the enriched candle for any strategy
+  (`system_controller.py:969`); premium/discount awards **+5**, not 0, on an unset/`"EQ"` liquidity
+  status (`signal_grader.py:95-97`); killzone (+15) is a pure NY-clock test
+  (`signal_grader.py:101-110`); HTF alignment still scores 30/10/0 from `context['bias']` regardless
+  of `honors_htf_bias`. What kills Shannon Gate's grade is its **exit shape**: a 1–3 bar
+  fixed-horizon target against a vol-scaled disaster stop yields an R:R far below the grader's 1.5
+  floor, scoring **0** of 20 (`signal_grader.py:66-69`), and a thin statistical tilt has no reason to
+  arrive on a ≥0.8×ATR displacement candle. Realistic range ≈5–35 — below `min_grade: B` in almost
+  every case, and for a reason that is intrinsic to the thesis rather than fixable by a grading
+  exemption alone. **As a FeatureBus resource**, Shannon Gate has a second, more consequential grading
   interaction: if `info.entropy_deficit` is later wired into `SignalGrader.grade()` as a scoring
   factor for *other* strategies, that is a grader redesign beyond the current
   displacement/premium-discount/killzone/HTF-alignment/R:R factor set (`src/analysis/
@@ -171,7 +182,7 @@ trading-arm hypothesis cheaply.
 |---|---|---|---|
 | — (new) | `info.entropy_deficit` FeatureBus resource (`src/features/packs/entropy_pack.py`) | The primary deliverable of this doc — makes the entropy meter consumable arsenal-wide, independent of the standalone strategy's fate | Low-moderate: block/LZ76 entropy + surrogate ensemble on a 200-symbol window is "low-moderate" per the brainstorm's own compute estimate (§6.15) |
 | P7 | Per-strategy exit profile (flat, 1–3 bar horizon, disaster-stop only) | The most extreme exit-profile mismatch with the default ratchet in this batch of four docs | Shared with Spring/Gumbel Fade/Walclock |
-| P8 | Grader accommodation for non-SMC signals (standalone arm); separately, a possible grader-factor extension to consume `info.entropy_deficit` | Standalone arm capped at 35/100 without the first; the second is a larger, unscoped arsenal-wide change | Shared (first item); unscoped (second item) |
+| P8 | Grading policy for non-SMC signals (`grading-policy-for-non-smc-signals`, inbox) for the standalone arm; separately, a possible grader-factor extension to consume `info.entropy_deficit` | The standalone arm's sub-1.5 R:R scores 0/20 and its thin tilt rarely clears the displacement floor (§4) — a policy exemption is necessary but likely not sufficient; the second item is a larger, unscoped arsenal-wide change | Shared (first item); unscoped (second item) |
 | Multiple-comparisons controls | Surrogate-based significance testing + pre-registered symbolization/context set, done grader-mirror style as in the OTE rig | Named explicitly as required by the brainstorm (§6.10) to prevent context-selection overfitting | Low — methodology discipline, not new platform infrastructure |
 | Symbolization/block-length sensitivity study | Confirm entropy estimator variance is acceptable at feasible sample sizes | Named explicitly as a failure mode (§6.10) | Low — analysis task |
 

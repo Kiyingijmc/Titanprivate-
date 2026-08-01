@@ -37,7 +37,7 @@ necessary but, per EXP-0, not sufficient on their own.
 
 | Source | What it establishes | Citation |
 |---|---|---|
-| Cost table | US30 200, BTCUSD 1000, XAUUSD 20 (points, Bell's non-FX universe); XTIUSD not in Bell's universe. Commission $7/lot | `scripts/poc_sb_stops.py:43` |
+| Cost table | US30 200, BTCUSD 1000, XAUUSD 20 (points); commission $7/lot. **US100 — a quarter of Bell's universe — has no entry in the table at all** (finding STRAT-04; backlog row `poc-cost-table-extension-add-us100`). It cleared an indicative single-session cost screen in the 2026-07-28 expansion study, but that figure was never committed to the shared table, so Bell's cost-stress arm cannot presently run on it | `scripts/poc_sb_stops.py:43-46`; `docs/research/2026-07-28-universe-expansion-screen.md` |
 | Cost-ratio analysis | "US30, US100, XAUUSD and BTCUSD have the best volatility-to-cost ratios in your universe and are your only realistic intraday candidates" | brief §"Hard constraints"; 05-STRATEGY-ARSENAL.md §1.1 |
 | The graveyard | Original SilverBullet on M5 at 0.2×ATR: −4.27R — the general lesson that small/ATR-relative stops die at short timeframes, which Bell avoids by using range width instead | brief §"Hard constraints" |
 | The graveyard | OTE −0.158R, MTF-PB v2 −0.274R, Gyroscope −0.067R (three ICT/momentum NO-GOs); none is a direct analogue of ORB, but all three confirm pattern-entry ideas on this data have a poor base rate | brief §"Hard constraints" |
@@ -64,10 +64,37 @@ Stop:     opposite OR extreme   ← structural, wide, cost-friendly
 Filter:   OR_width between 0.5× and 2.0× the 20-day median OR
           (skip both dead opens and news-gap opens)
           AND no high-impact release within 30 min
-          (news_manager exists but is USD-only — extend it, see §5)
+          (the source draft says "news_manager exists but is USD-only —
+           extend it"; that is OUT OF DATE — see the correction below)
 Expiry:   unfilled 90 min after open → cancel. Time-stop at session close.
 OCO:      required (shared with Coil, see §5)
 ```
+
+**Correction to the source draft's news line.** A news lockout exists and is wired into the live
+loop: `src/analysis/news/` (a `NewsManager` façade over a ForexFactory CSV source, a `CalendarStore`
+cache and a pure `NewsPolicy`), constructed at `system_controller.py:125`, refreshed at `:347`,
+consulted per-symbol at `:485` and globally at `:1044-1045`. It is **not** USD-only: `NewsPolicy`
+infers currencies across USD/EUR/GBP/JPY/AUD/CAD/CHF/NZD from the symbol name
+(`src/analysis/news/policy.py`), and a `news.symbol_currencies` map in `config/config.yaml:190-202`
+covers all twelve live symbols explicitly. It fails **closed** — a dead feed plus a stale cache
+halts the book globally rather than trading blind — and only HIGH-importance events block.
+
+Three things about it are genuinely load-bearing for Bell and must be *verified*, not assumed:
+
+1. **All four of Bell's instruments map to `[USD]`** (`config.yaml:197-200`) and that mapping is
+   deliberate — `policy.py` excludes XAU/BTC/ETH from its fiat set on the grounds that they are
+   instruments, not the currency whose calendar moves them. For US30/US100 the US calendar is
+   plainly the right one. For **XAUUSD and BTCUSD it is an assumption Bell has not tested**: an ECB
+   or BoJ release, or a crypto-specific event the ForexFactory feed does not carry at all, can gap
+   an opening range with no calendar coverage whatsoever. The open question is coverage adequacy,
+   not USD-only-ness.
+2. **The live blackout windows are 60 min pre / 30 min post** (`config.yaml:182-183`), wider on the
+   pre-side than the 30 min this draft specifies. Bell's setup is anchored to a fixed clock time,
+   so a 60-minute pre-window around an 08:30 ET release suppresses the 09:30 open outright. Whether
+   Bell wants the global window or a per-strategy one is a pre-registration decision.
+3. **The global fail-closed halt is a Bell-shaped hazard.** A stale cache blocks the whole book; for
+   a strategy with exactly one signal window per instrument per day, a halt spanning the open is a
+   lost trading day, not a delayed entry. Losses are safe; the *sample* is what degrades.
 
 Bell uses STOP orders on both sides of an opening range in the same paired-bracket pattern as Coil
 (§3 of `docs/strategies/coil.md`), so it inherits the identical OCO dependency. It is the second
@@ -92,9 +119,12 @@ honors_htf_bias: false          # an ORB breakout is direction-agnostic at signa
 **Class placement:** `src/strategies/models/bell.py`, subclassing `BaseStrategy`
 (`src/strategies/base_strategy.py`), `on_new_candle` returning `{'signal', 'type': 'STOP', 'price',
 'sl', 'tp'}` — Bell's `self.timeframe` would be `'M15'`, which today receives **no candle-close
-routing at all**: `data_store.py:25` (per the audit's `entry-03-m15-strategies-silently-never`
-backlog row) only builds M5 and H1 CandleMakers. A Bell manifest deployed today would silently
-never fire — the single most consequential prerequisite gap for this strategy (§5).
+routing at all**: `DataStore.__init__` builds `{"M5": CandleMaker(5), "H1": CandleMaker(60)}` and
+nothing else (`src/core/data_store.py:25-28`), and `_run_strategies` selects only strategies whose
+`timeframe` matches the closing bar (`system_controller.py:917-921`), so an M15 strategy is never
+in `active`. A Bell manifest deployed today would silently never fire, with no error and no log —
+the single most consequential prerequisite gap for this strategy (§5; backlog row
+`entry-03-m15-strategies-silently-never`).
 
 **Config block sketch** (`config/config.yaml`, under `strategies:`):
 
@@ -114,16 +144,23 @@ share the OCO implementation rather than each build their own.
 
 **HTF-bias stance:** `honors_htf_bias: false`. An opening-range breakout has no directional read
 until one side triggers, the same architectural reasoning as Coil (`docs/strategies/coil.md` §4).
-Bell needs the same bias-filter exemption policy resolved (backlog row
-`bias-filter-exemption-policy-arsenal-review`) even though that row's description names only "Coil
-brackets, Tide fades" explicitly — Bell's two-sided STOP bracket has the identical exemption need
-and should be included in that policy decision, not treated as a separate gap.
+The mechanism exists and is manifest-driven (`system_controller.py:961-963`); what Bell needs is
+the same *policy* decision (backlog row `bias-filter-exemption-policy-arsenal-review`), whose
+description names only "Coil brackets, Tide fades" — Bell's two-sided STOP bracket has the
+identical exemption need and should be folded into that decision, not treated as a separate gap.
 
-**Grading path (P8 statement):** same SMC-shaped grader gap as Coil and Tide
-(`src/analysis/signal_grader.py`, HTF alignment/R:R/displacement/premium-discount/killzone). Bell's
-range-breakout-strength signal has no natural displacement or premium/discount mapping. Backlog row
-`grading-policy-for-non-smc-signals` applies identically here; the policy, once decided, should
-cover all three non-SMC candidates (Coil, Tide, Bell) rather than being re-litigated per strategy.
+**Grading path (P8 statement):** same shared gap as Coil and Tide, but Bell is the *least* affected
+of the three. `SignalGrader.grade()` (`src/analysis/signal_grader.py`) computes all five factors
+from the controller context and the signal candle — not from the strategy — so it always returns a
+grade and never errors; the audit's "a Coil or Bell signal has no grade" shorthand should not be
+repeated. Bell forfeits the SMC-specific *strength* of two factors (neutral HTF bias +10 instead of
++30, unknown/EQ PD array +5 instead of +15) but scores well on the other three by construction: an
+opening-range break is a large-body candle relative to ATR (displacement up to +20), the OR-width
+stop against a runner target clears 3R comfortably (+20), and **the NY equity open at 09:30 ET sits
+inside the grader's 07:00-11:00 NY killzone** (`signal_grader.py:23`), so Bell collects +15 on
+essentially every signal. That is 70 — grade A, well clear of the `min_grade: B` floor of 55
+(`signal_grader.py:21`). Bell can therefore run under today's grader; the P8 policy is still worth
+settling once for all three, but it is not a Bell blocker in the way it is for Tide.
 
 **Exit profile:** default ratchet + runner. The source document explicitly calls Bell's expected
 payoff shape "excellent n, excellent skew, ideal runner input" (05-STRATEGY-ARSENAL.md §6) — unlike
@@ -145,12 +182,12 @@ for.
 
 | # | Prerequisite | Backlog / audit row | Effort | Why Bell needs it |
 |---|---|---|---|---|
-| P1 / ENTRY-03 | M15 CandleMaker from configured TFs | `entry-03-m15-strategies-silently-never` (inbox); `data_store.py:25`, `candle_maker.py:118` | 4 h | Without it, a Bell manifest produces zero signals with no error — `data_store.py` only creates M5 and H1 makers today; the fix also repairs H4-bucketing for tf ≥ 60 |
-| P5 / ENTRY-02 | Bar-time (not wall-clock) session gating | `entry-02-session-gate-keyed-to` (inbox); `system_controller.py:842` | 4 h | Bell's entire setup is anchored to "the first 2×M15 bars after NY open" — a wall-clock gate diverges between live and backtest and is inert/wrong exactly where Bell depends on it most |
+| P1 / ENTRY-03 | M15 CandleMaker from configured TFs | `entry-03-m15-strategies-silently-never` (inbox); `data_store.py:25-28`, `candle_maker.py:121-122` | 4 h | Without it, a Bell manifest produces zero signals with no error — `DataStore` creates only M5 and H1 makers today. Note the bucketing at `candle_maker.py:121-122` floors on `ts.minute` alone, so it is correct for M15 but cannot express any timeframe ≥ 60 min beyond H1; an H4 maker needs an hour-aware bucket, not just a new dict entry |
+| P5 / ENTRY-02 | Bar-time (not wall-clock) session gating | `entry-02-session-gate-keyed-to` (inbox); `system_controller.py:945` | 4 h | `ctx['ny_time']` is filled from `self.time_engine.get_current_ny_string()` — the host wall clock — at `system_controller.py:945`, and Bell's entire setup is anchored to "the first 2×M15 bars after NY open". The same field also feeds the grader's killzone factor, so a wall-clock anchor corrupts both the setup and its grade |
 | P2 | OCO pending-order pairs | `oco-pending-order-pairs-arsenal-p2` (inbox) | 1 day | Shared with Coil — Bell's two-sided STOP bracket has the identical fill-one-leg-orphan-the-other failure mode |
 | — | Bias-filter exemption policy | `bias-filter-exemption-policy-arsenal-review` (inbox) | S | Same direction-agnostic-bracket exemption need as Coil (row names Coil/Tide explicitly; Bell should be added to the same decision) |
 | P8 | Grading policy for non-SMC signals | `grading-policy-for-non-smc-signals` (inbox) | S | Same SMC-shaped grader gap |
-| — | Extend `news_manager` beyond USD | 05-STRATEGY-ARSENAL.md §6 | not sized in source docs | Bell's "no high-impact release within 30 min" filter needs non-USD event coverage for XAUUSD/US30/US100/BTCUSD-relevant releases; `news_manager` today is USD-only |
+| — | **Verify** news coverage for Bell's universe (the source's "extend `news_manager` beyond USD" is out of date) | `src/analysis/news/`, `config/config.yaml:190-202`; source claim at 05-STRATEGY-ARSENAL.md §6 | verification, not a build | A multi-fiat, fail-closed news lockout already exists and is wired in (§3). What is unverified is whether `[USD]` is sufficient coverage for XAUUSD and BTCUSD, and whether the global 60/30-min windows suit a fixed-clock ORB. Scope this as a measurement against Bell's own needs, not as an extension project |
 | STRAT-03 | Slippage on STOP entries unmodelled; spread charged post-hoc rather than adjusting fill/trigger prices | `strat-03-spread-is-charged-as` (inbox); `backtest_engine.py:68-73,168` | 1 day (per backlog) | Bell's entries are STOP orders that trigger on a break — exactly the order type most exposed to slippage, and the current backtester models none of it. "Measure this on demo before believing any backtest of Bell" (05-STRATEGY-ARSENAL.md §6) |
 
 Bell has the largest prerequisite bill of the three candidates in this batch — P1 and P5 are hard
@@ -180,9 +217,13 @@ without P5), not risk hygiene like most of Coil's and Tide's list.
   the source document treats it as a precondition for believing any other number for this strategy.
 - **What CANNOT be validated with current data:** cannot validate live M15 session-open bar timing
   before P5 lands — a backtest using wall-clock timing today would not match live behaviour once P5
-  changes it. Cannot validate non-USD news-gap filtering before `news_manager` is extended — any
-  gate run before that extension implicitly assumes USD-relevant news is the only relevant calendar
-  risk for US30/US100/XAUUSD/BTCUSD, which is not defensible for index/metal/crypto instruments.
+  changes it, and `src/research/kernel_replay.py:42-50,66,92` stubs the time engine with a fixed
+  NY-time string, so replayed session anchoring and replayed killzone grading are both synthetic.
+  Cannot validate the news filter at all offline: the lockout is a live, feed-driven, fail-closed
+  mechanism (§3) with no historical-calendar replay, so a backtest silently assumes every signal
+  was tradeable. Whether `[USD]` coverage is adequate for XAUUSD and BTCUSD is likewise a live
+  measurement — cross-reference Bell's largest demo losses against an external multi-currency
+  calendar rather than asserting the mapping is right or wrong in advance.
   STRAT-01 applies identically: any managed-exit number is an upper bound from the offline replay,
   not a live number.
 
@@ -193,14 +234,19 @@ without P5), not risk hygiene like most of Coil's and Tide's list.
   per week once deployed, alerting on an unexpected zero-streak.
 - **Session-anchor drift:** without P5, live session timing can diverge from the backtest's bar-time
   anchor, especially around DST transitions — even though `get_current_ny_string` is itself already
-  DST-aware (05-STRATEGY-ARSENAL.md §6), the *gate that consumes it* is wall-clock keyed at
-  `system_controller.py:842`.
+  DST-aware (05-STRATEGY-ARSENAL.md §6), the value handed to strategies at
+  `system_controller.py:945` is the host's wall clock at loop time, not the closing bar's time.
 - **Slippage erosion:** the single highest-risk unknown for this strategy. Monitor realised fill
   price vs signalled STOP price per trade; the kill criterion (below) is explicit and should be
   checked continuously on demo, not just at a validation checkpoint.
-- **News-gap false positives/negatives:** until `news_manager` covers non-USD events, Bell may take
-  a signal into an index/metal/crypto-relevant release its filter cannot see. Monitor: manual cross-
-  reference of large losses against an external calendar during the demo phase.
+- **News-coverage gaps and the fail-closed halt, both directions.** False negatives: Bell's four
+  symbols all resolve to `[USD]`, so a non-USD macro release or a crypto-specific event the
+  ForexFactory feed does not carry can gap an opening range invisibly. False positives: the global
+  60-minute pre-window can suppress the 09:30 open around an 08:30 ET release, and a stale calendar
+  cache halts the book entirely — on a one-signal-per-day strategy that is a lost observation, not
+  a delayed one. Monitor both: cross-reference large losses against an external multi-currency
+  calendar, and log every Bell signal suppressed by a news block or a global halt so the missing
+  sample is visible rather than inferred.
 - **OCO race condition:** identical to Coil's — monitor count of simultaneous same-symbol pending
   orders per Bell signal.
 - **Self-audit metrics for live/demo:** median realised slippage vs the 0.1R kill threshold;

@@ -108,12 +108,20 @@ As specified in the brainstorm (§5.6–§5.10), not yet implemented:
   other candidates.
 - **Order types:** LIMIT for entry (already supported end-to-end); no OCO needed since Spring is
   single-sided per episode.
-- **Grading path (P8 statement):** Spring is a non-SMC signal — like Gyroscope, it will lose the
-  displacement/premium-discount/killzone points (65 of 100 possible) in `SignalGrader.grade()`
-  (`src/analysis/signal_grader.py`), leaving at most HTF-alignment (30, moot since
-  `honors_htf_bias: false`) + R:R (20) = 35/100, structurally below `min_grade: B`. Spring needs the
-  same grading accommodation Gyroscope needs (a non-SMC grading lane or exemption), not yet
-  designed at repo level.
+- **Grading path (P8 statement):** Spring is a non-SMC signal, but the mechanism of the problem is
+  narrower and sharper than "loses the SMC points." Verified against `src/analysis/signal_grader.py`:
+  displacement (≤20) is scored from the enriched candle's `ATR`/`open`/`close` for *any* strategy
+  (`system_controller.py:969`); premium/discount awards **+5** rather than 0 when
+  `context['liquidity']['STATUS']` is unset or `"EQ"` (`signal_grader.py:95-97`); killzone (+15) is a
+  pure NY-clock test (`signal_grader.py:101-110`); and HTF alignment still scores 30/10/0 from
+  `context['bias']` — `honors_htf_bias: false` suppresses the controller's *filter*, not the grade.
+  Spring's structural problem is therefore two specific factors, not five: (1) its own design R:R of
+  ≈1.3:1 sits **below the grader's 1.5 floor**, so the R:R factor scores **0** of 20
+  (`signal_grader.py:66-69`); (2) fading a stretch is by construction counter-bias in a trending
+  context, scoring `bias_counter +0`. Realistic range is roughly 5–50 out of 100 — below
+  `min_grade: B` (55) in essentially every configuration. Spring therefore does need the non-SMC
+  grading policy (`grading-policy-for-non-smc-signals`, inbox), and the R:R floor in particular is
+  irreconcilable with a 1.3:1 reversion thesis without it.
 - **HTF-bias stance:** `honors_htf_bias: false` — the OU fit is Spring's own regime read, analogous
   to Gyroscope's own-drift-is-its-own-bias framing (brainstorm §14.1).
 - **Exit profile:** Spring's trade thesis is TP-at-equilibrium, hard z_stop, and a time stop at 2
@@ -133,8 +141,8 @@ As specified in the brainstorm (§5.6–§5.10), not yet implemented:
 | P7 | Per-strategy exit profile (flat TP/SL/time-stop, no ratchet/runner) | Spring's negative-skew, TP-at-equilibrium thesis is incompatible with the default ratchet built for positive-skew continuation trades | Not yet designed; medium — `TradeManager` currently assumes one ratchet policy for all strategies |
 | P6 / RISK-07 | `context['spread']` does not exist today; ask-price/spread capture | Stage-(b) cost screen (median episode reversion amplitude vs 3× spread) is the expected kill point and needs real spread data, not an ATR proxy | Medium |
 | — (new) | Session-conditional spread-history feed | Asia (Spring's natural habitat per §5.13) has wider spreads than London/NY; a single blended spread stat will misprice the cost screen for exactly the sessions Spring wants to trade. No such feed exists today. | Medium-large — likely needs new bridge/history capture, not just a config value |
-| P8 | Grader accommodation for non-SMC signals | Spring loses 65/100 grading points structurally (see §4); without a fix it cannot clear `min_grade: B` regardless of edge quality | Medium (shared with Gyroscope) |
-| News calendar / lockout | Hard news lockout | Fading news is explicitly named the "classic account-killer" (brainstorm §5.13); no news-lockout mechanism is referenced elsewhere in this repo's contract | Unclear — not confirmed to exist; treat as a prerequisite until verified |
+| P8 | Grading policy for non-SMC signals (`grading-policy-for-non-smc-signals`, inbox) | Spring's ≈1.3:1 design R:R scores **0** of 20 against the grader's 1.5 floor, and its counter-bias fade scores 0 of 30 (see §4) — realistic range ~5–50, below `min_grade: B` regardless of edge quality | Medium (shared with Gyroscope) |
+| News lockout — **already exists** | `src/analysis/news/` (NewsManager + ForexFactory CSV source + fail-closed policy), consulted at `SystemController._news_blocks_symbol` / `_execute_signal` (`src/core/system_controller.py:480,491`) | Fading news is explicitly named the "classic account-killer" (brainstorm §5.13). The gate is real and fail-closed (feed down + stale cache blocks globally), covers USD/EUR/GBP/JPY/AUD/CAD/CHF/NZD plus a `news.symbol_currencies` map, and Spring inherits it for free. The **only** open item is tuning: it blocks HIGH-importance events only with 60/30-min windows, which may be too permissive for a fade strategy | Low — configuration/tuning, not a build |
 
 ## 6. Validation plan
 
@@ -176,7 +184,11 @@ and decisive per the brainstorm's own framing (§5.17):
   margin erodes silently. Monitor realized round-trip cost per episode vs the pre-registered 3×
   threshold, not just at gate time but on a rolling basis in demo/live.
 - **News:** hard lockout is a hard requirement, not a nice-to-have — fading a news-driven excursion
-  is the textbook failure mode named explicitly in the source material.
+  is the textbook failure mode named explicitly in the source material. The platform's existing
+  `src/analysis/news/` gate satisfies the requirement structurally; what Spring must verify at spec
+  time is that HIGH-only filtering with 60/30-min windows is tight enough for its fade profile, and
+  that the fail-closed behaviour (feed down + stale cache ⇒ global block) is acceptable given Spring's
+  low expected frequency.
 - **Ops:** like all strategies, fails safe to lot=0 if specs are missing; no strategy-specific ops
   risk beyond the shared portfolio-cap and Sync Guard behaviour already documented for the platform.
 

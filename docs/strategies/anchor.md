@@ -73,7 +73,12 @@ As designed (not yet implemented — no `src/strategies/models/anchor.py` exists
   version: "0.1"
   class_path: "src.strategies.models.anchor:Anchor"
   family: momentum
-  timeframe: H4          # D1 after P10
+  timeframe: H4          # D1 after P10. NOTE: neither H4 nor D1 is routed today —
+                         # DataStore builds M5 and H1 CandleMakers only
+                         # (src/core/data_store.py:25-28) and _run_strategies
+                         # dispatches strictly on matching timeframe
+                         # (system_controller.py:917-921), so this manifest as
+                         # written would load cleanly and never fire. P1 first.
   requires: [smc.enriched_df]   # raw OHLC + ATR/EMA only; check_smc=False path
   status: research
   priority: 90
@@ -98,12 +103,25 @@ As designed (not yet implemented — no `src/strategies/models/anchor.py` exists
   and EMA(50) helper would need registering if not already present in the enrichment pipeline
   (not verified in this pass — treat as an open item, not a fact).
 - **Order types used:** MARKET only.
-- **Grading path (P8 statement):** Anchor is not an SMC pattern — it has no displacement, no
-  premium/discount zone, no killzone. `SignalGrader.grade()` allocates those factors 20+15+15 of
-  its 100-point scale, so an Anchor signal is structurally capped well below `min_grade: B`
-  (`docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md:420`, P8). Anchor cannot execute under the
-  current grader without either (a) a non-SMC grading path, or (b) an explicit low-grade carve-out
-  in config — both are undesigned. This is a hard blocker for live execution, independent of data.
+- **Grading path (P8 statement):** the audit's shorthand — that a non-SMC signal "has no grade"
+  (`05-STRATEGY-ARSENAL.md:420`, P8) — is not literally true and the mechanism matters here.
+  `SignalGrader.grade()` (`src/analysis/signal_grader.py`) computes all five factors from the
+  controller's context dict and the signal candle, never from the strategy, so it always returns a
+  grade. Anchor still under-scores badly, for two specific reasons rather than a generic "not SMC":
+  1. **No target means no R:R points.** Anchor deliberately sets no fixed TP (§3), and R:R is worth
+     up to 20 points. If the decision dict omits `tp`, the grader catches the `KeyError` and scores
+     `rr = 0.0` → +0. If it instead passes `tp: 0.0`, `rr` evaluates against zero and comes out
+     enormous → a spurious **+20**. Both are wrong, in opposite directions, and the second is worse
+     because it silently inflates the grade. Whichever convention P7 settles on must be chosen
+     deliberately and asserted in a test.
+  2. **Killzone timing is structurally unreachable.** The killzone factor (+15) needs the NY hour to
+     fall in 02-05, 07-11 or 13-16 (`signal_grader.py:23`); on a weeks-long-hold H4/D1 signal the
+     entry hour is an artefact of the bar boundary, not the thesis.
+  A realistic Anchor score is therefore neutral bias (+10) + rr (+0) + displacement (a trend
+  confirmation bar is usually a modest body, +0 to +15) + PD unknown (+5), i.e. **15-30 against a
+  `min_grade: B` floor of 55** (`signal_grader.py:21`) — a hard C. Anchor genuinely cannot execute
+  under the current grader without a non-SMC grading path or an explicit carve-out; both are
+  undesigned. This is a live-execution blocker independent of the data problem.
 - **HTF-bias stance:** `honors_htf_bias: false`. Anchor's H4/D1 return sign *is* a bias signal; the
   controller's separate H1-cached HTF filter would be redundant at best and contradictory at worst
   if Anchor's own multi-week trend disagreed with the H1 SMC bias.
@@ -122,7 +140,8 @@ As designed (not yet implemented — no `src/strategies/models/anchor.py` exists
 
 | Item | What | Why it matters here | Effort |
 |---|---|---|---|
-| **P10** | 15-25y D1/H4 history via `GET_HISTORY`, plus `collect_signals` H4/D1 resampling rules | Current D1 = ~775 bars/symbol (`data/lake/frozen/PROVENANCE.md`), cannot validate a 6-month-horizon signal at all; `collect_signals:69` only maps `{"M15": "15min", "H1": "1h"}` — H4/D1 raise `KeyError` today | 1 afternoon |
+| **P10** | 15-25y D1/H4 history via `GET_HISTORY`, plus `collect_signals` H4/D1 resampling rules | Current D1 ≈ 775 bars/symbol over the ~3y M5 archive (`05-STRATEGY-ARSENAL.md:53`; source archive per `data/lake/frozen/PROVENANCE.md`), which cannot validate a 6-month-horizon signal at all. `collect_signals` (`scripts/poc_sb_stops.py:54`) maps only `{"M15": "15min", "H1": "1h"}` at `poc_sb_stops.py:66`, so `tf="H4"` or `"D1"` raises `KeyError` today | 1 afternoon |
+| **P1** | H4 (and later D1) CandleMakers on the live path | Distinct from P10 and easy to conflate with it: P10 fixes *research* resampling, P1 fixes *live* routing. `DataStore` builds M5 and H1 only (`data_store.py:25-28`), so an H4 Anchor manifest loads and silently never fires — the same defect as ENTRY-03 for M15. Note also that `candle_maker.py:121-122` buckets on `ts.minute` alone and cannot express a ≥60-min timeframe beyond H1 without an hour-aware bucket | 4 h (shared with Bell/Tide) |
 | **P7** | Per-strategy exit profile (no fixed target, signal-flip exit) | Anchor's exit is structurally incompatible with the default TP-anchored ratchet | 1 day |
 | **P8** | Non-SMC grading path | Grader is SMC-shaped; Anchor structurally under-grades | 1 day |
 | **STRAT-05 / P12** | Portfolio-level backtest (vol-scaled sizing, count cap, aggregate cap measured together) | TSMOM's edge is a portfolio effect; per-symbol pooled-R testing (today's rig) cannot show it even if real | 3 days |

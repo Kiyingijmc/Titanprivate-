@@ -15,9 +15,10 @@ node (e.g. a DXY-proxy basket, XAU) would imply a conditional expectation on its
 neighbours that has not printed yet; entering the laggard after the leader fires, with the
 leader's move as pre-confirmation, is the return source.
 
-This is, by the brainstorm's own framing, the single highest existence-risk concept in the
-arsenal (brainstorm §8, §12 "Existence risk" column: 2/5, the second-lowest score on the sheet;
-§13 does not shortlist it). Lead-lag at H1 in major FX pairs is heavily arbitraged by
+This is, by the brainstorm's own framing, "the most existence-risky concept on the list"
+(`…brainstorm.md:490`); the §12 matrix scores it 2/5 on the "Existence risk" column
+(`…brainstorm.md:624`) — the joint-lowest score on the sheet, tied with Shannon Gate and Walclock —
+and §13 does not shortlist it. Lead-lag at H1 in major FX pairs is heavily arbitraged by
 institutional participants with faster infrastructure than a retail MT5 bridge; the realistic
 hope, stated in the source doc, is narrower relationships such as metals→related-FX or
 index→risk-FX, not a general 9×9 web. Whether *any* exploitable edge survives at our granularity
@@ -32,7 +33,7 @@ directly on its prospects:
 | Source | Finding | Relevance to Constellation |
 |---|---|---|
 | Brainstorm §0 (ground rules) | "Any new concept that fires many small-target trades intraday is presumptively dead on arrival"; the only validated edge needed H1 granularity, wide stops, low frequency | Constellation is H1 by design, which is necessary but not sufficient — it still needs each triggered laggard trade to clear the cost gate on its own |
-| Brainstorm §8 | "lead-lag at H1 in majors is heavily arbitraged" (author's own honesty note); existence risk scored 2/5, the second-worst on the comparative matrix (§12) | This is the strategy's own source document pre-registering scepticism about itself |
+| Brainstorm §8 | "lead-lag at H1 in majors is heavily arbitraged" (author's own honesty note, `…brainstorm.md:461`); existence risk scored 2/5 — joint-worst on the comparative matrix (§12), tied with Shannon Gate and Walclock | This is the strategy's own source document pre-registering scepticism about itself |
 | The graveyard (brief) | OTE canonical −0.158R pooled; MTF-PB v2 −0.274R pooled; Gyroscope −0.067R pooled (27.1% realized false-entry vs 5% designed α) — three independent H1/H4-class NO-GOs on this rig | Establishes the base rate: most H1-class hypotheses on this rig have failed pre-registered gates. Constellation should be assumed to share that base rate absent evidence otherwise |
 | EXP-0 coin-flip, Outcome 1 (brief) | Placebo entries through the full exit engine average −0.249R (0/20 reps positive) vs SilverBullet's real +0.109R; the exit engine amplifies real edge (+0.231R) but does not subsidise random entries (+0.075R) | **Direct implication for Constellation:** if the lead-lag signal turns out to be noise (plausible per the existence-risk score above), routing it through the same ratchet/runner exit engine will not manufacture positive expectancy. The entry itself must demonstrate a real conditional edge in the pure existence study (§6) before any backtest is worth running |
 
@@ -104,16 +105,24 @@ sketch, not tuned code.
   not exist today.
 - **Order types:** MARKET on laggard entry (matches the "diffusion window" thesis — a LIMIT order
   waiting for a pullback could miss the window entirely).
-- **Grading path (P8 statement):** Constellation is not SMC-shaped. Per the audit's P8 finding
-  (brief §4 point 4; `config/manifests/silver_bullet.yaml` vs `gyroscope.yaml` requires lists), the
-  `signal_grader` scores HTF alignment (30 pts), R:R (20), displacement (20), premium/discount
-  (15), and killzone (15) — all SMC-specific except R:R. A Constellation signal has no FVG, no
-  premium/discount zone, and (with `honors_htf_bias: false`) no HTF-alignment points either; it
-  would structurally cap near 20/100 (R:R only) and never clear `min_grade: B`. Constellation
-  cannot execute live until either (a) it is added to a non-SMC grading exemption path (the same
-  problem Gyroscope already carries, unresolved as of this writing), or (b) a network-specific
-  grading factor (edge stability score, FDR-adjusted significance) is added to the grader. This is
-  new work, not a config flag.
+- **Grading path (P8 statement):** Constellation is not SMC-shaped, but the effect is narrower than
+  a flat 20/100 cap — verified line-by-line against `src/analysis/signal_grader.py` rather than
+  inferred from the audit summary. The grader scores HTF alignment (30), R:R (20), displacement (20),
+  premium/discount (15) and killzone (15), and only *two* of those five are genuinely SMC-shaped:
+  **displacement** is computed from the enriched candle's `ATR`/`open`/`close` for any strategy
+  (`system_controller.py:969`) — a laggard entering *before* it has moved will score poorly on it by
+  construction, which is Constellation's real problem; **premium/discount** awards **+5**, not 0,
+  when `context['liquidity']['STATUS']` is unset or `"EQ"` (`signal_grader.py:95-97`). **Killzone**
+  (+15) is a pure NY-clock test (`signal_grader.py:101-110`), available to any strategy. **HTF
+  alignment** still scores 30/10/0 from `context['bias']`: `honors_htf_bias: false` suppresses the
+  controller's *filter* (`system_controller.py:962`), not the grade. So a realistic Constellation
+  signal scores roughly 5–55 — dominated by whether the trigger lands in a killzone hour and whether
+  the leader's implied target gives it ≥1.5 R:R — and clears `min_grade: B` only intermittently, for
+  reasons unrelated to edge stability. That intermittency is worse than a clean block: it silently
+  turns Constellation into a session-filtered strategy nobody designed. The fix is the same policy
+  decision (`grading-policy-for-non-smc-signals`, inbox) — either a manifest exemption or a
+  network-specific factor set (edge stability score, FDR-adjusted significance). New work, not a
+  config flag.
 - **HTF-bias stance:** exempt (`honors_htf_bias: false`) — the leader's move is the strategy's own
   directional thesis; gating it against H1 SMC bias would be gating one directional signal against
   an unrelated one.
@@ -124,7 +133,8 @@ sketch, not tuned code.
   Constellation with arsenal-wide value independent of whether the strategy itself ever ships
   (brainstorm §8 point 9, §11 strengths): "a leader firing on multiple laggards is one macro bet —
   cap the summed R across simultaneous constellation trades." Titan's existing correlation gate
-  (`src/risk/correlation.py:96` `check_correlation`, threshold `self.threshold = 0.8` at line 24)
+  (`src/risk/correlation.py:96` `check_correlation`, threshold `self.threshold = 0.8` at line 29,
+  applied as `abs(val) > self.threshold` at line 128)
   is **direction-blind** — it blocks any two positions above ρ=0.8 regardless of whether they are
   same-direction (correlated risk) or opposite-direction (partially hedged), a defect tracked as
   audit **RISK-04** (`docs/audit-2026-07-30/02-AUDIT-REPORT.md:368`, backlog row
@@ -142,7 +152,7 @@ sketch, not tuned code.
 |---|---|---|---|
 | P4 / RISK-04 | Signed, fail-closed correlation gate + asset-class groups (`src/risk/correlation.py:128`) | Constellation's correlation-aware portfolio brake needs a direction-aware gate to sit on; also fixes today's direction-blind block | 2 d |
 | New: `global`-scope FeatureBus resource | Lead-lag graph as a cross-symbol resource; no `global`-scope resource exists in `src/features/packs/` today | Constellation's entire signal depends on cross-symbol state, which no current strategy consumes | Not sized; new pattern |
-| P8 | Grading path for non-SMC signals | Constellation structurally caps below `min_grade: B` on the current SMC-shaped grader | 1 d (per audit estimate, shared across all non-SMC strategies) |
+| P8 | Grading policy for non-SMC signals (`grading-policy-for-non-smc-signals`, inbox) | Not a flat structural cap (§4) — a laggard-before-it-moves entry scores poorly on displacement and drops below `min_grade: B` *intermittently*, which biases the live sample toward killzone hours | 1 d (per audit estimate, shared across all non-SMC strategies) |
 | Controller-loop ordering (new) | Deterministic within-bar sequencing across symbols, or an accepted one-bar-delay design | `_run_strategies` runs per symbol independently (system_controller.py:917); no cross-symbol ordering guarantee exists | Not sized; scope depends on chosen design (a) vs (b) in §4 |
 | P7 | Per-strategy exit profile | Whether the default ratchet suits a fitted-lag time-stop trade is unvalidated | 1 d |
 | P12 / STRAT-05 | Portfolio-level backtest | Needed to validate the correlation-aware brake's actual effect on drawdown, not just Constellation's own P&L | 3 d |

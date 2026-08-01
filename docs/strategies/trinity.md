@@ -67,11 +67,14 @@ for a meta-strategy to scale a specific member strategy's risk. What exists, ver
 at `main @ c16e537`-equivalent code:
 
 - `SystemController._execute_signal` (src/core/system_controller.py:490) computes a single scalar
-  `risk_mult` from `self.risk_manager.throttle_factor()` (line ~509–510) — a **v15.2 drawdown
-  throttle**, book-wide, unkeyed by strategy, defaulting to 1.0 (no-op) — and passes it into
+  `risk_mult` from `self.risk_manager.throttle_factor()` — resolved defensively via `getattr` and
+  defaulting to 1.0 when absent (system_controller.py:511-512) — a **v15.2 drawdown throttle**,
+  book-wide and unkeyed by strategy, then passes it into
   `RiskManager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)`
-  (src/risk/risk_manager.py:224). That function already multiplies the risk amount by `risk_mult`
-  before the lot-size math (risk_manager.py:230–241).
+  (system_controller.py:513; the signature is at src/risk/risk_manager.py:224, `throttle_factor` at
+  risk_manager.py:300). That function already folds `risk_mult` into the risk budget before the
+  lot-size math: `raw_risk_money = self.get_max_risk_amount(bias_multiplier=multiplier) * risk_mult`
+  (risk_manager.py:241).
 - This means a `risk_mult` **seam exists**, but it is presently a single global scalar sourced from
   one thing (drawdown throttle) — it is not keyed by `strategy_id`, and nothing upstream of
   `_execute_signal` currently carries a per-strategy multiplier into it. `Intent`
@@ -86,10 +89,11 @@ at `main @ c16e537`-equivalent code:
   consuming a new `global`-scope FeatureBus resource (e.g. `regime.state_posterior`, following the
   `symbol_tf | symbol | global` scoping already defined in `src/features/feature_bus.py`) and
   looking up the submitting strategy's habitat weight at approval time. Either way, that value must
-  survive from `Intent` submission through `pending_meta` (system_controller.py ~line 999) to
-  `_execute_signal`, and be **composed multiplicatively** with the existing drawdown-throttle
-  `risk_mult` — `calculate_lot_size`'s single `risk_mult` parameter is the natural multiplication
-  point (`risk_amount *= risk_mult`, risk_manager.py:241), not a second independent gate.
+  survive from `Intent` submission through the `pending_meta[id(intent)]` handoff
+  (system_controller.py:1002, read back at :1012) to `_execute_signal`, and be **composed
+  multiplicatively** with the existing drawdown-throttle `risk_mult` — `calculate_lot_size`'s single
+  `risk_mult` parameter is the natural multiplication point (risk_manager.py:241), not a second
+  independent gate.
 - **Manifest sketch** — Trinity is not a `StrategyManifest` entry in the conventional sense (it
   submits no `Intent`s of its own), so it does not fit the `status: research|demo|live` FSM the
   registry drives for entry-generating strategies. It is closer to a controller-level service (like
@@ -120,7 +124,7 @@ at `main @ c16e537`-equivalent code:
 
 | Item | What | Why it matters here | Effort |
 |---|---|---|---|
-| New: `Intent.risk_mult` field + threading | Extend `Intent` (src/arbiter/intent.py) and the `pending_meta` handoff in `_run_strategies` (system_controller.py:917) to carry a per-strategy multiplier into `_execute_signal` | This is the entire missing seam described in §4; without it Trinity has no way to act on any trade | Not sized; new pattern, small surface (a handful of lines) but touches the arbiter/controller boundary |
+| New: `Intent.risk_mult` field + threading | Extend `Intent` (src/arbiter/intent.py — note it is a **frozen** dataclass, so this is a schema change that also widens the journalled `to_payload()`) and the `pending_meta` handoff in `_run_strategies` (system_controller.py:917, tuple built at :1002) to carry a per-strategy multiplier into `_execute_signal` | This is the entire missing seam described in §4; without it Trinity has no way to act on any trade | Not sized; new pattern, small surface (a handful of lines) but touches the arbiter/controller boundary |
 | New: `regime.state_posterior` FeatureBus resource | `global`-scope resource; no `global`-scope resource exists in `src/features/packs/` today (`smc_pack.py` is entirely `symbol_tf`) | Trinity's posterior must be computed once per bar and be readable by both the allocator logic and (for monitoring) telemetry | Not sized |
 | New: registry carve-out for non-entry-generating overlays | Today `StrategyRegistry` activates manifests into an FSM that expects `on_new_candle` calls; Trinity has none | Needed if Trinity is to be operator-visible/toggleable the way other strategies are, rather than a hardcoded controller feature | Not sized |
 | P12 / STRAT-05 | Portfolio-level backtest (count cap, aggregate cap, correlation gate, daily breaker) — `docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md:424` | **Binding prerequisite, not optional.** Trinity can only be validated as an overlay (§6) — member backtests re-run with vs without its weights. That comparison requires a portfolio-level backtest harness, which does not exist; the current rig (`tests/backtest/backtest_engine.py`) resolves single-strategy trade sequences, not a multi-strategy book with shared risk multipliers | 3 d (audit estimate) |

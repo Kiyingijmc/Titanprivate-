@@ -85,9 +85,13 @@ As specified in the brainstorm (§7.6–§7.9), not yet implemented:
   ```
 - **Class placement:** `src/strategies/models/gumbel_fade.py` — `GumbelFadeStrategy(BaseStrategy)`,
   with the GPD math in a pure module `src/analysis/evt_exhaustion.py` (mirrors the
-  `kalman_drift.py`/strategy-shell split used by Gyroscope). `self.timeframe` would need to be `H4`
-  or a not-yet-supported `D1` value — confirm the controller's candle-close routing accepts H4/D1
-  before assuming this is a drop-in fit (the brief states routing is verified for M5/M15/H1 only).
+  `kalman_drift.py`/strategy-shell split used by Gyroscope). **`self.timeframe: H4` (or `D1`) does
+  not exist on the live path at all.** `DataStore` constructs CandleMakers for **M5 and H1 only**
+  (`src/core/data_store.py:26-27`), so an H4 or D1 manifest would register and activate cleanly and
+  then silently never receive a candle close — a fail-silent trap, not a routing gap that degrades
+  loudly (audit ENTRY-03 / P1). Live H4/D1 routing is therefore a hard prerequisite alongside the
+  P10 harness work in §5, and the two are separate items: P10 unblocks *backtesting*, the CandleMaker
+  addition unblocks *running*.
 - **Config block (sketch):**
   ```yaml
   strategies:
@@ -107,10 +111,21 @@ As specified in the brainstorm (§7.6–§7.9), not yet implemented:
   (same posture as Gyroscope's `KalmanDrift`, no SMC pack dependency).
 - **Order types:** MARKET or LIMIT at the reversal bar close — TBD; MARKET is simpler and matches
   the "first reversal bar" trigger's immediacy.
-- **Grading path (P8 statement):** non-SMC signal — loses the same 65/100 displacement/
-  premium-discount/killzone points as Gyroscope and Spring, leaving at most 35/100
-  (HTF-alignment moot under `honors_htf_bias: false`, plus R:R). Needs the same grader
-  accommodation named for Spring (§4) before it can clear `min_grade: B`.
+- **Grading path (P8 statement):** non-SMC signal, but the cap is narrower than "loses the SMC
+  points." Verified against `src/analysis/signal_grader.py`: displacement (≤20) is computed from the
+  enriched candle for any strategy (`system_controller.py:969`) and a tail-event reversal bar is
+  large by construction, so it should score; premium/discount awards **+5**, not 0, when
+  `context['liquidity']['STATUS']` is unset or `"EQ"` (`signal_grader.py:95-97`); killzone (+15) is a
+  pure NY-clock test (`signal_grader.py:101-110`); and HTF alignment still scores 30/10/0 from
+  `context['bias']` — `honors_htf_bias: false` suppresses the controller's *filter*, not the grade.
+  Gumbel Fade's specific exposure is that it is a **counter-trend fade after a multi-day run**, so
+  `context['bias']` will usually oppose it → `bias_counter +0` on 30 points, and its 38–50% retrace
+  target against an extreme-plus-buffer stop can fall short of the grader's 1.5 R:R floor
+  (`signal_grader.py:66-69`). Plausible range ≈20–55, i.e. it will clear `min_grade: B` only
+  intermittently. Needs the same non-SMC grading policy named for Spring
+  (`grading-policy-for-non-smc-signals`, inbox), and the grade distribution must be journaled from
+  the first backtest — with this strategy's low trade count, intermittent gating would badly distort
+  an already thin sample.
 - **HTF-bias stance:** `honors_htf_bias: false` — the ξ-gate and exceedance read are the strategy's
   own regime signal.
 - **Exit profile:** fixed retrace-target TP, extreme-plus-buffer SL, 10-bar time stop — this is a
@@ -128,8 +143,9 @@ As specified in the brainstorm (§7.6–§7.9), not yet implemented:
 | Item | What | Why it matters here | Effort |
 |---|---|---|---|
 | P10 | H4/D1 data extension — `collect_signals` raises `KeyError` on H4/D1 today; D1 history is only ~775 bars/symbol vs H1's ~18,600 | **Hard blocker.** Gumbel Fade cannot be backtested on the live research harness until this lands — the same blocker Anchor-class H4/D1 candidates share (brief §8) | Unclear, likely significant — needs both harness resampling support and (for D1) an MT5 history-extension project (`GET_HISTORY` supports 15-25y per the brief, but it has not been pulled yet) |
+| ENTRY-03 / P1 | Live H4/D1 candle routing — `DataStore` builds CandleMakers for **M5 and H1 only** (`src/core/data_store.py:26-27`) | **Second hard blocker, distinct from P10.** An H4/D1 manifest activates and then silently never fires; the strategy would look healthy and place no trades. P10 unblocks backtesting, this unblocks running | Not sized; a new CandleMaker plus routing/warmup plumbing |
 | P7 | Per-strategy exit profile (flat TP/SL/time-stop, no ratchet/runner) | Gumbel Fade's retrace-target/extreme-stop/time-stop thesis is incompatible with the default continuation-shaped ratchet | Shared with Spring; not yet designed |
-| P8 | Grader accommodation for non-SMC signals | Structurally capped at 35/100 without it | Shared with Spring/Gyroscope |
+| P8 | Grading policy for non-SMC signals (`grading-policy-for-non-smc-signals`, inbox) | Not an absolute cap (§4): counter-trend bias scoring 0/30 and a sub-1.5 R:R target make grading *intermittent*, which on a low-trade-count strategy silently biases the sample | Shared with Spring/Gyroscope |
 | — (new) | Cross-asset event-study infrastructure for pooling exceedance events across symbols | Brainstorm explicitly requires cross-asset pooling "essential for sample size" (§7.17) given how rare H4/D1 tail events are per symbol | Not scoped; likely a research-script-level addition, not a platform change |
 
 ## 6. Validation plan

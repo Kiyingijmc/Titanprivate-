@@ -96,10 +96,11 @@ the pre-registered gate defaults, config `strategies.gyroscope` in
 
 ## 4. Architecture integration
 
-- **Manifest:** `config/manifests/gyroscope.yaml` (not created/verified in this pass; described per
-  blueprint) — `status: research`, `class_path` → `GyroscopeStrategy`, `requires: []` (raw OHLC
-  only, no SMC columns), `honors_htf_bias: false` — its own drift estimate *is* its bias, so it
-  sits in the controller's HTF bias-filter exemption set.
+- **Manifest:** `config/manifests/gyroscope.yaml` exists on disk — `id: gyroscope`,
+  `version: "1.0.0"`, `class_path: src.strategies.models.gyroscope:GyroscopeStrategy`,
+  `family: stat`, `timeframe: H1`, `requires: []` (raw OHLC only, no SMC columns),
+  `status: research`, `priority: 60`, `honors_htf_bias: false` — its own drift estimate *is* its
+  bias, so it sits in the controller's HTF bias-filter exemption set.
 - **Class:** `GyroscopeStrategy(BaseStrategy)` at `src/strategies/models/gyroscope.py`,
   `timeframe: H1`; `validate_data(df, min_length=warmup_bars, check_smc=False)`.
 - **Config block:** `strategies.gyroscope` in `config/config.yaml` — `enabled: true` today but
@@ -122,7 +123,7 @@ the pre-registered gate defaults, config `strategies.gyroscope` in
 
 | Item | What | Status |
 |---|---|---|
-| Arbiter per-tf bar aging (advisory C) | `_bar_index` single-counter ages H1 theses on M5 closes | **Required precondition before ANY live flip alongside an M5-timeframe strategy** — inert for Gyroscope alone since it is H1-only, but a NO-GO here does not waive it (`docs/research/2026-07-14-gyroscope-gate.md:101-108`) |
+| Arbiter per-tf bar aging (advisory C) | `_bar_index` single-counter ages H1 theses on M5 closes | **Required precondition before ANY live flip alongside an M5-timeframe strategy** — inert for Gyroscope alone since it is H1-only, and the gate is explicit that "a GO verdict here does NOT waive it" (`docs/research/2026-07-14-gyroscope-gate.md:101-108`) |
 | P8 grading path for non-SMC signals | Per-strategy grading policy | Not built; the C-floor was a study-only workaround, not a live answer |
 | P6/RISK-07 spread gate | `context['spread']` does not exist on the live path | Gyroscope's `max_spread_atr_frac` screen is inert live (and was vacuous offline too — the gate carries no live spread) |
 | STRAT-01 | Live ratchet exit engine has no research-harness equivalent | Same caveat as every strategy on this rig — moot here since the entry failed before the exit-engine question mattered |

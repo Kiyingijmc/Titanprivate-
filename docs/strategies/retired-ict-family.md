@@ -28,14 +28,14 @@ edge on **M5**, i.e. risk ≈ 1 pip on a typical EURUSD bar.
 **Why it died — with numbers:** `docs/research/2026-07-11-silverbullet-h1-stop-study.md` §1: at the
 live 0.2×ATR/M5 config, **net expectancy = −4.271R/trade**, despite a real gross edge (+0.067R
 gross on the same config — the signal concept is not the problem). The audit's worked cost table
-(`docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md:36`) makes the arithmetic explicit: a 0.2×ATR(M5)
+(`docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md:37`) makes the arithmetic explicit: a 0.2×ATR(M5)
 stop on EURUSD is ~0.5 pips, against a round-trip cost of ~1.5 pips (8-tick spread + $7/lot
 commission) — **cost ≈ 3.0R at that stop.** The strategy was not marginally unprofitable; it paid
 roughly three units of risk in transaction costs for every unit of risk it staked, before the
 market had any chance to move in its favour.
 
 **What the graveyard teaches the next candidate:** this is the origin of the repo's hardest
-constraint — the cost gate (`docs/strategies/silver-bullet.md` §"Hard constraints"; median
+constraint — the cost gate (`docs/strategies/ARSENAL.md` §"How to read this board" item 1; median
 round-trip cost ≤ 0.25R). On M15 and below, stops must be structural/wide (a range width, a swing
 extreme), never a small ATR multiple; M5/M15 ATR-multiple stops are dead by construction on this
 broker at any reasonable multiple (the same 2026-07-11 study found ATR05/M5 at +0.415R gross but
@@ -58,7 +58,8 @@ everywhere** — all six asset classes (FX-majors, FX-crosses, metals, index, cr
 the pre-registered gate on leg 1 alone (test-set expectancy positive under both exit models).
 Pooled net-of-cost expectancy across all cost-screen-included symbols: **−0.158R** (MANAGED, net
 1×, n=1,776, PF 0.73), negative in every year 2023–2026 with no improving trend. Per-symbol,
-**10 of 11 instruments were gross-negative under both FIXED and MANAGED exit models** — the
+**10 of 11 instruments showed negative expectancy under both the FIXED and the MANAGED exit
+model**, from which the study concludes the underlying signal carries no positive raw edge — the
 underlying H4+H1 bias → H1 leg → 0.62–0.79 zone → M5 MSS signal did not carry a positive raw edge
 the way SilverBullet's FVG-displacement signal did, so, in the study's own words, **"the management
 engine has nothing to rescue."** The rebuild was hand-verified end-to-end on two golden trades
@@ -70,8 +71,8 @@ implies it is. The 2026-05-29 evidence review already flagged that "entering con
 LTF MSS" is an *unproven* discipline, not an independently validated one — this study measured it
 directly and it did not rescue the signal. It also demonstrates that a validated exit engine
 (the same one that turns SilverBullet's entry into +0.109R) is not a general-purpose profitability
-patch; it inherits whatever the entry's gross edge is, and OTE's gross edge is negative on 10/11
-symbols. This closed the first of the three-strategy canonical-rewrite sequence
+patch; it inherits whatever the entry's raw edge is, and OTE's is negative under both exit models
+on 10/11 symbols. This closed the first of the three-strategy canonical-rewrite sequence
 (OTE → Unicorn → CRT, `docs/research/2026-07-11-ote-canonical-results.md` "What happens next").
 
 ---
@@ -147,8 +148,11 @@ collapsed 3–8× toward zero**: metals +0.024R (÷8), index +0.041R (÷4), cryp
 textbook small-sample-optimism signature. **Pooled net expectancy across all classes: −0.274R**
 (n=11,533 MANAGED / n=8,536 FIXED). No class cleared the dual-exit-model gate; each apparent
 "winner" passed exactly one of the two exit models and failed the other. FX majors and crosses were
-strongly negative under both models (−0.36 to −0.59R) throughout. This was MTF-PB's **second**
-NO-GO — v1 preceded it on the same thesis with the same conclusion.
+strongly negative under both models (−0.36 to −0.59R) throughout. This was the thesis's **second**
+research cycle: the v1 screening PoC (`docs/research/2026-05-30-mtf-pb-poc-results.md`) was *not* a
+NO-GO — its recorded verdict was **"inconclusive-but-promising; need more commodity history"**, with
+only metals (XAUUSD) clearing the gate on a 3-month sample (n_test 35/37). v2 is what converted that
+provisional positive into a decisive NO-GO once the full 3-year history was available.
 
 **What the graveyard teaches the next candidate:** the collapse pattern is the single most
 important methodological lesson in this repo's research history — **a 3-month "promising" result on

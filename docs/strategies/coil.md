@@ -35,7 +35,7 @@ adverse context that bounds expectations.
 | Source | What it establishes | Citation |
 |---|---|---|
 | SilverBullet H1 stop study | H1 is the only timeframe simultaneously satisfying sample size (~18,600 bars/symbol over 3y) and the cost gate; validates the *timeframe* choice Coil inherits | brief §"Data"; `data/lake/frozen/PROVENANCE.md` |
-| Cost table | EURUSD 8, GBPUSD 12, USDJPY 10, AUDUSD 10, USDCAD 12, GBPJPY 25, XAUUSD 20, US30 200, BTCUSD 1000, XBRUSD 30 (points); commission $7/lot | `scripts/poc_sb_stops.py:43` |
+| Cost table | EURUSD 8, GBPUSD 12, USDJPY 10, AUDUSD 10, USDCAD 12, GBPCAD 30, GBPJPY 25, XAUUSD 20, US30 200, BTCUSD 1000, XBRUSD 30 (points); commission $7/lot. **US100, ETHUSD and XTIUSD have no entry** (finding STRAT-04; backlog row `poc-cost-table-extension-add-us100`) | `scripts/poc_sb_stops.py:43-46` |
 | The graveyard | Gyroscope (H1-momentum family, direction-predictive) NO-GO'd three times, most recently −0.067R pooled, 27.1% realised false-entry vs 5% designed α (2026-07-15) | brief §"Hard constraints" |
 | The graveyard | Original SilverBullet on M5 with a 0.2×ATR stop: −4.27R — the canonical example of a stop too tight for the cost structure | brief §"Hard constraints" |
 | EXP-0 coin-flip | Placebo entries through the full ratchet+runner exit engine: −0.249R (0/20 reps positive); the exit engine does not manufacture edge from arbitrary entries | brief §"Hard constraints" |
@@ -68,10 +68,20 @@ Universe: all 12 live pairs (all pass the H1 cost gate)
 ```
 
 Both legs are STOP orders bracketing the compressed range. Filling one leg without cancelling the
-other is a known-open failure mode until OCO exists (§5). Nothing about this trigger references
-HTF bias, SMC structure (FVGs, displacement), premium/discount, or killzones — it is a pure
-range/volatility signal, which has direct consequences for grading (§4) and for the HTF bias filter
-(§4).
+other is a known-open failure mode until OCO exists (§5).
+
+**Caveat on "all 12 pass the H1 cost gate":** the FBS spread table both research rigs import
+(`scripts/poc_sb_stops.py:43-46`) has **no entry for US100, ETHUSD or XTIUSD** (finding STRAT-04;
+backlog row `poc-cost-table-extension-add-us100`). Those three cleared a cost screen in the
+2026-07-28 universe-expansion study using indicative single-session spreads
+(`docs/research/2026-07-28-universe-expansion-screen.md`; XTIUSD re-measured at a 2-point median,
+`config/config.yaml:126`), but those figures were never committed into the shared table. Coil's
+cost-stress arm therefore cannot be run on a quarter of its stated universe until the table is
+extended — a pre-requisite of the gate run, not a follow-up.
+
+Nothing about this trigger references HTF bias, SMC structure (FVGs, displacement),
+premium/discount, or killzones — it is a pure range/volatility signal, which has direct
+consequences for grading and for the HTF bias filter (both in §4).
 
 ## 4. Architecture integration
 
@@ -85,7 +95,10 @@ family: volatility_compression
 timeframe: H1
 requires: [smc.enriched_df]   # for ATR; does not need FVG/bias/PD columns
 status: research               # promote to demo only after pre-registered gate passes
-priority: 60                   # lower rank than SilverBullet (50) at the arbiter tie-break
+priority: 60                   # lower rank than SilverBullet (50) at the arbiter tie-break.
+                               # NOTE: config/manifests/gyroscope.yaml already uses 60 — pick a
+                               # distinct value (e.g. 55) before writing this file, or the
+                               # tie-break between the two is undefined.
 honors_htf_bias: false          # see bias-filter stance below
 ```
 
@@ -93,8 +106,9 @@ honors_htf_bias: false          # see bias-filter stance below
 (`src/strategies/base_strategy.py`), implementing `async def on_new_candle(self, df, context=None)`
 returning `{'signal': 'BUY'|'SELL', 'type': 'STOP', 'price': …, 'sl': …, 'tp': …}` — this would be
 the **first strategy to use `type: STOP`** in the live decision dict; the field is already threaded
-end-to-end (`Titan_Gateway.mq5:139–145`, `system_controller.py:637–640`) but currently unexercised
-by any strategy (backlog row `oco-pending-order-pairs-arsenal-p2`).
+end-to-end (`system_controller.py:501` passes `decision['type']` through as the bridge command and
+`:737` registers a `LIMIT`/`STOP` send as a PENDING state-DB row; `Titan_Gateway.mq5:139-145` maps
+it to `ORDER_TYPE_BUY_STOP`/`SELL_STOP`) but currently unexercised by any strategy.
 
 **Config block sketch** (`config/config.yaml`, under `strategies:`):
 
@@ -113,23 +127,33 @@ direction-agnostic by design, it does not need the HTF bias filter that gates Si
 real use of paired pending orders, which is why OCO (P2) is a hard architecture prerequisite rather
 than a nice-to-have.
 
-**HTF-bias stance:** Coil should run with `honors_htf_bias: false` in the manifest, and needs the
-controller's HTF-bias filter to actually respect that flag for a two-sided bracket — today the
-filter's per-strategy exemption semantics for a direction-agnostic signal are not policy-defined
-(backlog row `bias-filter-exemption-policy-arsenal-review`: per-strategy exemption from the H1 HTF
-bias filter at `system_controller.py:828,842`, precedent = the Gyroscope exemption set). Without
-this, a legitimate two-sided bracket could have one leg silently filtered by bias while the other
-survives, breaking the OCO symmetry the strategy depends on.
+**HTF-bias stance:** Coil should run with `honors_htf_bias: false` in the manifest. The mechanism
+already exists and is manifest-driven — `system_controller.py:961-963` skips the counter-bias drop
+when `getattr(strat, 'honors_htf_bias', True)` is false (Plan-07 change; precedent = Gyroscope).
+What is *not* defined is the policy for when a strategy may claim the exemption (backlog row
+`bias-filter-exemption-policy-arsenal-review`). Without a settled policy, a two-sided bracket risks
+being registered as bias-honouring, in which case one leg is silently filtered while the other
+survives — breaking the OCO symmetry the strategy depends on.
 
 **Grading path (P8 statement):** `SignalGrader.grade()` (`src/analysis/signal_grader.py`) scores
-HTF alignment (30), R:R (20), displacement (20), premium/discount (15), killzone (15) — all five
-factors either assume SMC structure or a directional read Coil does not produce. Per backlog row
-`grading-policy-for-non-smc-signals`, the grader degrades gracefully rather than erroring (neutral
-bias +10, unknown premium/discount +5) but caps around 70–75 without SMC context — below a
-`min_grade: B` gate on some scoring scales. This is a **policy decision, not a blocker**: either
-exempt Coil by manifest from grading, or define a per-strategy grade profile that scores R:R and
-displacement-equivalent (breakout strength) without penalising the absent SMC fields. Coil cannot
-go live until this policy is decided.
+HTF alignment (30 aligned / 10 neutral / 0 counter), R:R (20/15/8 at ≥3R/≥2R/≥1.5R), displacement
+(20/15/10 at body ≥1.5/1.0/0.8 × ATR), premium/discount (15 aligned / 5 unknown-or-EQ / 0 opposed)
+and killzone (15). The audit's shorthand that "a Coil or Bell signal has no grade"
+(05-STRATEGY-ARSENAL.md §12, P8) is not literally true and should not be repeated: **every factor
+is scored from the controller's context dict and the signal candle, not from the strategy**, so the
+grader always returns a grade and never errors. The real effect is a structural handicap. Coil's
+signal is direction-agnostic, so it draws HTF alignment by luck rather than by construction, and
+its PD-array status is whatever `BiasEngine` reports; the realistic non-SMC path is neutral bias
+(+10) + unknown/EQ PD (+5) rather than +30/+15 — a 30-point deficit against an SMC entry. With a
+≥3R target, a ≥1.5×ATR breakout candle and a killzone-hour trigger, Coil still reaches 70 (grade A,
+`signal_grader.py:21`), comfortably clearing the `min_grade: B` floor of 55 — but drop the killzone
+(H1 closes fall outside 02-05/07-11/13-16 NY for over half the day) and it lands on exactly 55, and
+a sub-0.8×ATR breakout candle or an opposed PD status puts it at C. So Coil is not structurally
+gated out; it is gated *intermittently and for reasons unrelated to its thesis*, which is worse for
+diagnosis. This is a **policy decision, not a blocker** (backlog row
+`grading-policy-for-non-smc-signals`): either exempt Coil by manifest, or define a per-strategy
+grade profile that scores breakout strength in place of the SMC factors. Coil should not go live
+until it is decided, and grade-distribution logging must be on from the first demo bar.
 
 **Exit profile:** default ratchet + runner (no per-strategy exit variant proposed for Coil — unlike
 Tide, its fat-tail breakout profile is exactly what the runner was built for; see
@@ -147,8 +171,8 @@ leg cancels (further reason OCO is a hard prerequisite, not an optimisation).
 | # | Prerequisite | Backlog / audit row | Effort | Why Coil needs it |
 |---|---|---|---|---|
 | P2 | OCO pending-order pairs: `sibling_ticket` column in `state_manager` `active_orders` + cancel-on-fill in the `EXECUTION:OPENED` handler + paired TTL/CANCEL | `oco-pending-order-pairs-arsenal-p2` (inbox) | 1 day | Without it, filling one leg leaves the other resting; `max_positions_per_symbol: 1` then *blocks* (does not cancel) the sibling, which parks it until TTL expiry — a silent risk and exposure-accounting bug |
-| — | Bias-filter exemption policy for non-SMC/direction-agnostic strategies | `bias-filter-exemption-policy-arsenal-review` (inbox) | S (small) | A two-sided bracket has no direction to filter; `honors_htf_bias: false` needs defined semantics at `system_controller.py:828,842` before Coil's brackets behave symmetrically |
-| P8 | Grading policy for non-SMC signals | `grading-policy-for-non-smc-signals` (inbox) | S (small) | `signal_grader` caps ~70–75 without SMC context; decide exempt-by-manifest vs a per-strategy grade profile before `min_grade` gates every Coil signal out |
+| — | Bias-filter exemption policy for non-SMC/direction-agnostic strategies | `bias-filter-exemption-policy-arsenal-review` (inbox) | S (small) | The `honors_htf_bias: false` mechanism already works (`system_controller.py:961-963`); what is missing is the *policy* for granting it, without which a two-sided bracket may run bias-honouring and lose one leg |
+| P8 | Grading policy for non-SMC signals | `grading-policy-for-non-smc-signals` (inbox) | S (small) | The grader never errors and Coil can reach grade A (70), but it forfeits ~30 points of SMC-shaped context and lands on the B floor (55) whenever the trigger falls outside a killzone hour — intermittent gating for reasons unrelated to the thesis |
 | P6 / RISK-07 | Ask-price capture; live spread gate | brief §"platform contract" item 1 (`context['spread']` does not exist today) | ~1 h (per audit) | Coil's `spread ≤ 0.15 × planned stop distance` filter is inert without it — the same gap that makes Gyroscope's spread gate inert today |
 
 All four are pre-existing audit debt, not Coil-specific work — Coil is the first strategy that
@@ -172,11 +196,32 @@ TVP instantiation, following the culture in brief §"Validation culture (TVP)":
 - **Sample size:** target 300+ trades per symbol over 3 years per the brief's minimum-n rule; the
   expected 250–400 trades/symbol design estimate is close to that floor and should be checked
   early rather than assumed.
+- **Shared two-arm pre-registration with Rainflow (reciprocal — see `docs/strategies/rainflow.md`
+  §6, §8).** Rainflow is the path-dependent (fatigue-index) detector for this same
+  volatility-compression-breakout family, and its own mandated A/B baseline is a memoryless squeeze
+  reading — i.e. Coil's detector. Running two separate gates would duplicate scaffolding, split the
+  trade-count budget, and let the two triggers drift apart until no comparison is possible.
+  Recommendation: **one pre-registration, two arms** (arm A = Coil's ATR-percentile compression,
+  arm B = Rainflow's fatigue index D) on identical range-identification, trigger, stop and exit
+  scaffolding, with the compression statistic as the sole variable. Reconciliation required at
+  drafting time: Coil is direction-agnostic (two-sided STOP bracket, hard-requires P2/OCO) while
+  Rainflow is single-sided by boundary asymmetry — the arms must share one entry geometry, and
+  single-sided keeps the study off the P2 critical path. Coil's own two-sided bracket remains the
+  design of record for a Coil-specific gate; this shared study is the cheaper way to answer whether
+  path-dependence adds anything at all.
 - **What CANNOT be validated with current data:** cannot validate a mechanical OCO failure mode in
   offline replay — the offline replay (`poc_sb_stops.replay_managed`) has no concept of two
   simultaneous pending orders, so the P2 dependency's *correctness* can only be checked live/demo,
   not in the research harness. Cannot validate realised spread on the STOP-order entries — the
   research harness has no ask-price / slippage model (same STRAT-03 gap that affects Bell).
+- **Grading does not have replay/live parity, and Coil is exposed to that.** The research harness
+  drives the literal live `_run_strategies`, but it stubs the time engine with a *fixed* NY-time
+  string (`src/research/kernel_replay.py:42-50,66,92`, default `"10:00:00 EST"`). Every replayed
+  signal is therefore scored as inside the grader's 07:00-11:00 killzone and collects +15
+  (`signal_grader.py:23`), while live Coil signals fire at all hours and mostly will not. A replay
+  that shows Coil clearing `min_grade` says nothing about how often live Coil will. Either sweep
+  the replay `ny_time`, or resolve P8 so grading is not in Coil's critical path, before reading any
+  gate result as a signal-count forecast.
 - **STRAT-01 caveat applies identically to Coil:** whatever managed-exit number the offline replay
   produces is an upper bound, not a live number, because the research harness never drives the live
   `TradeManager` ratchet (brief §"Research harness").
@@ -190,9 +235,11 @@ TVP instantiation, following the culture in brief §"Validation culture (TVP)":
   neither could cancel (stale pendings accumulating exposure against the portfolio cap). Monitor:
   count of simultaneous same-symbol pending orders per Coil signal; alert if > 1 persists past one
   bar after a fill.
-- **Grading starvation:** if the P8 policy under-scores Coil signals, the strategy could silently
-  never clear `min_grade` and produce zero trades — indistinguishable from "no compression setups
-  occurred" without explicit grade-distribution logging.
+- **Grading attrition:** the failure shape is not zero trades but a *biased sample* of them — the
+  grader's killzone and PD-array factors will pass Coil's in-session breakouts and fail its
+  out-of-session ones regardless of setup quality (§4). Untracked, this silently converts Coil into
+  a session-filtered strategy nobody designed. Log the full grade distribution and the pass/fail
+  split by NY hour from the first demo bar.
 - **Spread-gate inertness:** until P6 lands, the `spread ≤ 0.15×stop` filter is a no-op; monitor
   realised cost per trade against the 0.25R gate manually until it is live.
 - **Self-audit metrics for the live/demo phase:** per-symbol trade count vs the 250–400/3y design

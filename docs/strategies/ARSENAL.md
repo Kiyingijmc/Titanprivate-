@@ -72,8 +72,9 @@ complete; nothing deploys before Stage B.
 ### Track 4 — retired / falsified (records; code removed)
 
 See [retired-ict-family.md](retired-ict-family.md): SilverBullet-M5 original (−4.27R),
-ICT_OTE canonical (−0.158R, NO-GO everywhere), Unicorn, CRT (removed 2026-07-12), MTF-PB v1/v2
-(−0.274R pooled), Donchian-20 D1 (wrong horizon). The graveyard is the calibration set: base rate
+ICT_OTE canonical (−0.158R, NO-GO everywhere), Unicorn, CRT (removed 2026-07-12, commit
+`b4450f8`), MTF-PB (v1 PoC inconclusive-but-promising, v2 NO-GO at −0.274R pooled), Donchian-20 D1
+(wrong horizon). The graveyard is the calibration set: base rate
 ≈ 1 survivor in 7 attempts.
 
 ### Track 5 — new-bot roster (brainstorm-v2, separate `tradebot/` target)

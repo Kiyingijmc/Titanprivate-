@@ -3,7 +3,8 @@
 > **Status:** candidate (Wave 2, pending gate-triage) · **Family:** volatility-compression breakout ·
 > **Timeframe:** H1 ·
 > **Origin:** `docs/research/2026-07-12-novel-arsenal-brainstorm.md` §4 (lines 215-273), §12 comparative
-> matrix (row 4), §13 ranked shortlist (honorable mention range) · **Doc version:** 2026-08-01
+> matrix (row 4). **Not ranked in §13** — the shortlist names Gyroscope/Aftershock/Rubicon and gives
+> honorable mentions to Antibody and Gumbel Fade only · **Doc version:** 2026-08-01
 
 ## 1. Thesis and return source
 
@@ -50,7 +51,7 @@ untested here):**
   decision rule realized error rates far above its designed budget because the theory assumed i.i.d.
   behavior that autocorrelated market data violated (`…gate-results.md:38,40,44`). Rainflow's own
   weaknesses section names an analogous, well-known failure mode for this family: **false breakouts**
-  — "the classic" (`…brainstorm.md:258`) — and the brainstorm's mitigation (expansion-bar trigger,
+  — "the classic" (`…brainstorm.md:253`) — and the brainstorm's mitigation (expansion-bar trigger,
   2-close failure exit, one-attempt-per-range rule) is a deterministic decision rule whose *realized*
   false-break rate, exactly like Gyroscope's realized false-entry rate, could diverge from whatever rate
   is assumed or hoped for during design. This document treats **false-break rate as a first-class,
@@ -91,8 +92,8 @@ Invalidation: range widens beyond tolerance or D stale-decays → back to SCANNI
 ```
 
 **Entry:** armed + H1 close beyond the fatigued boundary, on a bar whose range exceeds the median (the
-expansion requirement filters drips) (`…brainstorm.md:243`). **Direction is determined by boundary
-asymmetry** — the boundary with the higher accumulated damage/cycle count (`…brainstorm.md:245`).
+expansion requirement filters drips) (`…brainstorm.md:244`). **Direction is determined by boundary
+asymmetry** — the boundary with the higher accumulated damage/cycle count (`…brainstorm.md:244`).
 
 **Order type:** `STOP` at the boundary ± a buffer is explicitly acceptable — the brainstorm names the
 existing `STOP` command directly (`…brainstorm.md:244`). Per the brief's platform contract, `STOP` is
@@ -111,7 +112,7 @@ consecutive closes = failed break → flatten immediately, no discretion (`…br
 
 **Attempt discipline:** one attempt per identified range; a failed break voids the range entirely — no
 revenge re-entry — because false-break losses are named as "the known killer of this family" and are
-capped by construction, not by hope (`…brainstorm.md:250`, `:255`).
+capped by construction, not by hope (`…brainstorm.md:250`).
 
 **Cost screen:** skip if range height < n× spread (`…brainstorm.md:250`).
 
@@ -217,11 +218,19 @@ plain Bollinger-squeeze breakout on identical trigger/exit scaffolding — "Rain
 memoryless baseline, else the path-dependence adds nothing and we record that" (`…brainstorm.md:272`).
 
 **The Coil overlap must be stated plainly, per this document's own brief:** the audit-arsenal's Coil
-concept (`docs/strategies/coil.md`, being written in parallel with this document) is described as the
-"same family, memoryless-squeeze version" of exactly this idea. **Coil and Rainflow are one research
-question with two detectors**, not two independent strategies that happen to share a family. Rainflow's
-own mandated A/B baseline (plain Bollinger squeeze) **is essentially Coil's setup** — a memoryless
-volatility-compression reading feeding the same expansion-bar trigger and structural exits. Running two
+concept (`docs/strategies/coil.md`, origin `docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md` §4) is the
+memoryless-squeeze member of the same volatility-compression-breakout family — its compression
+detector is a point-in-time reading (ATR(14,H1) in the bottom 25th percentile of 200 bars, plus a
+4-bar range < 1.2×ATR, `coil.md` §3), which is exactly the memoryless statistic Rainflow's fatigue
+index claims to improve on. **Coil and Rainflow are one research question with two detectors**, not
+two independent strategies that happen to share a family. Rainflow's own mandated A/B baseline (a
+memoryless squeeze reading) **is Coil's detector in all but name** — feeding the same expansion
+trigger and structural exits. One genuine difference must be reconciled when the shared gate is
+drafted: Coil is *direction-agnostic* (a two-sided STOP bracket, which hard-requires the missing OCO
+pairing, P2), whereas Rainflow picks a side from boundary asymmetry and so needs only a single-sided
+order. The shared arms must therefore fix one entry geometry — the honest choice is single-sided for
+both arms, so that the compression statistic is the only variable and neither arm is blocked on P2.
+Running two
 separate pre-registered gates for what is functionally the same baseline-vs-treatment comparison would
 duplicate the scaffolding, split the trade-count budget across two studies that both need it, and risk
 the two docs silently drifting on trigger/exit details in a way that would make a later comparison
@@ -256,7 +265,7 @@ Instantiating TVP for the shared two-arm study:
 
 ## 7. Failure modes and monitoring
 
-- **False breakouts — "the classic," named directly in the source** (`…brainstorm.md:258`). Mitigated
+- **False breakouts — "the classic," named directly in the source** (`…brainstorm.md:253`). Mitigated
   by the expansion-bar trigger, the 2-close failure exit, and the one-attempt-per-range rule. Realized
   false-break rate is tracked live and compared against the gate-measured rate, mirroring Gyroscope's
   self-audit discipline (`…gate-results.md:38`) — a material excess should auto-pause the strategy and

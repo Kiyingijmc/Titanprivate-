@@ -26,9 +26,9 @@ document only. No Walclock-specific numbers exist to cite.
 | Source | Finding | Relevance |
 |---|---|---|
 | Brainstorm §11.2, §11.10 | "Its existence risk is that MT5 *tick* volume is a noisy proxy — which is exactly what stage-(b) tests" | Names the central open question up front: whether the data channel itself carries signal, independent of any strategy logic built on top |
-| Brainstorm §12 comparative matrix, row 11 | Cost survival **2/5**, existence risk **2/5** — among the lowest-rated candidates on both axes | Sets a low prior; only Constellation and Shannon Gate score as low or lower on existence risk |
+| Brainstorm §12 comparative matrix, row 11 | Expected robustness **2/5**, cost survival **3/5**, existence risk **2/5** (`…brainstorm.md:627`) | Sets a low prior. Existence risk 2/5 is the joint-lowest score on the sheet, shared with Constellation and Shannon Gate; robustness 2/5 is likewise joint-lowest. Cost survival at 3/5 is middling, not bottom-of-board — the concern here is signal reality, not cadence |
 | Brainstorm §11.13 | "Family adjacency to well-known volume divergence ideas" listed as a named weakness | Signals this is not a defensibly unique inefficiency — success depends on execution/normalization quality, not novelty |
-| Brief §7 hard constraints | The cost bar is brutal: FBS spreads mean M5/M15 ATR-multiple stops are dead; only the H1-and-above, wide-stop, low-frequency profile has ever validated in this repo (SilverBullet) | Walclock runs at H1 — inside the validatable envelope by cadence, but its self-rated 2/5 cost survival suggests the amplitude of its signal, not the timeframe, is the risk |
+| Brief §7 hard constraints | The cost bar is brutal: FBS spreads mean M5/M15 ATR-multiple stops are dead; only the H1-and-above, wide-stop, low-frequency profile has ever validated in this repo (SilverBullet) | Walclock runs at H1 — inside the validatable envelope by cadence, and its 3/5 cost-survival rating reflects that; the binding risk is its 2/5 existence-risk and 2/5 robustness ratings, i.e. whether the signal exists at all, not the timeframe |
 
 **Adverse evidence, stated plainly:** tick-volume unreliability per broker/session is named as the
 primary failure mode (§11.10) — if stage-(b) shows tick volume carries no signal at FBS, the
@@ -64,8 +64,9 @@ As specified in the brainstorm (§11.5–§11.9), not yet implemented:
   first-hit; exact target formula not specified in the source and needs to be defined during
   strategy design (not invented here).
 - **Filter:** only trades where the grind's height clears the cost screen; news lockout required
-  (§11.13 — dormant in clean impulsive moves, needs a lockout around news to avoid misreading
-  news-driven volume spikes as "effort").
+  (§11.11–13 — dormant in clean impulsive moves, needs a lockout around news to avoid misreading
+  news-driven volume spikes as "effort"). The platform already provides one (`src/analysis/news/`,
+  see §5), so this is a tuning question, not a build.
 - **Universe:** not yet chosen.
 
 ## 4. Architecture integration
@@ -86,10 +87,16 @@ As specified in the brainstorm (§11.5–§11.9), not yet implemented:
 - **Class placement:** `src/strategies/models/walclock.py` — `WalclockStrategy(BaseStrategy)`, with
   the effort-index math in a pure module, e.g. `src/analysis/effort_index.py` (mirrors the
   Gyroscope shell/math split). `validate_data(df, min_length=warmup, check_smc=False)` — raw OHLC +
-  tick volume only, no SMC pack dependency. **Data availability check needed before build:** the
-  brief confirms MT5 tick volume is available via the bridge, but its presence/format in the live
-  FeatureBus-enriched `df` used by `on_new_candle` has not been verified in this document — must be
-  confirmed against `HEARTBEAT`/`HISTORY` message fields before assuming a column exists.
+  tick volume only, no SMC pack dependency. **Data availability — verified, with one caveat:**
+  `tick_volume` is a first-class column of every CandleMaker frame
+  (`src/core/candle_maker.py:41`), and history ingestion maps the bridge's `tv`/`tickvol`/`v` key onto
+  it (`src/core/data_store.py:63-66`), so the column does reach `on_new_candle`'s `df`. The caveat is
+  a **live-vs-history parity risk**: a live-forming candle counts *bridge ticks received*
+  (`self.current_candle['tick_volume'] += 1`, `src/core/candle_maker.py:147`), which is a proxy that
+  can differ in level and in noise characteristics from the broker-side tick volume carried in
+  `HISTORY` bars. Since Walclock's whole signal is a rolling z-score of a volume-derived quantity, a
+  systematic live/history level shift would silently invalidate backtest-calibrated thresholds — this
+  parity check belongs in stage (b), not after go-live.
 - **Config block (sketch):**
   ```yaml
   strategies:
@@ -105,14 +112,24 @@ As specified in the brainstorm (§11.5–§11.9), not yet implemented:
 - **FeatureBus resources:** none required for v1 (raw OHLC + tick volume, self-contained effort-
   index estimator). If proven useful, the effort index itself could later register as a shared
   FeatureBus resource (e.g. `flow.effort_index`, scope `symbol_tf`) for other strategies/the grader
-  to consume — analogous to how the brief frames Shannon Gate's `info.entropy_deficit` — but that is
-  a post-validation extension, not part of the v1 build.
+  to consume — analogous to Shannon Gate's `info.entropy_deficit` in `docs/strategies/IMPROVEMENTS.md`'s
+  Tier 3 resource table (`flow.effort_index` is a *new* proposed name, not yet in that table) — but
+  that is a post-validation extension, not part of the v1 build.
 - **Order types:** MARKET, consistent with a divergence-confirmation entry (not a resting-limit
   thesis like Spring's stretch-fade).
-- **Grading path (P8 statement):** non-SMC signal — loses the same 65/100 displacement/
-  premium-discount/killzone points as the other Wave 3 stat candidates, capped at 35/100 under
-  `honors_htf_bias: false`. Needs the same grader accommodation named across this batch (Spring,
-  Gumbel Fade) before it can clear `min_grade: B`.
+- **Grading path (P8 statement):** non-SMC signal, but the structural cap is narrower than "loses
+  everything SMC-shaped." Verified against `src/analysis/signal_grader.py`: displacement (≤20) is
+  computed from the enriched candle's `ATR`/`open`/`close` for any strategy
+  (`system_controller.py:969`); premium/discount awards **+5**, not 0, when
+  `context['liquidity']['STATUS']` is unset or `"EQ"` (`signal_grader.py:95-97`); killzone (+15) is
+  purely NY-clock-based (`signal_grader.py:101-110`) and so is available to any strategy; and HTF
+  alignment still scores 30/10/0 from `context['bias']` regardless of `honors_htf_bias`, which only
+  governs the controller's *filter*, not the grade. Walclock's real exposure is that a fade entry
+  will often score `bias_counter +0`, and that a grind-fade candle is unlikely to clear the
+  0.8×ATR displacement floor — plausible range roughly 5–50, i.e. frequently below `min_grade: B`
+  (55) but for signal-shape reasons, not because the factors are unreachable. Grade distribution
+  must be journaled from the first gate run; the P8 policy decision
+  (`grading-policy-for-non-smc-signals`, inbox) is shared with Spring and Gumbel Fade.
 - **HTF-bias stance:** `honors_htf_bias: false`.
 - **Exit profile:** not fully specified by the source (target formula undefined) — this is a gap
   that must be closed during strategy design, not assumed to default to the standard ratchet. Given
@@ -128,10 +145,10 @@ As specified in the brainstorm (§11.5–§11.9), not yet implemented:
 | Item | What | Why it matters here | Effort |
 |---|---|---|---|
 | — (new) | Tick-volume data-quality audit at FBS (per-session normalization, reliability check) | The brainstorm frames this as the central open question — "if stage-(b) shows tick volume carries no signal at FBS, NO-GO cleanly" (§11.10) — and notes stage-(b) "doubles as" this audit, i.e. it is worth doing regardless of Walclock's fate | Low-medium — largely a data-analysis task against existing `data/history/` tick-volume columns, no platform change needed |
-| P8 | Grader accommodation for non-SMC signals | Structurally capped at 35/100 without it | Shared with Spring/Gumbel Fade |
+| P8 | Grading policy for non-SMC signals (`grading-policy-for-non-smc-signals`, inbox) | Not an absolute cap (see §4) — counter-bias fades and sub-0.8×ATR grind candles push Walclock below the B floor intermittently, which is worse for diagnosis than a clean structural block | Shared with Spring/Gumbel Fade |
 | P7 | Per-strategy exit profile | Exit thesis (effort-normalization / target / stop) undefined against the default ratchet | Shared with Spring/Gumbel Fade; additionally needs the target formula itself defined, which is Walclock-specific work |
-| News calendar / lockout | Hard news lockout for effort-index misreads around news | Named explicitly as required (§11.13); no confirmed lockout mechanism exists elsewhere in the repo — treat as unverified until confirmed | Unclear |
-| — (verify) | Confirm tick-volume column reaches `on_new_candle`'s `df` in the live FeatureBus-enriched frame | Not confirmed in this document; the bridge provides tick volume per the brief, but live-frame availability is a separate question from raw data availability | Low — verification, not build |
+| News lockout — **already exists** | `src/analysis/news/` (NewsManager + ForexFactory CSV source + fail-closed policy), consulted at `SystemController._news_blocks_symbol` / `_execute_signal` (`src/core/system_controller.py:480,491`) | Named explicitly as required (§11.11–13). The gate exists, is fail-closed, HIGH-importance-only with 60/30-min pre/post windows, and covers eight fiats plus a `news.symbol_currencies` map — Walclock inherits it. Open item is tuning only: news-driven tick-volume spikes may need wider windows than the HIGH-only default | Low — tuning, not a build |
+| — (measure) | Live-vs-history tick-volume parity study | The column itself is confirmed present (`candle_maker.py:41`, `data_store.py:63-66`), so availability is **not** a prerequisite. What is unmeasured is whether live-forming bars — which count bridge ticks, `candle_maker.py:147` — produce the same distribution as broker-side `HISTORY` tick volume. Walclock's thresholds are z-scores over that quantity, so a level or variance shift between the two sources breaks backtest→live transfer | Low — a comparison of live-captured bars against a `GET_HISTORY` pull for the same period |
 
 ## 6. Validation plan
 
@@ -155,10 +172,11 @@ Walclock-specific addition (§11.17):
   failing to show volume adding information over range; pooled net expectancy negative or
   sign-unstable across ±30% sweeps of the divergence/continuation thresholds.
 - **What cannot be validated with current data:** nothing structurally blocks a first-pass stage-(b)
-  audit — H1 tick volume for 3 years is available today, unlike Gumbel Fade's H4/D1 blocker. The one
-  open unknown is whether tick volume survives from the bridge into the live `on_new_candle` frame
-  unchanged (§5) — that must be confirmed before assuming a backtest and a live run would see the
-  same feature.
+  audit — H1 tick volume for 3 years is available today, unlike Gumbel Fade's H4/D1 blocker, and the
+  `tick_volume` column is confirmed present end-to-end (`candle_maker.py:41`, `data_store.py:63-66`).
+  The one thing history alone cannot answer is **live-vs-history parity**: live-forming bars count
+  bridge ticks (`candle_maker.py:147`) rather than broker tick volume, and only a side-by-side capture
+  can show whether the two agree closely enough for backtest-calibrated z-thresholds to transfer (§5).
 
 ## 7. Failure modes and monitoring
 
@@ -169,8 +187,10 @@ Walclock-specific addition (§11.17):
   stage and a stop placed beyond the grind's extreme, but not eliminated — monitor realized win rate
   on divergence-triggered fades specifically, separate from continuation-mode entries, since they
   have opposite failure profiles.
-- **News-driven volume spikes misread as "effort":** requires a hard lockout; without it, news bars
-  would systematically trigger false divergence signals.
+- **News-driven volume spikes misread as "effort":** the existing `src/analysis/news/` lockout is the
+  control; the residual risk is that it blocks HIGH-importance events only, so medium-impact releases
+  can still spike tick volume and trigger false divergence signals. Measure that residual in the gate
+  rather than assuming the lockout is total.
 - **Session-normalization drift:** effort-per-distance must be normalized per session/broker; a
   pooled normalization would misprice sessions with structurally different tick-volume levels.
 - **Ops:** standard fail-safe lot=0 on missing specs; no strategy-specific ops risk beyond the
@@ -179,8 +199,8 @@ Walclock-specific addition (§11.17):
 ## 8. Verdict and sequencing
 
 Candidate, but positioned explicitly as a **data-quality probe first**, not a strategy build. Given
-the 2/5 cost-survival and 2/5 existence-risk self-ratings — among the lowest on the Wave 3
-shortlist — the responsible sequencing is to run the tick-volume data-quality audit (stage-b) before
+the 2/5 existence-risk and 2/5 expected-robustness self-ratings — joint-lowest on the comparative
+matrix — the responsible sequencing is to run the tick-volume data-quality audit (stage-b) before
 any commitment to strategy design work, since that audit is valuable on its own regardless of
 Walclock's fate (it tells the whole arsenal whether tick volume is a usable data channel at all).
 Recommended sequence: (1) run the stage-(b) tick-volume audit + the mandatory bar-range A/B as a

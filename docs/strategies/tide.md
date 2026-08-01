@@ -24,9 +24,14 @@ correlation (05-STRATEGY-ARSENAL.md §5, §11).
 entries) but does not subsidise random ones (net −0.249R on placebo through the full engine, brief
 §"Hard constraints"). Tide's entry — a measured overextension with no H4 momentum agreement — must
 independently earn its edge; unlike Coil's fat-tail breakout profile, Tide's reversal thesis has
-*negative* skew (large winners are not the mechanism — see §4), which changes what "inheriting the
-exit engine's +0.316R" (05-STRATEGY-ARSENAL.md §1.3) even means for this strategy. The ratchet was
-calibrated on a continuation signal; it is not safe to assume it transfers.
+*negative* skew (large winners are not the mechanism — see §4). **EXP-0 falsified the source
+document's additive framing** — 05-STRATEGY-ARSENAL.md §1.3 asserts that "any entry meeting those
+four constraints inherits +0.316R of proven machinery", but the coin-flip showed the management
+layer contributes +0.231R on a real entry and only +0.075R on a random one. The exit engine's
+contribution is a function of the entry it is given, not a constant a new strategy can bank in
+advance; no strategy in this arsenal, Tide least of all, should be scoped on the assumption that
++0.316R comes free. The ratchet was calibrated on a continuation signal; it is not safe to assume
+it transfers at all.
 
 ## 2. Evidence base
 
@@ -65,11 +70,15 @@ Universe: FX majors + XAUUSD.
 ```
 
 The "no H4 momentum agreement" filter is the mechanism that keeps this a fade-exhaustion signal
-rather than a counter-trend gamble against a real trend — it requires H4 candle data, which the
-platform's `collect_signals` already resamples for backtesting (`H1`/`M15` supported; H4 raises
-`KeyError` today per brief item 7 — this is a live-path concern, not a backtest blocker, since the
-FeatureBus can compute H4 momentum from raw OHLC independent of `collect_signals`, but it should be
-verified before this ships).
+rather than a counter-trend gamble against a real trend — and it requires H4 candle data, which the
+platform does not currently produce on either path. The research rig resamples only two
+timeframes: `collect_signals` (`scripts/poc_sb_stops.py:54`) does `rule = {"M15": "15min",
+"H1": "1h"}[tf]` at `poc_sb_stops.py:66`, so `tf="H4"` raises `KeyError`. The live path is
+narrower still: `DataStore` builds CandleMakers for M5 and H1 only
+(`src/core/data_store.py:25-28`). Neither is a hard blocker — a Tide strategy class can resample
+H4 from the M5/H1 frame it is handed, or an H4 momentum resource can be registered on the
+FeatureBus — but "compute it inline" is a design decision that must be made and tested before this
+ships, not assumed.
 
 ## 4. Architecture integration
 
@@ -111,19 +120,27 @@ FVG-edge LIMIT, but the same order type).
 
 **HTF-bias stance:** `honors_htf_bias: false` — a fade signal is definitionally opposed to
 continuation, so the controller's HTF bias filter would filter out every Tide signal by
-construction if applied. This is the same exemption-policy gap Coil needs: backlog row
-`bias-filter-exemption-policy-arsenal-review` (per-strategy exemption at
-`system_controller.py:828,842`, Gyroscope-exemption-set precedent, explicitly named for "Coil
-brackets, **Tide fades**" in the backlog description) must be resolved before Tide can run without
-having every signal silently dropped by the bias filter.
+construction if applied. The mechanism itself already exists and is manifest-driven —
+`system_controller.py:961-963` skips the counter-bias drop when the strategy's `honors_htf_bias` is
+false (Gyroscope precedent) — so what Tide needs is the *policy* governing who may claim it:
+backlog row `bias-filter-exemption-policy-arsenal-review`, which names "Coil brackets, **Tide
+fades**" explicitly. Until that is settled, a Tide registered as bias-honouring would have every
+signal silently dropped by the filter.
 
-**Grading path (P8 statement):** same structural gap as Coil — `SignalGrader.grade()` scores HTF
-alignment, R:R, displacement, premium/discount, killzone, all SMC-shaped
-(`src/analysis/signal_grader.py`). Tide's "no H4 momentum agreement" filter and session-extreme
-retracement have no natural mapping onto displacement or premium/discount scoring. Per backlog row
-`grading-policy-for-non-smc-signals`, the grader degrades to a cap of roughly 70–75 without SMC
-context; the same policy decision that gates Coil (exempt-by-manifest vs a per-strategy grade
-profile) gates Tide, and should be resolved once for both rather than twice.
+**Grading path (P8 statement):** same shared gap as Coil, but Tide is the worst case in the
+arsenal. `SignalGrader.grade()` (`src/analysis/signal_grader.py`) scores HTF alignment (30 aligned
+/ 10 neutral / **0 counter**), R:R (20/15/8), displacement (20/15/10 on body ÷ ATR),
+premium/discount (15 aligned / 5 unknown / 0 opposed) and killzone (15), with the B floor at 55
+(`signal_grader.py:21`). Every factor is computed from the controller context and the signal
+candle, so the grader never errors — the audit's "a non-SMC signal has no grade" shorthand is not
+literally true. But a *fade* is scored counter-bias by construction (0, not 10) and will frequently
+sit on the wrong side of the PD array (0, not 5), because taking the top 5% of the session range
+short is definitionally selling into what `BiasEngine` may call a bullish premium. That leaves a
+realistic ceiling of 0 + 20 (R:R) + 20 (displacement) + 0 + 15 (killzone) = **55, exactly the floor
+— and 40, a hard C, outside killzone hours.** Tide is therefore the one candidate that plausibly is
+structurally gated out most of the time, and the same policy decision that gates Coil
+(exempt-by-manifest vs a per-strategy grade profile, backlog row
+`grading-policy-for-non-smc-signals`) should be resolved once for both.
 
 **Exit profile — needs P7, not the default:** this is Tide's most consequential architecture point.
 The default ratchet (BE at 38.2%, partials at 61.8%/88.6%, runner trail 0.268×range — see
@@ -131,8 +148,9 @@ The default ratchet (BE at 38.2%, partials at 61.8%/88.6%, runner trail 0.268×r
 the runner's job is to let a small number of large winners run. Tide's thesis is reversal to a
 session mid-range anchor — the expected payoff shape has **negative skew relative to SilverBullet**:
 smaller, more consistent winners (design target win rate 55–65%, average winner 1.0–1.5R, per
-05-STRATEGY-ARSENAL.md §5) rather than a fat right tail. Per backlog item P7 ("per-strategy exit
-profiles ... Tide needs no runner"), Tide needs its own exit variant — bank earlier, trail tighter,
+05-STRATEGY-ARSENAL.md §5) rather than a fat right tail. Per audit prerequisite P7
+(05-STRATEGY-ARSENAL.md §12, "per-strategy exit profiles … Tide needs no runner"), Tide needs its
+own exit variant — bank earlier, trail tighter,
 no runner mode — and **both the default ratchet and the bank-early/trail-tight variant must be
 tested**, not assumed. This directly extends the EXP-0 finding: EXP-0 showed the exit engine
 amplifies a genuine positive-skew entry but does not manufacture edge from a random one; Tide is a
@@ -157,9 +175,10 @@ Tide's own pre-registration as a go/no-go precondition that is now satisfied, no
 
 | # | Prerequisite | Backlog / audit row | Effort | Why Tide needs it |
 |---|---|---|---|---|
-| — | Bias-filter exemption policy for non-SMC/direction-agnostic strategies | `bias-filter-exemption-policy-arsenal-review` (inbox) | S | Named explicitly for "Tide fades" — without it every Tide signal is filtered as counter-bias |
+| — | Bias-filter exemption policy for non-SMC/direction-agnostic strategies | `bias-filter-exemption-policy-arsenal-review` (inbox) | S | Named explicitly for "Tide fades". The mechanism exists (`system_controller.py:961-963`); absent a policy, a bias-honouring Tide has every signal filtered as counter-bias |
+| P1 / ENTRY-03 | H4 candle availability for the momentum-agreement filter | `entry-03-m15-strategies-silently-never` (inbox); `data_store.py:25-28`, `poc_sb_stops.py:66` | 4 h (shared with Bell) | Neither the live DataStore (M5/H1 only) nor `collect_signals` (M15/H1 only) produces H4; Tide must either resample inline or wait on P1 — decide before the gate, not after |
 | P7 | Per-strategy exit profiles (Tide needs no runner) | audit §12 row P7 | 1 day | The default ratchet/runner is calibrated on continuation; Tide's negative-skew reversal profile needs a bank-early/trail-tight variant tested against the default before either is adopted |
-| P8 | Grading policy for non-SMC signals | `grading-policy-for-non-smc-signals` (inbox) | S | Same SMC-shaped grader gap as Coil; Tide's fade/exhaustion filter has no natural displacement/PD/killzone score |
+| P8 | Grading policy for non-SMC signals | `grading-policy-for-non-smc-signals` (inbox) | S | Sharper for Tide than for Coil: a fade scores 0 on HTF alignment and often 0 on PD array, leaving a realistic ceiling of 55 (the floor itself) in killzone hours and 40 outside them |
 | RISK-01 | Daily drawdown anchor survives restart | **DONE** — merged to main 2026-08-01, `RiskManager.restore_daily_anchor` | — | Audit's stated Tide-specific live blocker; now cleared |
 
 ## 6. Validation plan
@@ -177,10 +196,16 @@ Tide's own pre-registration as a go/no-go precondition that is now satisfied, no
   table's own heading. This document does not adopt that number as a result — it is cited here
   only as the design rationale for building Tide at all, and it must be *measured* against real
   paired monthly P&L once both strategies have trade histories, not assumed.
-- **What CANNOT be validated with current data:** the H4-momentum-agreement filter's live behaviour
-  cannot be validated through `research_run.py`/`collect_signals` if H4 resampling is exercised via
-  that path (`KeyError` today per brief item 7) — needs either a FeatureBus-side H4 computation
-  that bypasses `collect_signals`, or the P10 timeframe-rule fix, confirmed before the gate run.
+- **What CANNOT be validated with current data:** the H4-momentum-agreement filter cannot be
+  exercised through `collect_signals` at all — `poc_sb_stops.py:66` maps only `M15`/`H1`, so
+  `tf="H4"` raises `KeyError`, and the live `DataStore` builds no H4 CandleMaker either
+  (`data_store.py:25-28`). This needs a strategy-side or FeatureBus-side H4 resample, or the
+  P1/P10 timeframe-rule fixes, resolved and tested *before* the gate run rather than assumed.
+  Nor does grading have replay/live parity: `src/research/kernel_replay.py:42-50,66,92` stubs the
+  time engine with a fixed NY-time string (default `"10:00:00 EST"`), so every replayed signal
+  banks the grader's +15 killzone point that live Tide will usually miss. Given that Tide's
+  realistic ceiling is 55 *with* that point and 40 without it (§4), a replay would systematically
+  overstate how many Tide signals survive the `min_grade` gate live.
   STRAT-01 applies identically: any managed-exit number from `poc_sb_stops.replay_managed` is an
   upper bound, not a live number (brief §"Research harness").
 
@@ -196,6 +221,11 @@ Tide's own pre-registration as a go/no-go precondition that is now satisfied, no
   for a low realised win rate combined with a low average winner (i.e., the reversal thesis paying
   off in small pieces that the runner logic delays banking on) — a signature that the exit engine is
   mismatched to the entry's skew.
+- **Grade starvation is a live risk for Tide specifically, not a theoretical one:** with the
+  current grader a fade tops out at 55 in killzone hours and 40 outside them (§4), so an unresolved
+  P8 policy means Tide trades only during killzones and silently produces nothing the rest of the
+  day — indistinguishable from "no overextensions occurred" without grade-distribution logging by
+  NY hour. Instrument this before the first demo bar, not after a quiet week.
 - **H4 filter degradation:** if the H4-momentum-agreement check is silently unavailable (e.g. an
   H4 resample failure), the fallback behaviour must be fail-closed (no trade), not fail-open
   (trade without the trend filter) — an unfiltered fade is explicitly the dangerous case per §"Honest

@@ -37,7 +37,9 @@ entries, a systematic long-side bias in fills, no realized-cost monitoring again
 gate, and three candidates (Coil's spread filter, Spring's session-conditional cost screen,
 Bell's slippage measurement) are unbuildable. Also record a rolling per-symbol/per-session
 spread history table — a new, cheap data asset no current tool provides. Effort: capture is a
-5-minute change (`system_controller.py:690`); the gate + history table ~1 d. Backlog:
+5-minute change — the TICK handler stores `msg.get('b', 0)` and drops `msg['a']`, at
+`system_controller.py:787` in the current tree (the audit cites the pre-RISK-01 line `:690`);
+the gate + history table ~1 d. Backlog:
 `risk-07-ask-price-is-transmitted`, `strat-03-spread-is-charged-as` (inbox).
 
 ## Tier 2 — capability unlocks (new strategies become possible)

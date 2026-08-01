@@ -156,7 +156,9 @@ strategies:
 **FeatureBus:** no resource required to consume for v1. `validate_data(df, min_length=warmup,
 check_smc=False)` — raw OHLC only, same as Gyroscope. If the intensity proves useful arsenal-wide
 (e.g. as a shared "cascade active" flag for other strategies' portfolio brakes), it could later be
-registered as `hawkes.lambda` mirroring the pack pattern in `src/features/packs/smc_pack.py`
+registered as `vol.hawkes_intensity` (the name already reserved for it in
+`docs/strategies/IMPROVEMENTS.md`'s Tier 3 resource table) mirroring the pack pattern in
+`src/features/packs/smc_pack.py`
 (`register(ResourceSpec(name=…, scope=…, compute=…))`) — not required to ship v1.
 
 **Grading path (P8):** verified directly against `src/analysis/signal_grader.py:1-119`, not assumed.
@@ -235,8 +237,14 @@ any backtest** (brainstorm §2.17, line 151):
   KS test of inter-event times against the fitted model (brainstorm §2.10); if `lambda_fit: rolling_mle`
   is ever enabled, this check becomes mandatory, not advisory, given the Gyroscope calibration lesson.
 - **News spikes with instant full reversal fake continuation signals.** Mitigated by the confirm-bar
-  requirement plus a news lockout (not yet built for any strategy in this repo — a shared prerequisite,
-  not specific to Aftershock).
+  requirement plus the **existing** news lockout: `src/analysis/news/` (NewsManager façade,
+  ForexFactory CSV source, fail-closed policy when the feed is down and the cache is stale). It blocks
+  on HIGH-importance events only, with configurable pre/post windows (60/30 min) and currency
+  inference across USD/EUR/GBP/JPY/AUD/CAD/CHF/NZD plus the `news.symbol_currencies` config map. The
+  gate is consulted in `_execute_signal` via `SystemController._news_blocks_symbol`
+  (`src/core/system_controller.py:480,491`), so Aftershock inherits it with no new work — what would
+  need checking at spec time is whether the 60/30-minute windows are the right shape for a
+  cascade-triggered entry, not whether a lockout exists.
 - **Self-audit metric (live):** realized false-entry rate (event confirmed → next-bar stop hit before
   1× range target) tracked rolling, compared against the IS-measured base rate from the gate. A
   material excess — mirroring Gyroscope's 27.1%-vs-5% gap — should auto-pause the strategy and alert,

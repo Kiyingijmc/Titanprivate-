@@ -71,7 +71,7 @@ As designed (not implemented — no `src/strategies/models/tether.py` exists):
   class_path: "src.strategies.models.tether:Tether"
   family: relative_value
   timeframe: H1
-  requires: [smc.enriched_df]   # raw OHLC/ATR path; no SMC pattern dependency
+  requires: []   # raw OHLC only — no SMC pattern dependency (mirrors gyroscope.yaml)
   status: research
   priority: 95
   honors_htf_bias: false   # spread-relative signal has no single-instrument directional bias
@@ -110,7 +110,7 @@ As designed (not implemented — no `src/strategies/models/tether.py` exists):
   applicable to a paired position by construction.
 - **Exit profile:** needs a dedicated exit profile (P7), and it is the most different from the
   default of any candidate in the arsenal — the target is `|z| < 0.5`, not an R-multiple, and the
-  "initial_tp" concept the ratchet keys off of (`trade_management.py`, "Engages ONLY when state-DB
+  "initial_tp" concept the ratchet keys off of (`src/execution/trade_manager.py`, "Engages ONLY when state-DB
   `initial_entry/initial_tp` are non-zero") has no natural translation for a spread target. Tether
   likely needs an entirely separate exit code path rather than an instantiation of the existing
   ratchet with different parameters.

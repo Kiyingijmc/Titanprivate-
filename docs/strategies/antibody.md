@@ -49,8 +49,10 @@ the geometric anomalies Antibody flags. The two systems are watching different t
 watches bar-shape geometry; SilverBullet fires on a session-timing + displacement condition that,
 empirically, almost never overlaps with a geometric anomaly window.
 
-**Adverse framing, stated plainly:** this is a clean, pre-registered NO-GO for the *lockout*
-premise as applied to SilverBullet specifically. The study did exactly what a TVP-disciplined study
+**Adverse framing, stated plainly:** the recorded verdict is **RECORD-ONLY** — the overlap sample
+(n=1 vs the required 30) was too small to adjudicate the lockout premise, and the honest reading of
+*why* it was too small (§6) is that the premise is structurally untestable against SilverBullet
+specifically. The study did exactly what a TVP-disciplined study
 should — record a null result rather than search for a way to rescue it. v1's code exists **only**
 on the unmerged `feat/antibody-study` branch (`src/analysis/antibody.py`,
 `scripts/antibody_study.py` and their tests) — nothing has been merged to `main`, and this
@@ -210,7 +212,7 @@ reproduce the same n≈1 problem for the same structural reason.
 
 ## 8. Verdict and sequencing
 
-**Record v1 as complete and NO-GO for the SilverBullet lockout premise specifically** — the scorer
+**v1 is complete, verdict RECORD-ONLY — and effectively closed for the SilverBullet pairing** — the scorer
 works (criterion #1 passed cleanly, covariance well-conditioned across all 9 symbols), the overlap
 with SilverBullet's entries does not exist (criterion #2 failed at n=1 of 1,386, criterion #3 moot).
 Do not re-run v1 against SilverBullet expecting a different answer from more data; the finding is

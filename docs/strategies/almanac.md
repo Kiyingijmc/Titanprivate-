@@ -78,7 +78,7 @@ As designed (not implemented — no `src/strategies/models/almanac.py` exists):
   class_path: "src.strategies.models.almanac:Almanac"
   family: calendar
   timeframe: D1          # decision cadence; execution triggers on H1 close
-  requires: [smc.enriched_df]   # raw OHLC/ATR path; no SMC dependency
+  requires: []   # raw OHLC only — no SMC dependency (mirrors gyroscope.yaml)
   status: research
   priority: 10            # low-priority in arbiter tie-breaks; canary, not a capital-seeking strategy
   honors_htf_bias: false   # calendar signal is independent of H1 SMC directional bias

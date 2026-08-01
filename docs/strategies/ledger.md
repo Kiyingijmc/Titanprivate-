@@ -83,7 +83,7 @@ As designed (not implemented — no `src/strategies/models/ledger.py` exists; co
   class_path: "src.strategies.models.ledger:Ledger"
   family: carry
   timeframe: D1
-  requires: [smc.enriched_df]   # raw OHLC/ATR path, no SMC dependency
+  requires: []   # raw OHLC only — no SMC dependency (mirrors gyroscope.yaml)
   status: research
   priority: 92
   honors_htf_bias: false   # carry direction is its own thesis, independent of H1 SMC bias

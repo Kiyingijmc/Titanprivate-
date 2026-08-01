@@ -79,7 +79,7 @@ As designed (not yet implemented — no `src/strategies/models/anchor.py` exists
                          # dispatches strictly on matching timeframe
                          # (system_controller.py:917-921), so this manifest as
                          # written would load cleanly and never fire. P1 first.
-  requires: [smc.enriched_df]   # raw OHLC + ATR/EMA only; check_smc=False path
+  requires: []   # raw OHLC; computes own return/EMA/ATR (check_smc=False, mirrors gyroscope.yaml)
   status: research
   priority: 90
   honors_htf_bias: false   # TSMOM's own signal IS the bias; controller HTF filter would fight it

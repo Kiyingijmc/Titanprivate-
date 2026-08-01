@@ -20,6 +20,7 @@ import yaml
 from src.core.system_controller import SystemController
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
+from src.strategies.models.almanac import Almanac
 from src.strategies.models.silver_bullet import SilverBullet
 
 
@@ -39,28 +40,35 @@ def make_controller():
 
 
 class TestControllerRegistryInit(unittest.TestCase):
-    def test_init_strategies_activates_silver_bullet(self):
+    def test_init_strategies_activates_baseline_set(self):
+        # Repo baseline since 2026-08-01: SilverBullet (live) + Almanac
+        # (demo-soak canary), ordered by manifest priority (50 before 80).
         c = make_controller()
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 2)
         st = c.strategies[0]
         self.assertIsInstance(st, SilverBullet)
         self.assertEqual(st.name, "SilverBullet")
         self.assertEqual(getattr(st, "timeframe", "M5"), "H1")
         self.assertEqual(c.strategy_ttls["SilverBullet"], 12 * 3600)
+        alm = c.strategies[1]
+        self.assertIsInstance(alm, Almanac)
+        self.assertEqual(alm.name, "Almanac")
+        self.assertEqual(alm.timeframe, "H1")
+        self.assertEqual(c.strategy_ttls["Almanac"], 12 * 3600)
 
 
 class TestControllerRegistryEnableDisable(unittest.TestCase):
     def test_disable_then_enable_round_trips(self):
         c = make_controller()
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 2)
 
         msg = c.disable_strategy("silver_bullet")
         self.assertIn("disabled", msg.lower())
-        self.assertEqual(c.strategies, [])
+        self.assertEqual([type(s) for s in c.strategies], [Almanac])
 
         msg = c.enable_strategy("silver_bullet")
         self.assertIn("enabled", msg.lower())
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 2)
         self.assertIsInstance(c.strategies[0], SilverBullet)
         self.assertEqual(c.strategy_ttls["SilverBullet"], 12 * 3600)
 
@@ -77,7 +85,7 @@ class TestControllerRegistryEnableDisable(unittest.TestCase):
         msg = c.enable_strategy("does_not_exist")
         self.assertIn("Unknown strategy", msg)
         # untouched
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 2)
 
 
 if __name__ == "__main__":

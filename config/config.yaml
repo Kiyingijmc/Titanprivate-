@@ -169,7 +169,7 @@ strategies:
   # NOT statistically validated and not expected to be until the D1 history
   # extension (P10). Manifest status research; enable explicitly for the soak.
   almanac:
-    enabled: false
+    enabled: true   # demo-soak canary, operator-enabled 2026-08-01
     timeframe: "H1"
     entry_hour: 16        # broker hour: first H1 close >= this on the last trading day
     stop_atr_d1: 2.0      # protective stop = 2 x daily ATR (resampled from H1)

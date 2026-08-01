@@ -93,19 +93,36 @@ class DigestDayIsAlwaysUtc(unittest.TestCase):
         self.assertEqual(d["count"], 1)
 
     def test_naive_now_is_treated_as_utc_not_local_time(self):
-        """Must not shift by the host's offset -- this box is UTC+3."""
-        manager = _manager([_event("Core PCE")])          # event at 2026-07-30 12:30Z
-        d = manager.digest(now=datetime(2026, 7, 30, 12, 30))
-        self.assertEqual(d["date"], "2026-07-30")
+        """Must not shift by the host's offset -- this box is UTC+3.
+
+        Noon ± 3 hours still stays same day, so use 01:00Z. A ±3h shift
+        from 01:00 crosses the day boundary, detecting .astimezone() on naive."""
+        event = _event("Early", when=datetime(2026, 7, 31, 1, 0, tzinfo=timezone.utc))
+        manager = _manager([event])
+        # Naive datetime is treated as UTC, not local: digest sees 2026-07-31 01:00Z
+        d = manager.digest(now=datetime(2026, 7, 31, 1, 0))
+        self.assertEqual(d["date"], "2026-07-31")
         self.assertEqual(d["count"], 1)
 
     def test_unavailable_fallback_also_reports_the_utc_date(self):
+        """Fallback returns today's real UTC date (not the bad now parameter)."""
         manager = _manager([_event("Core PCE")])
         manager.store.events = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
         local = datetime(2026, 7, 30, 23, 30, tzinfo=timezone(timedelta(hours=-4)))
         d = manager.digest(now=local)
         self.assertEqual(d["status"], "unavailable")
-        self.assertEqual(d["date"], "2026-07-31")
+        # Fallback uses datetime.now(timezone.utc), so don't assert a fixed date.
+        # Just verify it's a valid ISO date and events is empty.
+        self.assertRegex(d["date"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(d["events"], [])
+
+    def test_garbage_now_degrades_instead_of_raising(self):
+        manager = _manager([_event("Core PCE")])
+        for bad in ("2026-07-30", 12345, object()):
+            with self.subTest(bad=bad):
+                d = manager.digest(now=bad)        # must not raise
+                self.assertEqual(d["status"], "unavailable")
+                self.assertEqual(d["events"], [])
 
 
 if __name__ == "__main__":

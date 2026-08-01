@@ -117,14 +117,14 @@ class NewsManager:
     def digest(self, now=None) -> dict:
         """Today's red-folder events as plain data, for Telegram and the GUI.
         Never raises -- a rendering aid must not be able to break a caller."""
-        now = now or datetime.now(timezone.utc)
-        if now.tzinfo is None:
-            # Treat a naive value as UTC, consistent with CalendarEvent.from_dict and
-            # CalendarStore._as_utc. Do NOT use .astimezone() on a naive datetime -- it
-            # would assume LOCAL time and shift by the host offset.
-            now = now.replace(tzinfo=timezone.utc)
-        now = now.astimezone(timezone.utc)
         try:
+            now = now or datetime.now(timezone.utc)
+            if now.tzinfo is None:
+                # Treat a naive value as UTC, consistent with CalendarEvent.from_dict and
+                # CalendarStore._as_utc. Do NOT use .astimezone() on a naive datetime -- it
+                # would assume LOCAL time and shift by the host offset.
+                now = now.replace(tzinfo=timezone.utc)
+            now = now.astimezone(timezone.utc)
             day = now.date()
             symbols = self.policy.mapped_symbols()
             events = []
@@ -143,7 +143,7 @@ class NewsManager:
             return {"date": day.isoformat(), "count": len(events), "events": events}
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Digest failed: {exc}")
-            return {"date": now.date().isoformat(), "count": 0, "events": [],
+            return {"date": datetime.now(timezone.utc).date().isoformat(), "count": 0, "events": [],
                     "status": "unavailable"}
 
     def snapshot(self, now=None) -> dict:

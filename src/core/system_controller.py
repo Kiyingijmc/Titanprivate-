@@ -110,6 +110,7 @@ class SystemController:
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
+        self.live_spreads = {}   # symbol -> ask-bid from the latest TICK (price units)
         self.active_symbols = set()
         
         # REPORTING
@@ -785,6 +786,9 @@ class SystemController:
             if not symbol: return
             
             self.live_prices[symbol] = float(msg.get('b', 0))
+            if msg.get('a') is not None:
+                # live spread for strategy screens (Gyroscope max_spread_atr_frac)
+                self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
             if self.state == BotState.ACTIVE:
                 closed_candles = self.market_data[symbol].process_tick(msg)
@@ -915,10 +919,12 @@ class SystemController:
         }
 
     async def _run_strategies(self, symbol, tf_df, tf="M5"):
-        # Only strategies triggered by this timeframe's close; skip the SMC
-        # enrichment entirely when none match (e.g. H1 closes with an M5-only
-        # strategy set, and vice versa).
-        active = [s for s in self.strategies if getattr(s, 'timeframe', 'M5') == tf]
+        # Only strategies triggered by this timeframe's close AND scoped to
+        # this symbol (a strategy with a `pairs` list never sees other
+        # symbols); skip the SMC enrichment entirely when none match.
+        active = [s for s in self.strategies
+                  if getattr(s, 'timeframe', 'M5') == tf
+                  and (getattr(s, 'pairs', None) is None or symbol in s.pairs)]
         if not active:
             return
 
@@ -943,7 +949,10 @@ class SystemController:
             'bias': bias_str,
             'liquidity': liq,
             'ny_time': self.time_engine.get_current_ny_string(),
-            'smc_df': enriched_df
+            'smc_df': enriched_df,
+            # latest tick spread (price units); None until a two-sided tick
+            # arrives. getattr: legacy __new__ fixtures predate the attr.
+            'spread': getattr(self, 'live_spreads', {}).get(symbol),
         }
 
         # v15.2: strategies submit Intents; the Arbiter resolves conflicts

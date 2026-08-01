@@ -47,7 +47,7 @@ complete; nothing deploys before Stage B.
 
 | Strategy | Doc | Concept | Stage | Hard blockers |
 |---|---|---|---|---|
-| **Almanac** | [almanac.md](almanac.md) | Turn-of-month index overlay — zero-parameter yardstick + integration canary | 1 | none (½ day) — n=36 until P10 |
+| **Almanac** | [almanac.md](almanac.md) | Turn-of-month index overlay — zero-parameter yardstick + integration canary | 1 — **BUILT 2026-08-01** (research/disabled; awaiting operator enable for the soak) | n=36 until P10 |
 | **Coil** | [coil.md](coil.md) | H1 vol-compression breakout, two-sided STOP bracket | 2 | OCO (P2), bias-exemption policy, grading P8 |
 | **Tide** | [tide.md](tide.md) | H1 overextension reversal — the diversifier | 3 | per-strategy exit profile (P7); RISK-01 now fixed |
 | **Anchor** | [anchor.md](anchor.md) | H4→D1 diversified TSMOM | 4 | D1/H4 data extension (P10), portfolio backtest (P12) |

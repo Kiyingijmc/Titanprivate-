@@ -972,7 +972,7 @@ class SystemController:
                     f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
                     payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
                 )
-                if not self.signal_grader.passes(g['grade']):
+                if not self.signal_grader.passes(g['grade'], strat.name):
                     self.logger.log_event("SIGNAL", strat.name,
                                           f"{symbol} skipped: {g['grade']} below floor "
                                           f"{self.signal_grader.min_grade}")

@@ -1,6 +1,7 @@
 # ALMANAC — Turn-of-Month Index Overlay (D1 decision, H1 execution)
 
-> **Status:** candidate (canary role) · **Family:** calendar anomaly · **Timeframe:** D1 decision,
+> **Status:** BUILT 2026-08-01 (canary; `status: research`, `enabled: false` — awaiting operator
+> enable for the demo soak) · **Family:** calendar anomaly · **Timeframe:** D1 decision,
 > H1 execution · **Origin:** `docs/audit-2026-07-30/05-STRATEGY-ARSENAL.md` §10 ·
 > **Doc version:** 2026-08-01
 
@@ -71,16 +72,16 @@ As designed (not implemented — no `src/strategies/models/almanac.py` exists):
 
 ## 4. Architecture integration
 
-- **Manifest sketch** (`config/manifests/almanac.yaml`, does not exist yet):
+- **Manifest** (`config/manifests/almanac.yaml`, built 2026-08-01):
   ```yaml
   id: almanac
-  version: "0.1"
+  version: "0.1.0"
   class_path: "src.strategies.models.almanac:Almanac"
   family: calendar
-  timeframe: D1          # decision cadence; execution triggers on H1 close
+  timeframe: H1          # H1-routed; the calendar gate lives inside on_new_candle
   requires: []   # raw OHLC only — no SMC dependency (mirrors gyroscope.yaml)
   status: research
-  priority: 10            # low-priority in arbiter tie-breaks; canary, not a capital-seeking strategy
+  priority: 80            # low rank in arbiter tie-breaks (LOWER number = higher priority)
   honors_htf_bias: false   # calendar signal is independent of H1 SMC directional bias
   ```
 - **Class placement:** `src/strategies/models/almanac.py`, subclassing `BaseStrategy`. The D1
@@ -91,15 +92,17 @@ As designed (not implemented — no `src/strategies/models/almanac.py` exists):
   rather than being D1-routed, since the platform has no dual-timeframe routing mechanism today.
   This should be confirmed against `base_strategy.py`'s actual contract before implementation, not
   assumed.
-- **Config block sketch** (`config/config.yaml`, under `strategies:`):
-  ```yaml
-  almanac:
-    enabled: false
-    timeframe: "H1"          # per the routing note above
-    stop_atr: 2.0
-    exit_trading_day: 3      # exit at close of 3rd trading day of the new month
-    pairs: ["US30", "US100"]
-  ```
+- **Config** (`config/config.yaml`, built 2026-08-01): `strategies.almanac`
+  (`enabled: false`, `entry_hour: 16` broker, `stop_atr_d1: 2.0`,
+  `atr_period_d1: 14` — 14 not 20 because the 500-bar live H1 buffer cannot
+  feed ATR(20,D1) after dropping the partial current day, `tp_risk_mult: 10.0`
+  far-anchor TP that keeps the ratchet dormant while avoiding a tp=0
+  registration, `pairs: [US30, US100]`), plus
+  `trade_management.time_exits.Almanac: {exit_trading_day: 3}` (the exit — a
+  shared-calendar hook in `TradeManager`, `src/analysis/trading_days.py`,
+  firing at the start of trading day 4 as the documented approximation of
+  "close of TD3") and `signal_grading.per_strategy_min_grade.Almanac: "C"`
+  (the P8 carve-out below, made concrete).
 - **FeatureBus resources:** none beyond ATR(20, D1), already available in the enrichment
   pipeline's OHLC/ATR path; no SMC-specific resource needed. A calendar/trading-day-index helper
   (last trading day of month, Nth trading day of month) does not currently exist in the repo and

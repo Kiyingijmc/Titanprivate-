@@ -1,0 +1,12 @@
+# config/manifests/almanac.yaml
+# Turn-of-month index canary (docs/strategies/almanac.md). status: research —
+# never auto-activates; the operator enables it explicitly for the demo soak.
+id: almanac
+version: "0.1.0"
+class_path: "src.strategies.models.almanac:Almanac"
+family: calendar
+timeframe: H1
+requires: []
+status: research
+priority: 80
+honors_htf_bias: false

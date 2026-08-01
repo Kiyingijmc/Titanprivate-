@@ -296,6 +296,17 @@ class StateManager:
         except Exception:
             return None
 
+    def get_order_meta(self, t):
+        """(strategy, time_placed) for a ticket, or None. Read-only helper for
+        TradeManager's per-strategy policies (time exits)."""
+        try:
+            r = self.conn.execute(
+                "SELECT strategy, time_placed FROM active_orders WHERE ticket_id=?",
+                (t,)).fetchone()
+            return (r['strategy'], r['time_placed']) if r else None
+        except Exception:
+            return None
+
     def get_ratchet_state(self, t):
         try:
             r = self.conn.execute("SELECT ratchet_level, initial_entry, initial_tp FROM active_orders WHERE ticket_id=?", (t,)).fetchone()

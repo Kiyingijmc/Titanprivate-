@@ -90,7 +90,7 @@ def eligible_signals(
         flags["is_event"]
         & (flags["event_dir"] != 0)
         & flags["closes_beyond_mid"]
-        & (s_minus <= s_lo)
+        & (s_minus < s_lo)
         & confirm.fillna(False)
     )
     idx = np.flatnonzero(ok.to_numpy())

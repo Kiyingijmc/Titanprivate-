@@ -138,33 +138,47 @@ def _spike_at(df, i, up=True, rng=10.0):
 
 class TestEligibleSignals(unittest.TestCase):
     def test_fresh_confirmed_spike_is_eligible(self):
-        df = _spike_at(_flat_df(260), 250, up=True)
+        # Warm-up DOWN spike at bar 201 seeds nonzero S- background (s_lo = 0.9726).
+        # Probe UP spike at bar 250 arrives at s_minus = 0.7502 < s_lo.
+        # This demonstrates strict < inequality with a fresh (cool) signal.
+        df = _spike_at(_flat_df(260), 201, up=False)  # warmup
+        df = _spike_at(df, 250, up=True)  # probe
         out = eligible_signals(df)
-        self.assertEqual(len(out), 1)
-        row = out.iloc[0]
+        # Filter for UP events only (the probe); warmup is DOWN
+        up_events = out[out["direction"] == 1]
+        self.assertEqual(len(up_events), 1)
+        row = up_events.iloc[0]
         self.assertEqual(int(row["event_idx"]), 250)
         self.assertEqual(int(row["signal_idx"]), 251)
         self.assertEqual(int(row["direction"]), 1)
         self.assertAlmostEqual(float(row["event_range"]), 10.0)
 
     def test_unconfirmed_spike_not_eligible(self):
-        # confirm bar closes back BELOW the event bar's midpoint -> reject
-        df = _spike_at(_flat_df(260), 250, up=True)
+        # Warm-up DOWN spike at 201, probe UP spike at 250.
+        # Modify confirm bar (251) to close BELOW the event bar's midpoint -> reject.
+        df = _spike_at(_flat_df(260), 201, up=False)
+        df = _spike_at(df, 250, up=True)
         df.loc[251, "close"] = 100.0 + 10.0 * 0.3  # below mid (105.0)
-        self.assertEqual(len(eligible_signals(df)), 0)
+        up_events = eligible_signals(df)[eligible_signals(df)["direction"] == 1]
+        self.assertEqual(len(up_events), 0)
 
     def test_hot_s_minus_not_eligible(self):
-        # two spikes close together: the second arrives with S-minus elevated
-        df = _spike_at(_flat_df(280), 250, up=True)
-        df = _spike_at(df, 255, up=True)
-        out = eligible_signals(df)
-        self.assertEqual(list(out["event_idx"]), [250])
+        # Warm-up DOWN at 201 seeds s_lo = 0.9726.
+        # First probe UP at 250: s_minus = 0.7502 < s_lo -> ELIGIBLE.
+        # Second probe UP at 255: after event at 250, s_minus = 3.323 > s_lo -> NOT ELIGIBLE.
+        df = _spike_at(_flat_df(260), 201, up=False)
+        df = _spike_at(df, 250, up=True)  # cool
+        df = _spike_at(df, 255, up=True)  # hot (high s_minus from event at 250)
+        up_events = eligible_signals(df)[eligible_signals(df)["direction"] == 1]
+        self.assertEqual(list(up_events["event_idx"]), [250])
 
     def test_down_event_direction(self):
-        df = _spike_at(_flat_df(260), 250, up=False)
-        out = eligible_signals(df)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(int(out.iloc[0]["direction"]), -1)
+        # Warm-up UP at 201, probe DOWN at 250.
+        df = _spike_at(_flat_df(260), 201, up=True)  # warmup
+        df = _spike_at(df, 250, up=False)  # probe (down)
+        down_events = eligible_signals(df)[eligible_signals(df)["direction"] == -1]
+        self.assertEqual(len(down_events), 1)
+        self.assertEqual(int(down_events.iloc[0]["direction"]), -1)
 
     def test_s_lo_threshold_is_percentile_after_warmup(self):
         s = pd.Series(np.arange(400, dtype=float))
@@ -174,10 +188,11 @@ class TestEligibleSignals(unittest.TestCase):
 
 class TestEligibleSignalsHour(unittest.TestCase):
     def test_hour_from_time_column(self):
-        df = _spike_at(_flat_df(260), 250, up=True)
+        df = _spike_at(_flat_df(260), 201, up=False)
+        df = _spike_at(df, 250, up=True)
         df["time"] = pd.date_range("2024-01-01", periods=260, freq="h")
-        out = eligible_signals(df)
-        self.assertEqual(int(out.iloc[0]["hour"]), 250 % 24)
+        up_events = eligible_signals(df)[eligible_signals(df)["direction"] == 1]
+        self.assertEqual(int(up_events.iloc[0]["hour"]), 250 % 24)
 
 
 if __name__ == "__main__":

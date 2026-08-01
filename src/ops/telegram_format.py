@@ -195,23 +195,23 @@ def format_news_digest(digest: dict, tz_offset_h: float = 3.0) -> str:
         events = list((digest or {}).get("events") or [])
         date = (digest or {}).get("date", "today")
         if not events:
-            return f"📅 <b>News {date}</b>\nNo high-impact events scheduled."
-        lines = [f"📅 <b>News {date}</b> — {len(events)} high-impact"]
+            return f"📅 <b>News {esc(date)}</b>\nNo high-impact events scheduled."
+        lines = [f"📅 <b>News {esc(date)}</b> — {len(events)} high-impact"]
         by_currency: dict = {}
         for event in events:
             by_currency.setdefault(event.get("currency", "?"), []).append(event)
         for currency, group in by_currency.items():
-            lines.append(f"\n<b>{currency}</b>")
+            lines.append(f"\n<b>{esc(currency)}</b>")
             for event in group:
                 local, utc = _local(event.get("when_utc", ""), tz_offset_h)
                 stamp = f"{local} ({utc})" if local else "time unknown"
-                lines.append(f"  • {stamp} — {event.get('title', 'untitled')}")
+                lines.append(f"  • {stamp} — {esc(event.get('title', 'untitled'))}")
                 fc, pv = event.get("forecast"), event.get("previous")
                 if fc or pv:
-                    lines.append(f"    forecast {fc or '—'} · previous {pv or '—'}")
+                    lines.append(f"    forecast {esc(fc) if fc else '—'} · previous {esc(pv) if pv else '—'}")
                 affects = event.get("affects") or []
                 if affects:
-                    lines.append(f"    affects: {', '.join(affects)}")
+                    lines.append(f"    affects: {', '.join(esc(a) for a in affects)}")
         return "\n".join(lines)
     except Exception:
         return "📅 News digest unavailable."
@@ -223,13 +223,13 @@ def format_news_alert(event: dict, tz_offset_h: float = 3.0) -> str:
         event = event or {}
         local, utc = _local(event.get("when_utc", ""), tz_offset_h)
         stamp = f"{local} ({utc})" if local else "shortly"
-        parts = [f"⚠️ <b>{event.get('currency', '?')} {event.get('title', 'event')}</b> at {stamp}"]
+        parts = [f"⚠️ <b>{esc(event.get('currency', '?'))} {esc(event.get('title', 'event'))}</b> at {stamp}"]
         fc, pv = event.get("forecast"), event.get("previous")
         if fc or pv:
-            parts.append(f"forecast {fc or '—'} · previous {pv or '—'}")
+            parts.append(f"forecast {esc(fc) if fc else '—'} · previous {esc(pv) if pv else '—'}")
         affects = event.get("affects") or []
         if affects:
-            parts.append(f"holding: {', '.join(affects)}")
+            parts.append(f"holding: {', '.join(esc(a) for a in affects)}")
         return "\n".join(parts)
     except Exception:
         return "⚠️ News alert unavailable."

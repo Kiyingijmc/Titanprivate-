@@ -139,6 +139,21 @@ _DIGEST = {
     ],
 }
 
+_THREE_EVENT_DIGEST = {
+    "date": "2026-07-30", "count": 3,
+    "events": [
+        {"when_utc": "2026-07-30T12:30:00+00:00", "currency": "USD",
+         "title": "Core PCE Price Index m/m", "forecast": "0.3%",
+         "previous": "0.2%", "affects": ["EURUSD"]},
+        {"when_utc": "2026-07-30T18:00:00+00:00", "currency": "GBP",
+         "title": "BOE Official Bank Rate", "forecast": "4.00%",
+         "previous": "4.25%", "affects": ["GBPJPY"]},
+        {"when_utc": "2026-07-30T20:00:00+00:00", "currency": "USD",
+         "title": "Chicago PMI", "forecast": "45.0", "previous": "42.5",
+         "affects": ["EURUSD"]},
+    ],
+}
+
 
 class DigestRendering(unittest.TestCase):
     def test_includes_every_event_title(self):
@@ -151,10 +166,13 @@ class DigestRendering(unittest.TestCase):
         self.assertIn("15:30", text)   # 12:30Z at +3
         self.assertIn("12:30Z", text)
 
-    def test_groups_by_currency(self):
-        text = format_news_digest(_DIGEST)
-        self.assertIn("USD", text)
-        self.assertIn("GBP", text)
+    def test_same_currency_events_are_grouped_not_interleaved(self):
+        text = format_news_digest(_THREE_EVENT_DIGEST)
+        first_usd = text.index("Core PCE Price Index m/m")
+        second_usd = text.index("Chicago PMI")
+        gbp = text.index("BOE Official Bank Rate")
+        self.assertLess(first_usd, second_usd)
+        self.assertLess(second_usd, gbp)  # both USD before GBP -> grouped, not interleaved
 
     def test_shows_forecast_and_previous(self):
         text = format_news_digest(_DIGEST)
@@ -172,6 +190,24 @@ class DigestRendering(unittest.TestCase):
     def test_malformed_digest_does_not_raise(self):
         self.assertIsInstance(format_news_digest({}), str)
         self.assertIsInstance(format_news_digest({"events": [{}]}), str)
+
+
+class DigestEscapesHtml(unittest.TestCase):
+    def test_ampersand_and_angle_brackets_in_a_title_are_escaped(self):
+        digest = {"date": "2026-07-30", "count": 1, "events": [
+            {"when_utc": "2026-07-30T12:30:00+00:00", "currency": "USD",
+             "title": "Import & Export Price Index <m/m>", "forecast": None,
+             "previous": None, "affects": []}]}
+        text = format_news_digest(digest)
+        self.assertIn("&amp;", text)
+        self.assertIn("&lt;m/m&gt;", text)
+        self.assertNotIn("Index <m/m>", text)
+
+    def test_alert_escapes_the_same_way(self):
+        event = {"when_utc": "2026-07-30T12:30:00+00:00", "currency": "USD",
+                 "title": "A & B", "forecast": None, "previous": None,
+                 "affects": ["EURUSD"]}
+        self.assertIn("&amp;", format_news_alert(event))
 
 
 class AlertRendering(unittest.TestCase):

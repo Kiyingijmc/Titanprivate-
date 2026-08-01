@@ -39,6 +39,7 @@ def build_snapshot(controller) -> dict:
         },
         "registry": [{k: r.get(k) for k in _REGISTRY_FIELDS} for r in controller.registry.report()],
         "dollar": _dollar_block(controller),
+        "news": _news_block(controller),
     }
 
 
@@ -95,6 +96,22 @@ def _dollar_block(controller) -> dict:
         pass
 
     return {"source": "unavailable", "value": None, "bias": 0.0, "trend": [], "contributors": []}
+
+
+def _news_block(controller) -> dict:
+    """Economic-calendar snapshot for the GUI. Defensive by the same rule as
+    _dollar_block: a news fault must never break the whole payload, so any
+    problem degrades to "unavailable" rather than propagating."""
+    try:
+        manager = getattr(controller, "news_manager", None)
+        if manager is None:
+            return {"status": "unavailable"}
+        data = manager.snapshot()
+        if not isinstance(data, dict):
+            return {"status": "unavailable"}
+        return data
+    except Exception:
+        return {"status": "unavailable"}
 
 
 def _map_position(controller, p: dict) -> dict:

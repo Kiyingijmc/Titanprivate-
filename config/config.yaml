@@ -95,6 +95,7 @@ signal_grading:
   # advance schedule deterministic while grades are still journaled.
   per_strategy_min_grade:
     Almanac: "C"
+    Gyroscope: "C"
 
 # v14.4: In-trade management. The Fibonacci ratchet (BE at 38.2%, bank 30% at
 # 61.8%, bank 50% at 88.6%) is always on. Runner mode additionally REMOVES the
@@ -117,6 +118,7 @@ trade_management:
   # exit_trading_day+1 of the following month). Inert for absent strategies.
   time_exits:
     Almanac: { exit_trading_day: 3 }
+    Gyroscope: { max_bars: 48 }   # v2b gate: close after 48 H1 bars
 
 strategies:
   # 1. Silver Bullet (FVG displacement, H1)
@@ -139,11 +141,12 @@ strategies:
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD", "US100", "ETHUSD", "XTIUSD"]
 
-  # 2. Gyroscope (Kalman drift + SPRT, H1) — arsenal #1, Plan 07.
-  # status: research in config/manifests/gyroscope.yaml is the live gate
-  # (registry never auto-activates research); enabled:true here keeps the
-  # offline gate replay alive. Defaults below are the PRE-REGISTERED gate
-  # values (docs/research/2026-07-14-gyroscope-gate.md) — do not tune.
+  # 2. Gyroscope v2 (Kalman drift + innovation-SPRT, H1) — arsenal #1.
+  # v1 velocity-SPRT NO-GO 2026-07-14; v2b innovation-SPRT GO 7/7
+  # (docs/research/2026-08-01-gyroscope2b-gate-results.md). Values below are
+  # the v2b PRE-REGISTERED gate values — do not tune. Trend-prone universe
+  # only (FX excluded by mechanism, audit F8). max_bars_in_trade is enforced
+  # live via trade_management.time_exits (Gyroscope: max_bars).
   gyroscope:
     enabled: true
     timeframe: "H1"
@@ -151,15 +154,17 @@ strategies:
     q_atr_frac: 0.05
     r_frac: 1.0
     sprt: { alpha: 0.05, beta: 0.20, delta: 0.40 }
+    sprt_on: "innovation"
+    z_confirm: 1.0
     nis_window: 50
+    nis_persist: 10
     k_sl: 3.0
     sl_atr_floor: 0.8
     rr_target: 2.0
     max_bars_in_trade: 48
-    reentry_lockout: 5
+    reentry_lockout: 12
     max_spread_atr_frac: 0.10
-    pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
-            "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
+    pairs: ["BTCUSD", "ETHUSD", "XAUUSD", "US30", "US100", "XTIUSD"]
 
   # 3. Almanac — turn-of-month index canary (docs/strategies/almanac.md).
   # ZERO fitted parameters by design: long US30/US100 from the last trading

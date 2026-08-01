@@ -1,9 +1,14 @@
 # GYROSCOPE — Kalman drift estimator + Wald SPRT decision gate (H1)
 
-> **Status:** research NO-GO (2026-07-15) · **Family:** time-series momentum (H1, SPRT-gated
-> velocity filter) · **Timeframe:** H1 ·
+> **Status:** v1 research NO-GO (2026-07-15); **v2b GO 7/7 (2026-08-01)** — audit
+> `docs/research/2026-08-01-gyroscope-audit.md`; gates `2026-08-01-gyroscope2-gate*.md`
+> (v2: 6/7, flip-rate metric mis-specified) and `2026-08-01-gyroscope2b-gate*.md`
+> (owner-ratified metric, GO: +0.057R net managed, OOS +0.033R, bootstrap 5% LB +0.003R,
+> 1.03 sig/day, 114h median episode gap). Manifest stays `research` until the 5-step
+> demo-canary build in the 2b results doc lands · **Family:** time-series momentum (H1, SPRT-gated
+> velocity filter; v2: innovation-SPRT) · **Timeframe:** H1 ·
 > **Origin:** `docs/research/2026-07-12-novel-arsenal-brainstorm.md` §1 (concept) and §14
-> (architectural blueprint) · **Doc version:** 2026-08-01
+> (architectural blueprint) · **Doc version:** 2026-08-01 (v2 addendum)
 
 ## 1. Thesis and return source
 

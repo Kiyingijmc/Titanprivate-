@@ -72,7 +72,12 @@ class TestReplayReproducesGolden(unittest.TestCase):
 
     def test_replay_reproduces_golden_fixture(self):
         cfg = _load_config()
-        sb = SilverBullet(cfg["strategies"]["silver_bullet"], _NullLogger())
+        # The golden replays a synthetic SYMBOL, so the strategy must run
+        # unscoped (per-strategy pair scoping, 2026-08-01) — same fix as the
+        # parity capture harness; no signal-affecting config is touched.
+        sb_cfg = dict(cfg["strategies"]["silver_bullet"])
+        sb_cfg.pop("pairs", None)
+        sb = SilverBullet(sb_cfg, _NullLogger())
 
         _, h1 = _golden_h1()
         records = replay(h1, SYMBOL, [sb], cfg, window=300, start=60)

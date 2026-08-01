@@ -102,3 +102,51 @@ class TestTimeExit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _StateGyro(_State):
+    def __init__(self):
+        super().__init__()
+        self.meta[3] = ("Gyroscope", _epoch(2026, 8, 3, 10))
+
+
+def make_tm_gyro(config=None):
+    return TradeManager(_Logger(), _StateGyro(), _Risk(), config=config)
+
+
+CFG_BARS = {"trade_management": {"time_exits": {
+    "Almanac": {"exit_trading_day": 3},
+    "Gyroscope": {"max_bars": 48},
+}}}
+
+
+class TestMaxBarsTimeExit(unittest.TestCase):
+    """Gyroscope v2b GO (docs/research/2026-08-01-gyroscope2b-gate-results.md):
+    duration-based variant — close once held >= max_bars H1 bars (hours)."""
+
+    def _sync(self, tm, when, tickets):
+        with patch("src.execution.trade_manager.time.time", return_value=when):
+            return tm.sync_positions([pos(t) for t in tickets], {"US30": 40000.0})
+
+    def test_closes_at_48_hours(self):
+        cmds = self._sync(make_tm_gyro(CFG_BARS), _epoch(2026, 8, 5, 10), (3,))
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0]["ticket"], 3)
+        self.assertEqual(cmds[0]["comment"], "Time Exit")
+
+    def test_holds_before_48_hours(self):
+        cmds = self._sync(make_tm_gyro(CFG_BARS), _epoch(2026, 8, 5, 9), (3,))
+        self.assertEqual(cmds, [])
+
+    def test_calendar_rule_still_works_alongside(self):
+        cmds = self._sync(make_tm_gyro(CFG_BARS), _epoch(2026, 8, 6), (1, 3))
+        self.assertEqual({c["ticket"] for c in cmds}, {1, 3})
+
+    def test_unlisted_strategy_untouched(self):
+        cmds = self._sync(make_tm_gyro(CFG_BARS), _epoch(2026, 8, 20), (2,))
+        self.assertEqual(cmds, [])
+
+    def test_plain_int_rule_stays_calendar(self):
+        cfg = {"trade_management": {"time_exits": {"Almanac": 3}}}
+        cmds = self._sync(make_tm_gyro(cfg), _epoch(2026, 8, 6), (1,))
+        self.assertEqual(len(cmds), 1)

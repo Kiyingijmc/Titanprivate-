@@ -83,7 +83,12 @@ def _make_controller():
     c = SystemController.__new__(SystemController)
     c.config = cfg
     c.logger = logger
-    c.strategies = [SilverBullet(cfg['strategies']['silver_bullet'], logger)]
+    # The harness drives a synthetic SYMBOL, so the strategy must run
+    # unscoped: drop the live pairs list (per-strategy pair scoping,
+    # 2026-08-01) without touching any signal-affecting config.
+    sb_cfg = dict(cfg['strategies']['silver_bullet'])
+    sb_cfg.pop('pairs', None)
+    c.strategies = [SilverBullet(sb_cfg, logger)]
     c.signal_grader = SignalGrader(cfg)
     c.time_engine = _StubTimeEngine()
     c.market_data = {SYMBOL: _StubStore(h1_df=None)}

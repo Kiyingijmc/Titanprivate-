@@ -89,6 +89,12 @@ arbiter:
 signal_grading:
   enabled: true
   min_grade: "B"
+  # Minimal P8 carve-out: per-strategy grade floors by strategy NAME. The
+  # grader's factors are SMC-shaped, so a non-SMC canary (Almanac) would be
+  # probabilistically gated by irrelevant factors; "C" makes its known-in-
+  # advance schedule deterministic while grades are still journaled.
+  per_strategy_min_grade:
+    Almanac: "C"
 
 # v14.4: In-trade management. The Fibonacci ratchet (BE at 38.2%, bank 30% at
 # 61.8%, bank 50% at 88.6%) is always on. Runner mode additionally REMOVES the
@@ -106,6 +112,11 @@ trade_management:
     tighten_on_giveback: true
     giveback_frac: 0.75
     tight_trail_frac: 0.10
+  # Calendar time exits by strategy NAME (src/analysis/trading_days.py):
+  # close once the turn-of-month window has passed (start of trading day
+  # exit_trading_day+1 of the following month). Inert for absent strategies.
+  time_exits:
+    Almanac: { exit_trading_day: 3 }
 
 strategies:
   # 1. Silver Bullet (FVG displacement, H1)
@@ -150,7 +161,23 @@ strategies:
     pairs: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
             "GBPJPY", "XAUUSD", "US30", "BTCUSD"]
 
-  # 3. MA-slope baseline — Gyroscope gate criterion 6 reference ONLY.
+  # 3. Almanac — turn-of-month index canary (docs/strategies/almanac.md).
+  # ZERO fitted parameters by design: long US30/US100 from the last trading
+  # day of the month through trading day 3 of the next. Role = integration
+  # canary (signals known months ahead → live-vs-backtest divergence is an
+  # infrastructure bug) + standing complexity baseline. n=36 on current data:
+  # NOT statistically validated and not expected to be until the D1 history
+  # extension (P10). Manifest status research; enable explicitly for the soak.
+  almanac:
+    enabled: true   # demo-soak canary, operator-enabled 2026-08-01
+    timeframe: "H1"
+    entry_hour: 16        # broker hour: first H1 close >= this on the last trading day
+    stop_atr_d1: 2.0      # protective stop = 2 x daily ATR (resampled from H1)
+    atr_period_d1: 14     # 14 not 20: the 500-bar live H1 buffer can't feed ATR(20,D1)
+    tp_risk_mult: 10.0    # far TP anchor: keeps ratchet dormant, avoids tp=0 registration
+    pairs: ["US30", "US100"]
+
+  # 4. MA-slope baseline — Gyroscope gate criterion 6 reference ONLY.
   # Never a live candidate; stays research forever.
   ma_slope_baseline:
     enabled: true
@@ -168,3 +195,35 @@ ops:
     enabled: true
     bind: 127.0.0.1
     port: 8787
+
+# Economic calendar. ForexFactory is the PRIMARY source; MT5 is a fallback
+# added in a later session. Only High ("red folder") events halt trading, and
+# only for symbols exposed to the event's currency.
+news:
+  enabled: true
+  refresh_interval_min: 60
+  # Retry cadence while trading is halted on a stale cache -- much shorter
+  # than refresh_interval_min so a boot-time fetch failure recovers in
+  # minutes, not up to an hour, without hammering the feed every loop tick.
+  stale_retry_interval_min: 1
+  window_pre_min: 60
+  window_post_min: 30
+  max_cache_age_hours: 48
+  cache_path: "data/news/calendar.json"
+  # The live feed's Date/Time columns are UTC (verified against FOMC 6:00pm =
+  # 18:00Z). This key exists only so an operator can hotfix a future feed
+  # timezone change without a code deploy -- leave it "UTC" otherwise.
+  csv_timezone: "UTC"
+  symbol_currencies:
+    EURUSD: [EUR, USD]
+    GBPUSD: [GBP, USD]
+    USDJPY: [USD, JPY]
+    AUDUSD: [AUD, USD]
+    USDCAD: [USD, CAD]
+    GBPJPY: [GBP, JPY]
+    XAUUSD: [USD]
+    US30:   [USD]
+    US100:  [USD]
+    BTCUSD: [USD]
+    ETHUSD: [USD]
+    XTIUSD: [USD]

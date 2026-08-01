@@ -1,0 +1,14 @@
+# config/manifests/almanac.yaml
+# Turn-of-month index canary (docs/strategies/almanac.md). status: demo —
+# operator-enabled for the FBS demo soak 2026-08-01 as the integration canary
+# (its role is divergence detection, not capital-seeking; n=36 means it is NOT
+# statistically validated and is not claimed to be).
+id: almanac
+version: "0.1.0"
+class_path: "src.strategies.models.almanac:Almanac"
+family: calendar
+timeframe: H1
+requires: []
+status: demo
+priority: 80
+honors_htf_bias: false

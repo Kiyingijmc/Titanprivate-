@@ -99,12 +99,12 @@ unvalidated in its canonical form on 2026-07-12 (commit `b4450f8`, "remove unapp
 (Unicorn, ICT_OTE, CRT); SilverBullet-only arsenal" —
 `docs/superpowers/plans/2026-07-12-plan-01-sanitization.md`).
 
-**What the graveyard teaches the next candidate:** a strategy can be *removed* (code deleted,
-manifest gone) without being *falsified* in its best form — Unicorn's status is "unvalidated in
-canonical form," not "canonically NO-GO'd" like OTE. If Unicorn (or a Breaker+FVG-overlap idea in
-general) is ever revisited, it needs its own pre-registered gate from the canonical definition, not
-an appeal to the pre-rewrite numbers above, which describe a materially different (deviant,
-non-canonical) implementation.
+**2026-08-01 UPDATE — canonical form now falsified.** The pre-registered gate this section
+called for was run (`docs/research/2026-08-01-ict-revival-gate-results.md`): canonical
+Unicorn (H4+H1 bias → H1 leg → breaker∩FVG zone → retest + M5 MSS, hand-verified rig) is
+**NO-GO everywhere** — pooled −0.209R managed (n=562, PF 0.66), negative every year
+2023–26, 0/5 classes pass, under both exit models. Status upgraded from "unvalidated" to
+**canonically falsified**.
 
 ---
 
@@ -125,11 +125,12 @@ costs. CRT also never received a canonical rewrite; it was removed unvalidated o
 (commit `b4450f8`), in the same sanitization pass and for the same reasoning as Unicorn: the
 canonical-rewrite sequence was terminated after OTE's decisive NO-GO before reaching CRT.
 
-**What the graveyard teaches the next candidate:** the deployed CRT was never actually a test of
-the CRT model — it was a test of a PDH/PDL sweep-and-fade heuristic wearing CRT's name. Any future
-work under this name must build the canonical HTF-range→LTF-MSS→retest structure from scratch and
-gate it exactly as OTE was gated; the existing falsification data says nothing about that model,
-only about the simplified stand-in.
+**2026-08-01 UPDATE — canonical form now falsified.** The canonical HTF-range → raid →
+close-back-inside → retest → M5 MSS → opposite-extreme model was built from scratch and
+gated exactly as OTE was (`docs/research/2026-08-01-ict-revival-gate-results.md`):
+**NO-GO everywhere** — pooled −0.150R managed (n=1,882, PF 0.77), negative every year,
+0/5 classes, both exit models. With OTE (07-11) and Unicorn (08-01), all three retired
+ICT models are now falsified in canonical, confirmation-disciplined form on this broker.
 
 ---
 

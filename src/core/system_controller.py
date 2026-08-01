@@ -176,8 +176,15 @@ class SystemController:
         # RISK-01: restore today's drawdown anchor before the first heartbeat.
         # Without this, every restart re-anchored the 3% breaker to whatever
         # equity happened to be live at boot, discarding the day's realised
-        # drawdown. Strictly monotone: an absent or stale row changes nothing,
-        # so this can only ever KEEP an anchor the old code threw away.
+        # drawdown. An absent or stale row changes nothing here, so boot
+        # restore alone can only KEEP an anchor the old code threw away.
+        #
+        # That is NOT by itself sufficient, and the original design's claim
+        # that the whole change was "strictly monotone" was FALSE (RS-RISK-01
+        # MAJOR-1): safety also depends on the anchor's day being rolled on the
+        # same key the row is stamped with. See _roll_trading_day_if_needed --
+        # without it a stale anchor was re-labelled with the new day's key here
+        # and restored for the rest of that day.
         self._last_persisted_anchor = None
         self._current_day_key = self._trading_day_key(datetime.now(self.uganda_tz))
         try:

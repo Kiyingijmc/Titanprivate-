@@ -57,10 +57,22 @@ class TestFlagEvents(unittest.TestCase):
         self.assertFalse(out["is_event"].any())
 
     def test_median_excludes_current_bar(self):
-        # 250 quiet bars, tr_med at the spike must be the QUIET median (1.0),
-        # not influenced by the spike itself
-        out = flag_events(self._spike_df(), q=2.5, window=200)
-        self.assertAlmostEqual(out["tr_med"].iloc[-1], 1.0)
+        # Small window + distinct TR values: TRs=[1,2,3,4,5], window=3.
+        # At last bar: trailing-exclusive median = median(2,3,4) = 3.0.
+        # If buggy (no shift), would be median(3,4,5) = 4.0.
+        # Build bars with open=close=100 to avoid gaps; high/low set TR.
+        bars = []
+        for tr_val in [1.0, 2.0, 3.0, 4.0, 5.0]:
+            bars.append({
+                "open": 100.0,
+                "high": 100.0 + tr_val / 2.0,
+                "low": 100.0 - tr_val / 2.0,
+                "close": 100.0,
+            })
+        df = pd.DataFrame(bars)
+        out = flag_events(df, q=2.5, window=3)
+        # At the last bar, tr_med must be median of the previous 3 TRs (2, 3, 4) = 3.0
+        self.assertAlmostEqual(out["tr_med"].iloc[-1], 3.0)
 
     def test_quiet_bars_are_not_events(self):
         out = flag_events(_flat_df(300), q=2.5, window=200)

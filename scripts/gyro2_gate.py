@@ -43,6 +43,10 @@ PARAMS = {
     "k_sl": 3.0, "sl_atr_floor": 0.8, "rr_target": 2.0,
     "reentry_lockout": 12, "max_bars_in_trade": 48,
 }
+MA_PARAMS = {  # MaSlopeBaseline gate (2026-08-01-ma-slope-baseline-gate.md); LOCKED
+    "ma_window": 24, "stop_atr": 1.0, "rr_target": 2.0,
+    "max_bars_in_trade": 48,   # shared exit model, same as gyroscope2b
+}
 SYMS = ["BTCUSD", "ETHUSD", "XAUUSD", "US30", "US100", "XTIUSD"]
 SPREADS = {  # broker points, measured (universe screen 2026-07-28 + specs.json symbols)
     "BTCUSD": 1000, "ETHUSD": 193, "XAUUSD": 20,
@@ -172,6 +176,73 @@ def collect_signals_strategy(df, params):
     return out
 
 
+def collect_signals_ma(df, params, start_at=WINDOW):
+    """Fast path for MaSlopeBaseline: SMA(w) slope-sign flip, replicating the
+    windowed live feed exactly — including the warmup-entry artifact (first
+    evaluated bar has prev_sign 0, so it enters on any non-zero slope)."""
+    highs = df["high"].tolist()
+    lows = df["low"].tolist()
+    closes = df["close"].tolist()
+    atrs = atr_series(highs, lows, closes)
+    w = int(params["ma_window"])
+    # Bit-identical arithmetic with the strategy's pandas slice-means: a
+    # near-zero slope's SIGN flips on the last ulp, so prefix-sum shortcuts
+    # diverge (seen: 1-bar-shifted flip trains). Same op, same floats.
+    closes_ser = df["close"]
+    signals = []
+    prev = 0
+    for i in range(start_at - 1, len(closes)):
+        ma_now = float(closes_ser.iloc[i - w + 1:i + 1].mean())
+        ma_prev = float(closes_ser.iloc[i - w:i].mean())
+        slope = ma_now - ma_prev
+        sign = 1 if slope > 0 else (-1 if slope < 0 else 0)
+        fired = sign != 0 and sign != prev
+        prev = sign
+        if not fired:
+            continue
+        atr = atrs[i]
+        if atr <= 0:
+            continue
+        price = float(closes[i])
+        risk = params["stop_atr"] * atr
+        signals.append({
+            "i": i, "dir": "BUY" if sign > 0 else "SELL", "price": price,
+            "sl": price - risk if sign > 0 else price + risk,
+            "tp": price + params["rr_target"] * risk if sign > 0
+                  else price - params["rr_target"] * risk,
+        })
+    return signals
+
+
+def collect_signals_strategy_ma(df, params):
+    """Parity oracle: drive the real MaSlopeBaseline with a sliding window."""
+    from src.strategies.models.ma_slope_baseline import MaSlopeBaseline
+
+    class _NullLogger:
+        def log_event(self, *a, **k):
+            pass
+
+    cfg = {"enabled": True, "timeframe": "H1",
+           "ma_window": params["ma_window"], "stop_atr": params["stop_atr"],
+           "rr_target": params["rr_target"]}
+    strat = MaSlopeBaseline(cfg, _NullLogger())
+    df = df.copy()
+    df["time"] = df["time"].astype(str)
+    out = []
+    for i in range(WINDOW - 1, len(df)):
+        win = df.iloc[i - WINDOW + 1:i + 1]
+        coro = strat.on_new_candle(win, {"symbol": "PARITY"})
+        try:
+            coro.send(None)
+            raise RuntimeError("on_new_candle awaited unexpectedly")
+        except StopIteration as e:
+            dec = e.value
+        if dec:
+            out.append({"i": i, "dir": dec["signal"], "price": dec["price"],
+                        "sl": dec["sl"], "tp": dec["tp"]})
+    return out
+
+
 # ------------------------------------------------- managed replay + time-stop
 def _replay_managed_c_ts(tr, highs, lows, closes, max_bars, tighten=True):
     """poc_sb_stops.replay_overlay(arm='C', signal='giveback') copied
@@ -261,12 +332,12 @@ def load_specs():
 
 
 # ------------------------------------------------------------------ run
-def run_symbol(sym, df, params, specs):
+def run_symbol(sym, df, params, specs, collector=collect_signals):
     highs = df["high"].tolist()
     lows = df["low"].tolist()
     closes = df["close"].tolist()
     times = df["time"].astype(str).tolist()
-    signals = collect_signals(df, params)
+    signals = collector(df, params)
     split_i = int(len(closes) * SPLIT)
     trades, busy_until, skipped_busy = [], -1, 0
     for s in signals:
@@ -390,6 +461,8 @@ def git_sha():
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--strategy", choices=["gyroscope", "ma_slope"],
+                    default="gyroscope")
     ap.add_argument("--parity", action="store_true",
                     help="strategy-parity check only (no gate run)")
     ap.add_argument("--no-sweeps", action="store_true")
@@ -404,11 +477,28 @@ def main():
 
     specs = load_specs()
 
+    if args.strategy == "ma_slope":
+        params = MA_PARAMS
+        collector = collect_signals_ma
+        parity_oracle = collect_signals_strategy_ma
+        sweep_kvs = [("ma_window", 17), ("ma_window", 31),
+                     ("stop_atr", 0.7), ("stop_atr", 1.3)]
+        gate_doc = "docs/research/2026-08-01-ma-slope-baseline-gate.md"
+        run_tag = "ma_slope_baseline"
+    else:
+        params = PARAMS
+        collector = collect_signals
+        parity_oracle = collect_signals_strategy
+        sweep_kvs = [("delta", 0.28), ("delta", 0.52),
+                     ("q_atr_frac", 0.035), ("q_atr_frac", 0.065)]
+        gate_doc = "docs/research/2026-08-01-gyroscope2b-gate.md"
+        run_tag = "gyroscope2"
+
     if args.parity:
         sym = "XTIUSD"
         df, _ = load_h1(sym)
-        fast = collect_signals(df, PARAMS)
-        slow = collect_signals_strategy(df, PARAMS)
+        fast = collector(df, params)
+        slow = parity_oracle(df, params)
         a = [(s["i"], s["dir"]) for s in fast]
         b = [(s["i"], s["dir"]) for s in slow]
         print(f"[PARITY] {sym}: fast={len(a)} strategy={len(b)} match={a == b}")
@@ -421,13 +511,13 @@ def main():
         sys.exit(0)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    outdir = os.path.join(args.out, f"{stamp}_gyroscope2_POOLED6_H1")
+    outdir = os.path.join(args.out, f"{stamp}_{run_tag}_POOLED6_H1")
     os.makedirs(outdir, exist_ok=True)
 
     frames, shas, all_res = {}, {}, {}
     for sym in SYMS:
         frames[sym], shas[sym] = load_h1(sym)
-        all_res[sym] = run_symbol(sym, frames[sym], PARAMS, specs)
+        all_res[sym] = run_symbol(sym, frames[sym], params, specs, collector)
         r = all_res[sym]
         net = sum(t["r"] - t["cost_r"] for t in r["trades"])
         print(f"[GYRO2] {sym}: bars={len(frames[sym])} signals={r['n_signals']} "
@@ -436,13 +526,12 @@ def main():
     sweep_signs = None
     if not args.no_sweeps:
         sweep_signs = []
-        for kv in [("delta", 0.28), ("delta", 0.52),
-                   ("q_atr_frac", 0.035), ("q_atr_frac", 0.065)]:
-            p = dict(PARAMS)
+        for kv in sweep_kvs:
+            p = dict(params)
             p[kv[0]] = kv[1]
             tot = 0.0
             for sym in SYMS:
-                res = run_symbol(sym, frames[sym], p, specs)
+                res = run_symbol(sym, frames[sym], p, specs, collector)
                 tot += sum(t["r"] - t["cost_r"] for t in res["trades"])
             sweep_signs.append(tot)
             print(f"[GYRO2] sweep {kv[0]}={kv[1]}: pooled netR={tot:+.1f}", flush=True)
@@ -457,9 +546,10 @@ def main():
                   for t in xti) / len(xti) if xti else 0.0
 
     card = {
-        "gate": "docs/research/2026-08-01-gyroscope2b-gate.md",
+        "gate": gate_doc,
+        "strategy": args.strategy,
         "git_sha": git_sha(),
-        "params": PARAMS, "symbols": SYMS, "spreads_pts": SPREADS,
+        "params": params, "symbols": SYMS, "spreads_pts": SPREADS,
         "split": SPLIT, "data_sha256": shas,
         "n_signals": sum(r["n_signals"] for r in all_res.values()),
         "n_trades": len(pooled),

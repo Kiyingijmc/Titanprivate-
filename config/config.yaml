@@ -200,3 +200,10 @@ news:
     BTCUSD: [USD]
     ETHUSD: [USD]
     XTIUSD: [USD]
+  # Telegram summary. The digest fires once a day in local (Africa/Kampala) time;
+  # alerts fire `alert_lead_min` before each red-folder release.
+  digest:
+    enabled: true
+    hour: 7
+    minute: 0
+    alert_lead_min: 15

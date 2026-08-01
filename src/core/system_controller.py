@@ -15,7 +15,7 @@ import os
 import subprocess
 import pytz
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from enum import Enum
 from dotenv import load_dotenv
@@ -112,8 +112,10 @@ class SystemController:
         self.active_symbols = set()
         
         # REPORTING
-        self.daily_closed_trades = [] 
+        self.daily_closed_trades = []
         self.report_sent_today = False
+        self.news_digest_sent_today = False
+        self.news_alerts_sent = set()
         
         # Logic Engine Instantiation
         offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
@@ -359,8 +361,14 @@ class SystemController:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
-                
+
+                await self._maybe_send_news_digest(now_uganda)
+                await self._maybe_send_news_alerts(datetime.now(timezone.utc))
+
                 if now_uganda.hour == 0: self.report_sent_today = False
+                if now_uganda.hour == 0:
+                    self.news_digest_sent_today = False
+                    self.news_alerts_sent.clear()
 
                 # --- G. PULSE SYNC ---
                 # 10s PING to keep connection alive
@@ -977,6 +985,50 @@ class SystemController:
             self._publish(SystemStateChanged(state="ACTIVE"))
             await self.telemetry.send_message(
                 "✅ News calendar refreshed. Resuming.", parse_mode="Markdown")
+
+    def _news_digest_cfg(self):
+        return ((self.config.get("news", {}) or {}).get("digest", {}) or {})
+
+    async def _maybe_send_news_digest(self, now_local):
+        """Once-a-day red-folder summary. Mirrors the 23:45 performance report;
+        never raises -- the main loop's handler re-raises."""
+        cfg = self._news_digest_cfg()
+        if not cfg.get("enabled", True):
+            return
+        if now_local.hour != int(cfg.get("hour", 7)):
+            return
+        if now_local.minute != int(cfg.get("minute", 0)):
+            return
+        if self.news_digest_sent_today:
+            return
+        try:
+            from src.ops.telegram_format import format_news_digest
+            digest = self.news_manager.digest()
+            await self.telemetry.send_message(format_news_digest(digest), parse_mode="HTML")
+            self.news_digest_sent_today = True
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
+
+    async def _maybe_send_news_alerts(self, now_utc):
+        """One heads-up per red-folder event, `alert_lead_min` before it."""
+        cfg = self._news_digest_cfg()
+        if not cfg.get("enabled", True):
+            return
+        lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
+        try:
+            from src.ops.telegram_format import format_news_alert
+            for event in (self.news_manager.digest().get("events") or []):
+                when = datetime.fromisoformat(event["when_utc"])
+                delta = when - now_utc
+                if not (timedelta(0) < delta <= lead):
+                    continue
+                marker = f"{event['when_utc']}|{event.get('title', '')}"
+                if marker in self.news_alerts_sent:
+                    continue
+                await self.telemetry.send_message(format_news_alert(event), parse_mode="HTML")
+                self.news_alerts_sent.add(marker)
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"News alert failed: {exc}")
 
     def get_status_report(self):
         eq = self.risk_manager.current_equity

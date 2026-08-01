@@ -298,9 +298,13 @@ def run_symbol(sym, df, params, specs):
         })
     n_days = (df["time"].iloc[-1] - df["time"].iloc[0]).days or 1
     flips = sum(1 for a, b in zip(signals, signals[1:]) if a["dir"] != b["dir"])
+    sig_times = [df["time"].iloc[s["i"]] for s in signals]
+    gaps_h = [(b - a).total_seconds() / 3600.0
+              for a, b in zip(sig_times, sig_times[1:])]
     return {"trades": trades, "n_signals": len(signals),
             "skipped_busy": skipped_busy, "n_days": n_days,
-            "flip_transitions": max(0, len(signals) - 1), "flips": flips}
+            "flip_transitions": max(0, len(signals) - 1), "flips": flips,
+            "gaps_h": gaps_h}
 
 
 def pool_metrics(trades, key="net"):
@@ -345,6 +349,8 @@ def evaluate(all_res, sweep_signs):
     n_days = max(r["n_days"] for r in all_res.values())
     flips = sum(r["flips"] for r in all_res.values())
     trans = sum(r["flip_transitions"] for r in all_res.values())
+    all_gaps = sorted(g for r in all_res.values() for g in r["gaps_h"])
+    med_gap = all_gaps[len(all_gaps) // 2] if all_gaps else 0.0
     lb = bootstrap_lb([t["net"] for t in pooled])
     crit = {
         "1_econ": {"pass": m["exp"] > 0 and pool_metrics(oos_t)["exp"] > 0,
@@ -361,11 +367,15 @@ def evaluate(all_res, sweep_signs):
                      "signs": sweep_signs} if sweep_signs is not None
                     else {"pass": None, "signs": None},
         "6_ci": {"pass": lb > -0.05, "lower_bound": lb},
+        # Ratified 2026-08-01 (gyroscope2b gate doc): episodicity measured
+        # directly — signal rate + median same-symbol inter-signal gap.
+        # Flip-rate reported non-binding (mis-specified in the v2 gate: it
+        # demanded cross-episode autocorrelation, the v1 pathology).
         "7_calibration": {
-            "pass": (n_sig / n_days) <= 2.0 and
-                    (flips / trans if trans else 0.0) <= 0.25,
+            "pass": (n_sig / n_days) <= 2.0 and med_gap >= 48.0,
             "signals_per_day": n_sig / n_days,
-            "flip_rate": (flips / trans) if trans else 0.0},
+            "median_gap_h": med_gap,
+            "flip_rate_nonbinding": (flips / trans) if trans else 0.0},
     }
     return crit, pooled
 
@@ -447,7 +457,7 @@ def main():
                   for t in xti) / len(xti) if xti else 0.0
 
     card = {
-        "gate": "docs/research/2026-08-01-gyroscope2-gate.md",
+        "gate": "docs/research/2026-08-01-gyroscope2b-gate.md",
         "git_sha": git_sha(),
         "params": PARAMS, "symbols": SYMS, "spreads_pts": SPREADS,
         "split": SPLIT, "data_sha256": shas,

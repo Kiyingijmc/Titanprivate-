@@ -148,3 +148,20 @@ class TestGyroscopeContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestV2ConfigPassthrough(unittest.TestCase):
+    def test_defaults_stay_v1_velocity_mode(self):
+        s = GyroscopeStrategy(CFG, _NullLogger())
+        f = s._filter_for("EURUSD")
+        self.assertEqual(f.sprt_on, "velocity")
+        self.assertEqual(f.z_confirm, 0.0)
+        self.assertEqual(f.nis_persist, f.nis_window)
+
+    def test_v2_keys_reach_the_filter(self):
+        cfg = dict(CFG, sprt_on="innovation", z_confirm=1.0, nis_persist=10)
+        s = GyroscopeStrategy(cfg, _NullLogger())
+        f = s._filter_for("EURUSD")
+        self.assertEqual(f.sprt_on, "innovation")
+        self.assertEqual(f.z_confirm, 1.0)
+        self.assertEqual(f.nis_persist, 10)

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from src.analysis.hawkes_intensity import excitation, flag_events, true_range
+from src.analysis.hawkes_intensity import excitation, flag_events, true_range, eligible_signals, s_lo_threshold
 
 
 def _flat_df(n, price=100.0, spread=1.0):
@@ -120,6 +120,64 @@ class TestExcitation(unittest.TestCase):
         decay = np.exp(-np.log(2) / 24)
         s = excitation(ev, half_life=24)
         self.assertAlmostEqual(s.iloc[8], decay**6 + decay**3, places=12)
+
+
+def _spike_at(df, i, up=True, rng=10.0):
+    """Overwrite bar i with a directional spike; bar i+1 with a confirm bar."""
+    o = 100.0
+    if up:
+        df.loc[i, ["open", "high", "low", "close"]] = [o, o + rng, o, o + rng * 0.9]
+        df.loc[i + 1, ["open", "high", "low", "close"]] = [
+            o + rng * 0.9, o + rng, o + rng * 0.6, o + rng * 0.8]
+    else:
+        df.loc[i, ["open", "high", "low", "close"]] = [o, o, o - rng, o - rng * 0.9]
+        df.loc[i + 1, ["open", "high", "low", "close"]] = [
+            o - rng * 0.9, o - rng * 0.6, o - rng, o - rng * 0.8]
+    return df
+
+
+class TestEligibleSignals(unittest.TestCase):
+    def test_fresh_confirmed_spike_is_eligible(self):
+        df = _spike_at(_flat_df(260), 250, up=True)
+        out = eligible_signals(df)
+        self.assertEqual(len(out), 1)
+        row = out.iloc[0]
+        self.assertEqual(int(row["event_idx"]), 250)
+        self.assertEqual(int(row["signal_idx"]), 251)
+        self.assertEqual(int(row["direction"]), 1)
+        self.assertAlmostEqual(float(row["event_range"]), 10.0)
+
+    def test_unconfirmed_spike_not_eligible(self):
+        # confirm bar closes back BELOW the event bar's midpoint -> reject
+        df = _spike_at(_flat_df(260), 250, up=True)
+        df.loc[251, "close"] = 100.0 + 10.0 * 0.3  # below mid (105.0)
+        self.assertEqual(len(eligible_signals(df)), 0)
+
+    def test_hot_s_minus_not_eligible(self):
+        # two spikes close together: the second arrives with S-minus elevated
+        df = _spike_at(_flat_df(280), 250, up=True)
+        df = _spike_at(df, 255, up=True)
+        out = eligible_signals(df)
+        self.assertEqual(list(out["event_idx"]), [250])
+
+    def test_down_event_direction(self):
+        df = _spike_at(_flat_df(260), 250, up=False)
+        out = eligible_signals(df)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(int(out.iloc[0]["direction"]), -1)
+
+    def test_s_lo_threshold_is_percentile_after_warmup(self):
+        s = pd.Series(np.arange(400, dtype=float))
+        # warmup 200 -> population is s[200:400] = 200..399; 20th pctile = 239.8
+        self.assertAlmostEqual(s_lo_threshold(s, warmup=200, pctile=20.0), 239.8)
+
+
+class TestEligibleSignalsHour(unittest.TestCase):
+    def test_hour_from_time_column(self):
+        df = _spike_at(_flat_df(260), 250, up=True)
+        df["time"] = pd.date_range("2024-01-01", periods=260, freq="h")
+        out = eligible_signals(df)
+        self.assertEqual(int(out.iloc[0]["hour"]), 250 % 24)
 
 
 if __name__ == "__main__":

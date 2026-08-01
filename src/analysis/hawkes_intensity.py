@@ -56,3 +56,56 @@ def excitation(is_event: pd.Series, half_life: int = 24) -> pd.Series:
     for t in range(1, len(ev)):
         out[t] = (out[t - 1] + ev[t - 1]) * decay
     return pd.Series(out, index=is_event.index)
+
+
+def s_lo_threshold(s_minus: pd.Series, warmup: int = 200, pctile: float = 20.0) -> float:
+    """Registered banding: percentile of S-minus over all bars with index >= warmup."""
+    pop = s_minus.iloc[warmup:]
+    return float(np.percentile(pop.to_numpy(), pctile))
+
+
+def eligible_signals(
+    df: pd.DataFrame,
+    q: float = 2.5,
+    window: int = 200,
+    half_life: int = 24,
+    s_lo_pctile: float = 20.0,
+) -> pd.DataFrame:
+    """Continuation-eligible events per the registered protocol.
+
+    Eligible at t: event & dir != 0 & closes_beyond_mid & S-minus < s_lo
+    & confirm at t+1 (close_{t+1} stays beyond the event bar's midpoint
+    in the event direction). Signal time is t+1.
+    """
+    flags = flag_events(df, q=q, window=window)
+    s_minus = excitation(flags["is_event"], half_life=half_life)
+    s_lo = s_lo_threshold(s_minus, warmup=window, pctile=s_lo_pctile)
+
+    mid = (df["high"] + df["low"]) / 2.0
+    next_close = df["close"].shift(-1)
+    confirm = ((flags["event_dir"] == 1) & (next_close > mid)) | (
+        (flags["event_dir"] == -1) & (next_close < mid)
+    )
+    ok = (
+        flags["is_event"]
+        & (flags["event_dir"] != 0)
+        & flags["closes_beyond_mid"]
+        & (s_minus <= s_lo)
+        & confirm.fillna(False)
+    )
+    idx = np.flatnonzero(ok.to_numpy())
+    hours = (
+        pd.to_datetime(df["time"]).dt.hour.to_numpy()[idx]
+        if "time" in df.columns
+        else np.full(len(idx), -1)
+    )
+    return pd.DataFrame(
+        {
+            "event_idx": idx,
+            "signal_idx": idx + 1,
+            "direction": flags["event_dir"].to_numpy()[idx],
+            "event_range": (df["high"] - df["low"]).to_numpy()[idx],
+            "s_minus": s_minus.to_numpy()[idx],
+            "hour": hours,
+        }
+    )

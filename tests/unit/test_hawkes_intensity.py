@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from src.analysis.hawkes_intensity import flag_events, true_range
+from src.analysis.hawkes_intensity import excitation, flag_events, true_range
 
 
 def _flat_df(n, price=100.0, spread=1.0):
@@ -89,6 +89,37 @@ class TestFlagEvents(unittest.TestCase):
         self.assertTrue(bool(out["is_event"].iloc[-1]))
         self.assertEqual(int(out["event_dir"].iloc[-1]), 0)
         self.assertFalse(bool(out["closes_beyond_mid"].iloc[-1]))
+
+
+class TestExcitation(unittest.TestCase):
+    def test_zero_without_events(self):
+        s = excitation(pd.Series([False] * 10), half_life=24)
+        self.assertTrue((s == 0.0).all())
+
+    def test_single_event_closed_form(self):
+        # event at index 3: S_minus at index 3+k must be decay**k, k >= 1
+        ev = pd.Series([False] * 10)
+        ev.iloc[3] = True
+        hl = 24
+        decay = np.exp(-np.log(2) / hl)
+        s = excitation(ev, half_life=hl)
+        self.assertAlmostEqual(s.iloc[3], 0.0)  # excludes own bar
+        for k in (1, 2, 5):
+            self.assertAlmostEqual(s.iloc[3 + k], decay**k, places=12)
+
+    def test_half_life_halves_contribution(self):
+        ev = pd.Series([False] * 60)
+        ev.iloc[0] = True
+        s = excitation(ev, half_life=24)
+        self.assertAlmostEqual(s.iloc[24], 0.5, places=12)
+
+    def test_two_events_superpose(self):
+        ev = pd.Series([False] * 20)
+        ev.iloc[2] = True
+        ev.iloc[5] = True
+        decay = np.exp(-np.log(2) / 24)
+        s = excitation(ev, half_life=24)
+        self.assertAlmostEqual(s.iloc[8], decay**6 + decay**3, places=12)
 
 
 if __name__ == "__main__":

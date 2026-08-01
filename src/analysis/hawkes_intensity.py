@@ -43,3 +43,16 @@ def flag_events(df: pd.DataFrame, q: float = 2.5, window: int = 200) -> pd.DataF
         },
         index=df.index,
     )
+
+
+def excitation(is_event: pd.Series, half_life: int = 24) -> pd.Series:
+    """S-minus: excitation just BEFORE each bar (never includes the bar's own event).
+
+    S_0 = 0; S_t = (S_{t-1} + 1{event at t-1}) * decay, decay = exp(-ln2/half_life).
+    """
+    decay = math.exp(-math.log(2.0) / half_life)
+    ev = is_event.to_numpy(dtype=np.float64)
+    out = np.zeros(len(ev))
+    for t in range(1, len(ev)):
+        out[t] = (out[t - 1] + ev[t - 1]) * decay
+    return pd.Series(out, index=is_event.index)

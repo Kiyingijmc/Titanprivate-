@@ -125,5 +125,70 @@ class DigestDayIsAlwaysUtc(unittest.TestCase):
                 self.assertEqual(d["events"], [])
 
 
+from src.ops.telegram_format import format_news_alert, format_news_digest
+
+_DIGEST = {
+    "date": "2026-07-30", "count": 2,
+    "events": [
+        {"when_utc": "2026-07-30T12:30:00+00:00", "currency": "USD",
+         "title": "Core PCE Price Index m/m", "forecast": "0.3%",
+         "previous": "0.2%", "affects": ["EURUSD", "XAUUSD"]},
+        {"when_utc": "2026-07-30T18:00:00+00:00", "currency": "GBP",
+         "title": "BOE Official Bank Rate", "forecast": "4.00%",
+         "previous": "4.25%", "affects": ["GBPJPY"]},
+    ],
+}
+
+
+class DigestRendering(unittest.TestCase):
+    def test_includes_every_event_title(self):
+        text = format_news_digest(_DIGEST)
+        self.assertIn("Core PCE Price Index m/m", text)
+        self.assertIn("BOE Official Bank Rate", text)
+
+    def test_shows_local_and_utc_times(self):
+        text = format_news_digest(_DIGEST)
+        self.assertIn("15:30", text)   # 12:30Z at +3
+        self.assertIn("12:30Z", text)
+
+    def test_groups_by_currency(self):
+        text = format_news_digest(_DIGEST)
+        self.assertIn("USD", text)
+        self.assertIn("GBP", text)
+
+    def test_shows_forecast_and_previous(self):
+        text = format_news_digest(_DIGEST)
+        self.assertIn("0.3%", text)
+        self.assertIn("0.2%", text)
+
+    def test_names_affected_pairs(self):
+        self.assertIn("GBPJPY", format_news_digest(_DIGEST))
+
+    def test_empty_day_says_so_explicitly(self):
+        text = format_news_digest({"date": "2026-07-30", "count": 0, "events": []})
+        self.assertTrue(text.strip())
+        self.assertIn("No high-impact", text)
+
+    def test_malformed_digest_does_not_raise(self):
+        self.assertIsInstance(format_news_digest({}), str)
+        self.assertIsInstance(format_news_digest({"events": [{}]}), str)
+
+
+class AlertRendering(unittest.TestCase):
+    def test_alert_names_event_currency_and_pairs(self):
+        text = format_news_alert(_DIGEST["events"][0])
+        self.assertIn("Core PCE Price Index m/m", text)
+        self.assertIn("USD", text)
+        self.assertIn("EURUSD", text)
+
+    def test_alert_shows_forecast_and_previous(self):
+        text = format_news_alert(_DIGEST["events"][0])
+        self.assertIn("0.3%", text)
+        self.assertIn("0.2%", text)
+
+    def test_alert_on_malformed_event_does_not_raise(self):
+        self.assertIsInstance(format_news_alert({}), str)
+
+
 if __name__ == "__main__":
     unittest.main()

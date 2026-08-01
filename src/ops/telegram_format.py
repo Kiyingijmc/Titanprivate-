@@ -7,6 +7,8 @@ HTML-escaped via ``esc`` because the bot sends these with parse_mode="HTML".
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 
 def esc(v) -> str:
     """HTML-escape a dynamic value for Telegram parse_mode="HTML"."""
@@ -173,3 +175,61 @@ def help_menu() -> str:
         "✅ <code>/confirm</code>  - Confirm pending action\n"
         "🚨 <code>/panic</code>    - EMERGENCY FLATTEN"
     )
+
+
+def _local(iso_utc: str, tz_offset_h: float):
+    """(local_hhmm, utc_hhmm) or (None, None) if unparseable."""
+    try:
+        when = datetime.fromisoformat(iso_utc)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        local = when.astimezone(timezone(timedelta(hours=tz_offset_h)))
+        return local.strftime("%H:%M"), when.astimezone(timezone.utc).strftime("%H:%MZ")
+    except Exception:
+        return None, None
+
+
+def format_news_digest(digest: dict, tz_offset_h: float = 3.0) -> str:
+    """Today's red-folder events, grouped by currency. Never raises."""
+    try:
+        events = list((digest or {}).get("events") or [])
+        date = (digest or {}).get("date", "today")
+        if not events:
+            return f"📅 <b>News {date}</b>\nNo high-impact events scheduled."
+        lines = [f"📅 <b>News {date}</b> — {len(events)} high-impact"]
+        by_currency: dict = {}
+        for event in events:
+            by_currency.setdefault(event.get("currency", "?"), []).append(event)
+        for currency, group in by_currency.items():
+            lines.append(f"\n<b>{currency}</b>")
+            for event in group:
+                local, utc = _local(event.get("when_utc", ""), tz_offset_h)
+                stamp = f"{local} ({utc})" if local else "time unknown"
+                lines.append(f"  • {stamp} — {event.get('title', 'untitled')}")
+                fc, pv = event.get("forecast"), event.get("previous")
+                if fc or pv:
+                    lines.append(f"    forecast {fc or '—'} · previous {pv or '—'}")
+                affects = event.get("affects") or []
+                if affects:
+                    lines.append(f"    affects: {', '.join(affects)}")
+        return "\n".join(lines)
+    except Exception:
+        return "📅 News digest unavailable."
+
+
+def format_news_alert(event: dict, tz_offset_h: float = 3.0) -> str:
+    """One-line heads-up before a red-folder release. Never raises."""
+    try:
+        event = event or {}
+        local, utc = _local(event.get("when_utc", ""), tz_offset_h)
+        stamp = f"{local} ({utc})" if local else "shortly"
+        parts = [f"⚠️ <b>{event.get('currency', '?')} {event.get('title', 'event')}</b> at {stamp}"]
+        fc, pv = event.get("forecast"), event.get("previous")
+        if fc or pv:
+            parts.append(f"forecast {fc or '—'} · previous {pv or '—'}")
+        affects = event.get("affects") or []
+        if affects:
+            parts.append(f"holding: {', '.join(affects)}")
+        return "\n".join(parts)
+    except Exception:
+        return "⚠️ News alert unavailable."

@@ -512,7 +512,17 @@ class SystemController:
         throttle_fn = getattr(getattr(self, 'risk_manager', None), 'throttle_factor', None)
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
-        if lot <= 0: return
+        if lot <= 0:
+            # Fail-safe skip (specs missing, or min-lot risk exceeds the
+            # per-trade budget at this balance). Must be LOUD: a graded,
+            # passing signal that vanishes silently is indistinguishable
+            # from a dead pipeline (cost a live debugging session 2026-08-01
+            # when Gyroscope's first BTCUSD signal was unsizeable at $459).
+            self.logger.log_event(
+                "RISK", "SIZING",
+                f"{symbol} {name} signal skipped: lot=0 "
+                f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
+            return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
         if not allowed:

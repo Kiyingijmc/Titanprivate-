@@ -4,6 +4,8 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 
+import pytz
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from src.core.system_controller import SystemController
@@ -203,6 +205,66 @@ class MalformedEventResilience(unittest.TestCase):
         _run(c._maybe_send_news_alerts(RELEASE - timedelta(minutes=10)))
         self.assertEqual(len(c.telemetry.sent), 1)
         self.assertIn("Core PCE", c.telemetry.sent[0])
+
+
+UGANDA_TZ = pytz.timezone("Africa/Kampala")
+
+
+class MidnightCrossingResetVsPendingMarker(unittest.TestCase):
+    """Fix round 2, Finding A residual: the round-1 guard made the reset fire
+    once per day, but it still unconditionally cleared news_alerts_sent --
+    wiping markers for events that are still pending (not yet released) when
+    Kampala midnight (21:00 UTC) falls inside a pre-release lead window.
+
+    Model: step a continuously-advancing UTC clock from 20:50 through 21:15
+    UTC (crossing 21:00 UTC = Kampala 00:00) with a HIGH event releasing at
+    21:10 UTC and a 15-min lead window (opens 20:55 UTC = Kampala 23:55, i.e.
+    before the reset fires). Mirrors system_controller.py Section F exactly
+    and must be kept in lockstep with it (see HourZeroResetRace).
+    """
+
+    def test_exactly_one_send_across_the_midnight_crossing(self):
+        release = datetime(2026, 7, 30, 21, 10, tzinfo=timezone.utc)
+        event = {"when_utc": release.isoformat(), "currency": "USD",
+                 "title": "Midnight Crossing Event"}
+        c = _controller(news=_News({"date": "2026-07-30", "count": 1,
+                                    "events": [event]}))
+
+        now_utc = datetime(2026, 7, 30, 20, 50, tzinfo=timezone.utc)
+        end = datetime(2026, 7, 30, 21, 15, tzinfo=timezone.utc)
+        step = timedelta(minutes=1)
+
+        while now_utc <= end:
+            now_uganda = now_utc.astimezone(UGANDA_TZ)
+            # Mirrors system_controller.py Section F's guarded reset exactly
+            # (post fix-round-2: no news_alerts_sent.clear() here -- pruning
+            # of resolved markers happens inside _maybe_send_news_alerts).
+            if now_uganda.hour == 0:
+                if not c.news_daily_reset_done:
+                    c.news_digest_sent_today = False
+                    c.news_daily_reset_done = True
+            else:
+                c.news_daily_reset_done = False
+            _run(c._maybe_send_news_alerts(now_utc))
+            now_utc += step
+
+        self.assertEqual(len(c.telemetry.sent), 1)
+
+
+class ResolvedMarkerPruning(unittest.TestCase):
+    """Fix round 2: a dedup marker expires once its event releases, not on a
+    wall-clock day boundary -- so the set doesn't grow unbounded now that the
+    daily .clear() is gone."""
+
+    def test_a_resolved_events_marker_is_pruned(self):
+        c = _controller(news=_News({"date": "2026-07-30", "count": 1,
+                                    "events": [EVENT]}))
+        _run(c._maybe_send_news_alerts(RELEASE - timedelta(minutes=10)))
+        self.assertEqual(len(c.news_alerts_sent), 1)
+
+        # Long after release -- the marker is no longer needed and must be pruned.
+        _run(c._maybe_send_news_alerts(RELEASE + timedelta(hours=2)))
+        self.assertEqual(c.news_alerts_sent, set())
 
 
 if __name__ == "__main__":

@@ -366,15 +366,21 @@ class SystemController:
                         self.risk_manager.reset_daily_metrics()
 
                 # Guarded so it fires ONCE per day, and BEFORE this tick's sends -- a
-                # bare per-tick clear (or a reset placed after the sends) would wipe the
+                # bare per-tick reset (or one placed after the sends) would wipe the
                 # dedup marker _maybe_send_news_alerts writes on this same tick, letting
                 # an event whose lead window overlaps hour 0 re-alert on the very next
                 # iteration (unguarded: ~1000 Telegram sends/sec; reset-after-send:
                 # exactly one spurious duplicate on the first hour-0 tick every day).
+                # NOTE: news_alerts_sent is NOT cleared here -- a wholesale clear on a
+                # wall-clock day boundary (in a different timezone from the events
+                # themselves) wipes markers for events still pending, not yet released,
+                # across Kampala midnight (21:00 UTC). Its markers instead expire when
+                # their own event releases, pruned inside _maybe_send_news_alerts. The
+                # digest flag is safe to reset daily -- it fires at hour 7, nowhere near
+                # this boundary.
                 if now_uganda.hour == 0:
                     if not self.news_daily_reset_done:
                         self.news_digest_sent_today = False
-                        self.news_alerts_sent.clear()
                         self.news_daily_reset_done = True
                 else:
                     self.news_daily_reset_done = False
@@ -1023,6 +1029,14 @@ class SystemController:
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
 
+    def _alert_marker_pending(self, marker, now_utc):
+        """A marker matters only until its event releases. Never raises: an
+        unparseable marker is treated as resolved and dropped."""
+        try:
+            return datetime.fromisoformat(marker.split("|", 1)[0]) > now_utc
+        except Exception:
+            return False
+
     async def _maybe_send_news_alerts(self, now_utc):
         """One heads-up per red-folder event, `alert_lead_min` before it.
 
@@ -1042,6 +1056,14 @@ class SystemController:
                 self._news_alert_cache = self.news_manager.digest()
                 self._news_alert_cache_at = now_utc
             events = (self._news_alert_cache or {}).get("events") or []
+            # Markers expire when their event releases -- not on a wall-clock day
+            # boundary. A daily .clear() wiped markers for events still pending across
+            # Kampala midnight (21:00 UTC), re-alerting them once.
+            if self.news_alerts_sent:
+                self.news_alerts_sent = {
+                    m for m in self.news_alerts_sent
+                    if self._alert_marker_pending(m, now_utc)
+                }
             for event in events:
                 # Per-event guard: one malformed event (e.g. missing when_utc)
                 # must not swallow every other event's alert this tick.

@@ -116,9 +116,13 @@ class SystemController:
         # REPORTING
         self.daily_closed_trades = []
         self.report_sent_today = False
-        self.news_digest_sent_today = False
+        # Edge-triggered per trading day (RS-RISK-01 pattern): the trading-day
+        # key this digest was last sent for, or None. Replaces the old pair of
+        # level-triggered flags (news_digest_sent_today / news_daily_reset_done)
+        # that depended on the main loop observing an exact wall-clock minute --
+        # see _maybe_send_news_digest.
+        self.news_digest_sent_for_key = None
         self.news_alerts_sent = set()
-        self.news_daily_reset_done = False
         self._news_alert_cache = None
         self._news_alert_cache_at = None
         
@@ -471,26 +475,6 @@ class SystemController:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
-
-                # Guarded so it fires ONCE per day, and BEFORE this tick's sends -- a
-                # bare per-tick reset (or one placed after the sends) would wipe the
-                # dedup marker _maybe_send_news_alerts writes on this same tick, letting
-                # an event whose lead window overlaps hour 0 re-alert on the very next
-                # iteration (unguarded: ~1000 Telegram sends/sec; reset-after-send:
-                # exactly one spurious duplicate on the first hour-0 tick every day).
-                # NOTE: news_alerts_sent is NOT cleared here -- a wholesale clear on a
-                # wall-clock day boundary (in a different timezone from the events
-                # themselves) wipes markers for events still pending, not yet released,
-                # across Kampala midnight (21:00 UTC). Its markers instead expire when
-                # their own event releases, pruned inside _maybe_send_news_alerts. The
-                # digest flag is safe to reset daily -- it fires at hour 7, nowhere near
-                # this boundary.
-                if now_uganda.hour == 0:
-                    if not self.news_daily_reset_done:
-                        self.news_digest_sent_today = False
-                        self.news_daily_reset_done = True
-                else:
-                    self.news_daily_reset_done = False
 
                 await self._maybe_send_news_digest(now_uganda)
                 await self._maybe_send_news_alerts(datetime.now(timezone.utc))
@@ -1152,30 +1136,66 @@ class SystemController:
         return digest if isinstance(digest, dict) else {}
 
     async def _maybe_send_news_digest(self, now_local):
-        """Once-a-day red-folder summary. Mirrors the 23:45 performance report;
-        never raises -- the main loop's handler re-raises. Every config read
-        (including the int() coercions) lives inside this try: a bad value
-        (null/garbage hour, non-dict news block, ...) must degrade to a WARN
-        log and a skipped send, not an escaped exception -- this coroutine is
-        awaited from the main loop's `except Exception: raise e`, and the bot
-        runs outside systemd, so an escape here is a fatal, non-restarting
-        crash on the next tick."""
+        """Once-a-day red-folder summary, edge-triggered per TRADING day
+        (RS-RISK-01 pattern reused here -- see `_trading_day_key` /
+        `_roll_trading_day_if_needed`).
+
+        The old gate was LEVEL-triggered on a one-minute wall-clock window
+        (`now.hour == hour and now.minute == minute`). `_wait_for_bridge_
+        connection` is an unbounded `while True`, so the loop can be parked
+        for hours and resume having never observed that minute -- the digest
+        then silently skips the day. Keying on `_trading_day_key` instead and
+        firing once the scheduled time has been REACHED OR PASSED for that
+        key makes a stall recoverable: the very next tick after a stall still
+        sends, whatever time it lands at.
+
+        That recoverability needs a ceiling, or a restart late in the day
+        would Telegram a digest of a day that is basically over. `catch_up_
+        hours` (config, default 3) bounds it: past that many hours since the
+        scheduled time, the key is marked sent WITHOUT sending -- a single
+        INFO log, not a WARN, because skipping a stale digest on purpose is
+        not a failure.
+
+        Never raises -- the main loop's handler re-raises. Every config read
+        (including the int()/float() coercions) lives inside this try: a bad
+        value (null/garbage hour, non-dict news block, ...) must degrade to a
+        WARN log and a skipped send, not an escaped exception -- this
+        coroutine is awaited from the main loop's `except Exception: raise
+        e`, and the bot runs outside systemd, so an escape here is a fatal,
+        non-restarting crash on the next tick."""
         try:
             if not self._news_cfg().get("enabled", True):
                 return
             cfg = self._news_digest_cfg()
             if not cfg.get("enabled", True):
                 return
-            if now_local.hour != int(cfg.get("hour", 7)):
+
+            key = self._trading_day_key(now_local)
+            if self.news_digest_sent_for_key == key:
                 return
-            if now_local.minute != int(cfg.get("minute", 0)):
+
+            hour = int(cfg.get("hour", 7))
+            minute = int(cfg.get("minute", 0))
+            if (now_local.hour, now_local.minute) < (hour, minute):
                 return
-            if self.news_digest_sent_today:
+
+            catch_up_hours = float(cfg.get("catch_up_hours", 3))
+            scheduled = now_local.replace(hour=hour, minute=minute, second=0,
+                                          microsecond=0)
+            elapsed_hours = (now_local - scheduled).total_seconds() / 3600.0
+            if elapsed_hours > catch_up_hours:
+                self.logger.log_event(
+                    "INFO", "NEWS",
+                    f"Digest for trading day {key} skipped as stale "
+                    f"({elapsed_hours:.1f}h past the {hour:02d}:{minute:02d} "
+                    f"schedule, catch_up_hours={catch_up_hours}).")
+                self.news_digest_sent_for_key = key
                 return
+
             from src.ops.telegram_format import format_news_digest
             digest = self.news_manager.digest()
             await self.telemetry.send_message(format_news_digest(digest), parse_mode="HTML")
-            self.news_digest_sent_today = True
+            self.news_digest_sent_for_key = key
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
 

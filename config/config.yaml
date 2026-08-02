@@ -240,7 +240,14 @@ news:
     # be >= 3. The digest content is computed over the UTC calendar day, but
     # scheduled on this local clock -- below hour 3 local (< 00:00 UTC), the
     # UTC day has not yet rolled over, so the digest would report yesterday's
-    # events. The default of 7 is safely clear of that boundary.
+    # events. The default of 7 is safely clear of that boundary. This note
+    # still applies unchanged: the schedule below is edge-triggered per
+    # trading day (fires once hour:minute is reached or passed, recoverable
+    # across a stall), not an exact-minute window.
     hour: 7
     minute: 0
     alert_lead_min: 15
+    # A restart/stall more than this many hours past hour:minute marks the
+    # day as sent WITHOUT sending, so a late recovery doesn't Telegram a
+    # near-end-of-day digest as if it were the fresh morning one.
+    catch_up_hours: 3

@@ -15,7 +15,7 @@ to every layer above the wire.
 This is not theoretical. On 2026-08-02 the operator cancelled an untracked
 EURUSD pending order through the GUI:
 
-```
+```text
 POST /api/command {"command":"cancel","ticket":1936559060}
 → {"status":"ok","result":1}
 ```
@@ -23,7 +23,7 @@ POST /api/command {"command":"cancel","ticket":1936559060}
 The order never moved. The only evidence anywhere in the system was MT5's own
 Experts log:
 
-```
+```text
 11:08:56.424  Titan_Gateway (EURUSD,M5)  TITAN | Cancel Failed: 10018
 ```
 
@@ -160,7 +160,7 @@ Pure: no sockets, no DB, no clock of its own. It receives registrations, results
 and state snapshots, and returns decisions. This keeps the entire retry policy
 unit-testable without a bridge, following the same shape as `RiskManager`.
 
-```
+```python
 register(cid, action, ticket, symbol, expected)   # called before send
 on_result(cid, ok, retcode, err, comment)         # from the CMD_RESULT branch
 tick(now, positions, orders) -> (retries, escalations, resolved)
@@ -200,7 +200,18 @@ A missing `CMD_RESULT` is **never** treated as failure. After a 10s timeout the
 tracker compares heartbeat state against `expected`:
 
 * applied → resolve as success, silently;
-* unchanged across 2 consecutive heartbeats → treat as failed.
+* still unchanged `UNKNOWN_FAIL_AFTER_S` (15s) after dispatch → treat as failed.
+
+> **Amended 2026-08-02 during planning.** This originally read "unchanged across
+> 2 consecutive heartbeats". The tracker ticks from the **main loop** (§6.4), which
+> has no heartbeat identity to count — implementing that literally would mean
+> threading a heartbeat sequence number through purely to satisfy the wording. A
+> 15s wall-clock window spans several heartbeat cycles at the observed ~1–3s
+> cadence and expresses the same intent without the coupling.
+
+An ack of `ok: true` does **not** by itself resolve a command. The heartbeat is
+the authority (§3), so a broker that reports success while the book never changes
+falls through the same unchanged-window path as a missing ack.
 
 An unknown-path failure carries **no retcode**, so §6.2's classification cannot
 be applied to it. It is treated as **transient**: there is no evidence the command

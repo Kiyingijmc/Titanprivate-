@@ -43,6 +43,9 @@ describe("NewsPanel", () => {
   it("renders with no next event and no blocks", () => {
     render(<NewsPanel data={{ status: "ok", next: null, blocked_symbols: {} }} />);
     expect(screen.getByTestId("news-panel")).toBeInTheDocument();
+    // A healthy-but-quiet calendar must NOT fall into the "unavailable"
+    // branch -- silence is indistinguishable from a broken job.
+    expect(screen.queryByTestId("news-panel-empty")).not.toBeInTheDocument();
   });
 
   it("marks a stale calendar", () => {

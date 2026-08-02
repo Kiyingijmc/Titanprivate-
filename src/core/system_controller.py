@@ -1006,22 +1006,38 @@ class SystemController:
             await self.telemetry.send_message(
                 "✅ News calendar refreshed. Resuming.", parse_mode="Markdown")
 
+    def _news_cfg(self):
+        """Total: whatever `config["news"]` holds, this never raises. A
+        misconfigured/scalar value (e.g. `news: "yes"`) degrades to {}
+        rather than blowing up every caller that does `.get(...)` on it."""
+        news = self.config.get("news")
+        return news if isinstance(news, dict) else {}
+
     def _news_digest_cfg(self):
-        return ((self.config.get("news", {}) or {}).get("digest", {}) or {})
+        digest = self._news_cfg().get("digest")
+        return digest if isinstance(digest, dict) else {}
 
     async def _maybe_send_news_digest(self, now_local):
         """Once-a-day red-folder summary. Mirrors the 23:45 performance report;
-        never raises -- the main loop's handler re-raises."""
-        cfg = self._news_digest_cfg()
-        if not cfg.get("enabled", True):
-            return
-        if now_local.hour != int(cfg.get("hour", 7)):
-            return
-        if now_local.minute != int(cfg.get("minute", 0)):
-            return
-        if self.news_digest_sent_today:
-            return
+        never raises -- the main loop's handler re-raises. Every config read
+        (including the int() coercions) lives inside this try: a bad value
+        (null/garbage hour, non-dict news block, ...) must degrade to a WARN
+        log and a skipped send, not an escaped exception -- this coroutine is
+        awaited from the main loop's `except Exception: raise e`, and the bot
+        runs outside systemd, so an escape here is a fatal, non-restarting
+        crash on the next tick."""
         try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+            if now_local.hour != int(cfg.get("hour", 7)):
+                return
+            if now_local.minute != int(cfg.get("minute", 0)):
+                return
+            if self.news_digest_sent_today:
+                return
             from src.ops.telegram_format import format_news_digest
             digest = self.news_manager.digest()
             await self.telemetry.send_message(format_news_digest(digest), parse_mode="HTML")
@@ -1043,19 +1059,43 @@ class SystemController:
         digest() is cached for 30s (keyed on the `now_utc` argument, never a
         wall clock read here) -- a 15-minute lead window doesn't need
         millisecond-fresh data, and calling digest() every loop tick was
-        measured to throttle the live loop to ~65-200Hz.
+        measured to throttle the live loop to ~65-200Hz. The parsed
+        `when_utc` for each cached event is cached alongside it (as
+        `self._news_alert_cache`, a list of `(event, when_dt)` pairs) so
+        `datetime.fromisoformat` also runs once per 30s refresh rather than
+        once per tick per event -- re-parsing unchanged timestamps every
+        tick was the rest of that throttling. An event whose `when_utc`
+        fails to parse is dropped at cache-build time (logged once) instead
+        of being retried every tick.
+
+        Every config read (including the int() coercion) lives inside this
+        try, for the same reason as `_maybe_send_news_digest`: this coroutine
+        is awaited from the main loop's `except Exception: raise e`, and a
+        bad config value escaping here is a fatal, non-restarting crash.
         """
-        cfg = self._news_digest_cfg()
-        if not cfg.get("enabled", True):
-            return
-        lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
         try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+            lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
             from src.ops.telegram_format import format_news_alert
             if (self._news_alert_cache_at is None
                     or (now_utc - self._news_alert_cache_at).total_seconds() >= 30):
-                self._news_alert_cache = self.news_manager.digest()
+                raw_events = (self.news_manager.digest() or {}).get("events") or []
+                parsed = []
+                for event in raw_events:
+                    try:
+                        when = datetime.fromisoformat(event["when_utc"])
+                    except Exception as exc:
+                        self.logger.log_event(
+                            "WARN", "NEWS", f"News alert event failed: {exc}")
+                        continue
+                    parsed.append((event, when))
+                self._news_alert_cache = parsed
                 self._news_alert_cache_at = now_utc
-            events = (self._news_alert_cache or {}).get("events") or []
+            events = self._news_alert_cache or []
             # Markers expire when their event releases -- not on a wall-clock day
             # boundary. A daily .clear() wiped markers for events still pending across
             # Kampala midnight (21:00 UTC), re-alerting them once.
@@ -1064,11 +1104,10 @@ class SystemController:
                     m for m in self.news_alerts_sent
                     if self._alert_marker_pending(m, now_utc)
                 }
-            for event in events:
-                # Per-event guard: one malformed event (e.g. missing when_utc)
-                # must not swallow every other event's alert this tick.
+            for event, when in events:
+                # Per-event guard: one bad send must not swallow every other
+                # event's alert this tick.
                 try:
-                    when = datetime.fromisoformat(event["when_utc"])
                     delta = when - now_utc
                     if not (timedelta(0) < delta <= lead):
                         continue

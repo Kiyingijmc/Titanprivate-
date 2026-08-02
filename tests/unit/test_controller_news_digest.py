@@ -8,6 +8,7 @@ import pytz
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from src.core import system_controller
 from src.core.system_controller import SystemController
 
 
@@ -265,6 +266,137 @@ class ResolvedMarkerPruning(unittest.TestCase):
         # Long after release -- the marker is no longer needed and must be pruned.
         _run(c._maybe_send_news_alerts(RELEASE + timedelta(hours=2)))
         self.assertEqual(c.news_alerts_sent, set())
+
+
+BAD_CONFIGS = [
+    {"news": {"digest": {"hour": None}}},
+    {"news": {"digest": {"hour": "7am"}}},
+    {"news": {"digest": {"minute": "x"}}},
+    {"news": {"digest": {"alert_lead_min": None}}},
+    {"news": {"digest": {"alert_lead_min": "fifteen"}}},
+    {"news": "yes"},
+    {"news": None},
+    {},
+]
+
+
+# DIGEST_OFF_SCHEDULE keeps hour=7 (so the hour check passes and, for the
+# `minute` configs, execution actually reaches the minute conversion) but
+# picks a non-zero minute (13) so a config that leaves `minute` at its
+# default (0) legitimately misses the schedule instead of firing a real
+# send -- e.g. a config that only mangles `alert_lead_min` is irrelevant to
+# the digest method and must not be forced to "send" just because hour/
+# minute happen to hit the default schedule. ALERTS_OUTSIDE_WINDOW is well
+# outside the default 15-min alert lead window ahead of RELEASE for the same
+# reason: a config that only mangles `hour`/`minute` is irrelevant to the
+# alerts method. The bad-field conversions themselves (int(None),
+# int("7am"), ...) are evaluated unconditionally while building the
+# comparison/timedelta, before any time-based gate, so the crash (pre-fix) /
+# WARN-and-skip (post-fix) still reproduces regardless of what "now" is
+# passed in -- picking off-schedule/off-window instants only prevents an
+# *unrelated* field from forcing a legitimate send.
+DIGEST_OFF_SCHEDULE = datetime(2026, 7, 30, 7, 13)
+ALERTS_OUTSIDE_WINDOW = RELEASE - timedelta(hours=2)
+
+
+class ConfigResilience(unittest.TestCase):
+    """Fix round 3, Item 1 (Important): a bad config value must degrade to a
+    WARN + skipped send, never escape as an unhandled exception into the main
+    loop -- both hooks run inside `except Exception: raise e`, and this bot
+    runs outside systemd, so an escape is a fatal, non-restarting crash."""
+
+    def _controller_with(self, cfg):
+        c = object.__new__(SystemController)
+        c.telemetry = _Telemetry()
+        c.news_manager = _News({"date": "2026-07-30", "count": 1, "events": [EVENT]})
+        c.logger = _Logger()
+        c.config = cfg
+        c.news_digest_sent_today = False
+        c.news_alerts_sent = set()
+        c.news_daily_reset_done = False
+        c._news_alert_cache = None
+        c._news_alert_cache_at = None
+        return c
+
+    def test_digest_survives_bad_config(self):
+        for cfg in BAD_CONFIGS:
+            with self.subTest(cfg=cfg):
+                c = self._controller_with(cfg)
+                _run(c._maybe_send_news_digest(DIGEST_OFF_SCHEDULE))  # must not raise
+                self.assertEqual(c.telemetry.sent, [])
+
+    def test_alerts_survive_bad_config(self):
+        for cfg in BAD_CONFIGS:
+            with self.subTest(cfg=cfg):
+                c = self._controller_with(cfg)
+                _run(c._maybe_send_news_alerts(ALERTS_OUTSIDE_WINDOW))  # must not raise
+                self.assertEqual(c.telemetry.sent, [])
+
+
+class NewsTopLevelDisableGate(unittest.TestCase):
+    """Fix round 3, Item 4 (Minor): `news.enabled: false` must gate both
+    hooks, not just `news.digest.enabled`."""
+
+    def _controller_with(self, cfg):
+        c = object.__new__(SystemController)
+        c.telemetry = _Telemetry()
+        c.news_manager = _News({"date": "2026-07-30", "count": 1, "events": [EVENT]})
+        c.logger = _Logger()
+        c.config = cfg
+        c.news_digest_sent_today = False
+        c.news_alerts_sent = set()
+        c.news_daily_reset_done = False
+        c._news_alert_cache = None
+        c._news_alert_cache_at = None
+        return c
+
+    def test_digest_disabled_when_news_top_level_disabled(self):
+        c = self._controller_with(
+            {"news": {"enabled": False, "digest": {"enabled": True, "hour": 7, "minute": 0}}})
+        _run(c._maybe_send_news_digest(AT_7))
+        self.assertEqual(c.telemetry.sent, [])
+
+    def test_alerts_disabled_when_news_top_level_disabled(self):
+        c = self._controller_with(
+            {"news": {"enabled": False, "digest": {"enabled": True, "alert_lead_min": 15}}})
+        _run(c._maybe_send_news_alerts(RELEASE - timedelta(minutes=10)))
+        self.assertEqual(c.telemetry.sent, [])
+
+
+class _CountingDatetime(datetime):
+    """Subclass swapped in for system_controller's module-level `datetime`
+    name so every other datetime operation (arithmetic, comparisons,
+    `datetime.now`) keeps working unchanged -- only `fromisoformat` counts
+    its calls."""
+
+    calls = 0
+
+    @classmethod
+    def fromisoformat(cls, s):
+        cls.calls += 1
+        return super().fromisoformat(s)
+
+
+class ParsedTimestampCaching(unittest.TestCase):
+    """Fix round 3, Item 3 (Minor, perf): parsed `when_utc` values must be
+    cached alongside the 30s digest cache, not re-parsed on every tick."""
+
+    def test_fromisoformat_runs_once_per_cache_refresh_not_once_per_tick(self):
+        news = _News({"date": "2026-07-30", "count": 1, "events": [EVENT]})
+        c = _controller(news=news)
+        base = RELEASE - timedelta(minutes=30)
+
+        _CountingDatetime.calls = 0
+        original = system_controller.datetime
+        system_controller.datetime = _CountingDatetime
+        try:
+            for i in range(100):
+                _run(c._maybe_send_news_alerts(base + timedelta(milliseconds=i * 10)))
+        finally:
+            system_controller.datetime = original
+
+        # 100 ticks within one 30s cache window must parse the event set once.
+        self.assertEqual(_CountingDatetime.calls, 1)
 
 
 if __name__ == "__main__":

@@ -204,6 +204,11 @@ news:
   # alerts fire `alert_lead_min` before each red-folder release.
   digest:
     enabled: true
+    # `hour` is Africa/Kampala local time (Kampala = UTC+3, no DST) and MUST
+    # be >= 3. The digest content is computed over the UTC calendar day, but
+    # scheduled on this local clock -- below hour 3 local (< 00:00 UTC), the
+    # UTC day has not yet rolled over, so the digest would report yesterday's
+    # events. The default of 7 is safely clear of that boundary.
     hour: 7
     minute: 0
     alert_lead_min: 15

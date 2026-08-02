@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta
 import pytz
 
-from src.strategies.models.gambit_setups import detect_judas
+from src.strategies.models.gambit_setups import detect_judas, detect_reprise
 
 NY = pytz.timezone("US/Eastern")
 CFG = {"sweep_ttl_bars": 12, "body_min_atr": 0.8, "stop_buffer_atr": 0.2, "rr": 2.0}
@@ -143,6 +143,55 @@ class TestJudas(unittest.TestCase):
         self.assertEqual(out["signal"], "BUY")
         self.assertEqual(out["price"], 96.0)
         self.assertAlmostEqual(out["sl"], 94.0 - 0.2)
+
+
+class TestReprise(unittest.TestCase):
+    def sell_fixture(self):
+        b = flat_bars(4)
+        i = 3
+        b["high"][1] = 106.0                   # far extreme two bars back
+        b["open"][i] = 105.0
+        b["close"][i] = 103.5                  # body 1.5 >= 0.8
+        b["is_fvg_bear"][i] = True
+        b["fvg_bottom"][i] = 104.5
+        b["fvg_top"][i] = 105.2
+        return b
+
+    def test_sell_struct_stop(self):
+        out = detect_reprise(self.sell_fixture(), "BEARISH", CFG)
+        self.assertEqual(out["signal"], "SELL")
+        self.assertEqual(out["price"], 104.5)
+        # d = |104.5 - 106.0| + 0.2*1.0 = 1.7 ; sl = entry + d
+        self.assertAlmostEqual(out["sl"], 106.2)
+        self.assertAlmostEqual(out["tp"], 104.5 - 2.0 * 1.7)
+        self.assertEqual(out["setup"], "reprise")
+
+    def test_bias_gate(self):
+        self.assertIsNone(detect_reprise(self.sell_fixture(), "BULLISH", CFG))
+
+    def test_body_boundary(self):
+        b = self.sell_fixture()
+        b["open"][3] = 104.29                  # body 0.79 < 0.8*ATR
+        self.assertIsNone(detect_reprise(b, "BEARISH", CFG))
+
+    def test_zero_atr_rejected(self):
+        b = self.sell_fixture()
+        b["atr"][3] = 0.0
+        self.assertIsNone(detect_reprise(b, "BEARISH", CFG))
+
+    def test_buy_mirror(self):
+        b = flat_bars(4)
+        b["low"][1] = 94.0
+        b["open"][3] = 95.0
+        b["close"][3] = 96.5
+        b["is_fvg_bull"][3] = True
+        b["fvg_top"][3] = 95.5
+        b["fvg_bottom"][3] = 94.9
+        out = detect_reprise(b, "BULLISH", CFG)
+        self.assertEqual(out["signal"], "BUY")
+        self.assertEqual(out["price"], 95.5)
+        # d = |95.5 - 94.0| + 0.2 = 1.7 ; sl = entry - d
+        self.assertAlmostEqual(out["sl"], 93.8)
 
 
 if __name__ == "__main__":

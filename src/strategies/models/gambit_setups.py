@@ -120,3 +120,29 @@ def detect_judas(bars, ny_times, rng, session_start_min, bias, cfg):
         return None
     return {"signal": "BUY", "type": "LIMIT", "price": entry,
             "sl": sl, "tp": entry + cfg["rr"] * risk, "setup": "judas"}
+
+
+def detect_reprise(bars, bias, cfg):
+    """Frozen SilverBullet FVG-displacement entry with the STRUCT stop model
+    (poc_sb_stops stop_price, model='STRUCT'). Evaluates the LAST bar; pure."""
+    i = len(bars["close"]) - 1
+    if i < 2:
+        return None
+    atr = float(bars["atr"][i])
+    if atr <= 0:
+        return None
+    if abs(bars["close"][i] - bars["open"][i]) < cfg["body_min_atr"] * atr:
+        return None
+
+    if bars["is_fvg_bear"][i] and bias == "BEARISH":
+        entry = float(bars["fvg_bottom"][i])
+        d = abs(entry - float(bars["high"][i - 2])) + cfg["stop_buffer_atr"] * atr
+        return {"signal": "SELL", "type": "LIMIT", "price": entry,
+                "sl": entry + d, "tp": entry - cfg["rr"] * d, "setup": "reprise"}
+
+    if bars["is_fvg_bull"][i] and bias == "BULLISH":
+        entry = float(bars["fvg_top"][i])
+        d = abs(entry - float(bars["low"][i - 2])) + cfg["stop_buffer_atr"] * atr
+        return {"signal": "BUY", "type": "LIMIT", "price": entry,
+                "sl": entry - d, "tp": entry + cfg["rr"] * d, "setup": "reprise"}
+    return None

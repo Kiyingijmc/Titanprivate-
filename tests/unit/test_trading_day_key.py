@@ -153,5 +153,109 @@ class PersistDailyAnchorIsCached(unittest.TestCase):
         self.assertEqual(s.state_manager.writes[0][0], expected)
 
 
+CFG = {"risk": {"account": {"max_daily_drawdown_pct": 3.0},
+                "trade": {"risk_per_trade_pct": 1.0}}}
+
+
+class _RollStub:
+    """Drives the edge-triggered trading-day rollover with a REAL RiskManager,
+    so the anchor/equity interactions are the production ones."""
+
+    def __init__(self, seeded_key, equity=0.0):
+        from src.risk.risk_manager import RiskManager
+        self.risk_manager = RiskManager(CFG)
+        if equity:
+            self.risk_manager.update_account_info(equity, equity)
+        self.state_manager = _FakeStore()
+        self.uganda_tz = EAT
+        self._last_persisted_anchor = None
+        self._current_day_key = seeded_key
+
+    _trading_day_key = SystemController.__dict__["_trading_day_key"]
+
+    def roll(self, now):
+        return SystemController._roll_trading_day_if_needed(self, now)
+
+    def persist(self, now):
+        SystemController._persist_daily_anchor(self, now)
+
+
+class TradingDayRollover(unittest.TestCase):
+    """RS-RISK-01 MAJOR-1. The anchor's day must roll on the SAME key the
+    persisted row is stamped with, edge-triggered — not on the 23:45
+    wall-clock minute, which the main loop can miss entirely (it does not run
+    during _wait_for_bridge_connection, an unbounded `while True`)."""
+
+    def test_no_roll_within_the_same_trading_day(self):
+        s = _RollStub("2026-07-31", equity=1000.0)
+        self.assertFalse(s.roll(at(2026, 7, 31, 12, 0)))
+        self.assertFalse(s.roll(at(2026, 7, 31, 23, 44, 59)))
+        self.assertAlmostEqual(s.risk_manager.day_start_equity, 1000.0)
+
+    def test_rolls_once_when_the_key_changes(self):
+        s = _RollStub("2026-07-31", equity=1000.0)
+        s.risk_manager.update_account_info(1000.0, 1200.0)   # equity moved
+        self.assertTrue(s.roll(at(2026, 7, 31, 23, 45, 0)))
+        self.assertAlmostEqual(s.risk_manager.day_start_equity, 1200.0)
+        self.assertEqual(s._current_day_key, "2026-08-01")
+        # idempotent: a second call in the same new day must not roll again
+        self.assertFalse(s.roll(at(2026, 8, 1, 0, 30)))
+
+    def test_roll_without_equity_INVALIDATES_rather_than_keeping_stale(self):
+        """The MAJOR-1 core. Restarted across the boundary with no heartbeat
+        yet: keeping yesterday's anchor is what let it be persisted under the
+        NEW day's key and restored all day. It must be zeroed so
+        update_account_info re-anchors on the first heartbeat."""
+        s = _RollStub("2026-07-31")
+        s.risk_manager.restore_daily_anchor(10000.0)   # yesterday's, restored at boot
+        self.assertAlmostEqual(s.risk_manager.day_start_equity, 10000.0)
+
+        s.roll(at(2026, 8, 1, 0, 20))                  # loop's first iteration, next day
+        self.assertEqual(s.risk_manager.day_start_equity, 0.0,
+                         "stale anchor survived the day rollover")
+
+        # and the next heartbeat anchors fresh from live equity
+        s.risk_manager.update_account_info(10300.0, 10300.0)
+        self.assertAlmostEqual(s.risk_manager.day_start_equity, 10300.0)
+
+    def test_rollover_does_not_touch_the_report_range_trackers(self):
+        """The report-ordering trap. The 23:45 report reads equity_max/min for
+        the day it is reporting on, and the rollover fires BEFORE it in the
+        same iteration. So the rollover must re-anchor ONLY -- clearing the
+        ranges here would make the daily report describe an empty day."""
+        s = _RollStub("2026-07-31", equity=1000.0)
+        s.risk_manager.track_equity(1500.0)    # day's high
+        s.risk_manager.track_equity(900.0)     # day's low
+        hi, lo = s.risk_manager.equity_max, s.risk_manager.equity_min
+
+        s.roll(at(2026, 7, 31, 23, 45, 0))
+
+        self.assertAlmostEqual(s.risk_manager.equity_max, hi)
+        self.assertAlmostEqual(s.risk_manager.equity_min, lo)
+
+    def test_stale_anchor_is_never_persisted_under_the_new_days_key(self):
+        """End-to-end MAJOR-1: the worked scenario from RS-RISK-01.
+
+        Day D anchor 10000 (account grew to 10300). Restart 23:35 restores
+        10000 under key D. The EA is down, so the loop's first iteration is
+        00:20 on D+1 and the 23:45 window is never observed. The old code then
+        wrote (D+1, 10000) to disk -- a 1.94x loss allowance, restored on every
+        further restart that day.
+        """
+        s = _RollStub("2026-07-31")
+        s.risk_manager.restore_daily_anchor(10000.0)
+
+        now = at(2026, 8, 1, 0, 20)
+        s.roll(now)
+        s.persist(now)
+        self.assertEqual(s.state_manager.writes, [],
+                         "persisted an anchor that belongs to the previous day")
+
+        # once a heartbeat lands, the CORRECT day-D+1 anchor is persisted
+        s.risk_manager.update_account_info(10300.0, 10300.0)
+        s.persist(now)
+        self.assertEqual(s.state_manager.writes, [("2026-08-01", 10300.0)])
+
+
 if __name__ == "__main__":
     unittest.main()

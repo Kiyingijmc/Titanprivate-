@@ -176,12 +176,20 @@ class SystemController:
         # RISK-01: restore today's drawdown anchor before the first heartbeat.
         # Without this, every restart re-anchored the 3% breaker to whatever
         # equity happened to be live at boot, discarding the day's realised
-        # drawdown. Strictly monotone: an absent or stale row changes nothing,
-        # so this can only ever KEEP an anchor the old code threw away.
+        # drawdown. An absent or stale row changes nothing here, so boot
+        # restore alone can only KEEP an anchor the old code threw away.
+        #
+        # That is NOT by itself sufficient, and the original design's claim
+        # that the whole change was "strictly monotone" was FALSE (RS-RISK-01
+        # MAJOR-1): safety also depends on the anchor's day being rolled on the
+        # same key the row is stamped with. See _roll_trading_day_if_needed --
+        # without it a stale anchor was re-labelled with the new day's key here
+        # and restored for the rest of that day.
         self._last_persisted_anchor = None
+        self._current_day_key = self._trading_day_key(datetime.now(self.uganda_tz))
         try:
             saved = self.state_manager.get_risk_anchor()
-            today_key = self._trading_day_key(datetime.now(self.uganda_tz))
+            today_key = self._current_day_key
             if saved and saved.get('trading_day_key') == today_key:
                 self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
                 self._last_persisted_anchor = (today_key,
@@ -231,6 +239,28 @@ class SystemController:
     def _trading_day_key(now_uganda):
         """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
         return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
+    def _roll_trading_day_if_needed(self, now_uganda):
+        """Edge-triggered trading-day rollover for the DD anchor (RS-RISK-01 MAJOR-1).
+
+        The 23:45 report block re-anchored as a side effect, but it is
+        LEVEL-triggered on a one-minute wall-clock window and the main loop is
+        not always running during that minute -- `_wait_for_bridge_connection`
+        is an unbounded `while True`, so a restart while the EA is down parks
+        the process for hours and resumes on a later day having never observed
+        23:45. The anchor then still belonged to the old day while
+        `_persist_daily_anchor` stamped it with the NEW day's key.
+
+        Rolling on the key itself makes the anchor and the key provably the
+        same boundary, which is what the design claimed but did not achieve.
+        Returns True when a roll happened (for tests and logging).
+        """
+        key = self._trading_day_key(now_uganda)
+        if key == self._current_day_key:
+            return False
+        self.risk_manager.roll_daily_anchor()
+        self._current_day_key = key
+        return True
 
     def _persist_daily_anchor(self, now_uganda):
         """Write the DD anchor when it CHANGES (RISK-01).
@@ -424,20 +454,29 @@ class SystemController:
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
 
-                # RISK-01: persist the daily DD anchor. Kept out of the
-                # HEARTBEAT branch on purpose -- this is periodic bookkeeping
-                # like the Sync Guard and ghost cleanup above, and
-                # _process_incoming_data must stay pure data-routing. Placed
-                # before the 23:45 block so the post-reset anchor is picked up
-                # on the very next iteration (~1ms later).
-                self._persist_daily_anchor(now_uganda)
+                # RISK-01: roll the DD anchor on the trading-day KEY, before
+                # anything reads it. Edge-triggered, so an outage spanning the
+                # boundary still rolls (the 23:45 window below can be missed
+                # entirely). Anchor only -- the report's range trackers below
+                # must survive to describe the day being reported on.
+                self._roll_trading_day_if_needed(now_uganda)
+
                 if now_uganda.hour == 23 and now_uganda.minute == 45:
                     if not self.report_sent_today:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
-                
+
                 if now_uganda.hour == 0: self.report_sent_today = False
+
+                # RISK-01: persist LAST (RS-RISK-01 MINOR-6). Running before
+                # the rollover/reset wrote the OLD day's anchor under the NEW
+                # day's key on the first iteration after the boundary -- a real
+                # wrong-day row observed live on 2026-08-01 23:45:00.748.
+                # Kept out of the HEARTBEAT branch on purpose: this is periodic
+                # bookkeeping like the Sync Guard and ghost cleanup above, and
+                # _process_incoming_data must stay pure data-routing.
+                self._persist_daily_anchor(now_uganda)
 
                 # --- G. PULSE SYNC ---
                 # 10s PING to keep connection alive

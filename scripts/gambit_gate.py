@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+# ==============================================================================
+# FILE: scripts/gambit_gate.py
+# Gambit kill-screen + 7-criterion gate evaluator (spec 2026-08-02 section 6,
+# pre-registered — thresholds are constants, not flags).
+#
+#   .venv/bin/python scripts/gambit_gate.py --phase kill --setup judas
+#   .venv/bin/python scripts/gambit_gate.py --phase gate --setup judas \
+#       --sweeps data/results/gambit/trades_judas_body_min_atr0.56.csv,...
+# ==============================================================================
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from scripts.poc_sb_stops import SPREADS, COMMISSION_USD_PER_LOT  # noqa: E402
+
+KILL_MIN_N = 150
+KILL_BOOT_DRAWS = 5000
+KILL_SEED = 11
+GATE_OOS_MIN_R = 0.10
+GATE_COST_MAX_R = 0.25
+GATE_STRESS_MULT = 1.5
+GATE_BREADTH_MIN = 3          # of 4 gate symbols
+GATE_SWEEP_MAX_FLIPS = 1      # of 4 sweep runs
+GATE_BOOT_LB = -0.05
+GATE_MAX_SIGNALS_PER_DAY = 2.0
+IS_FRAC = 0.70
+GATE_SYMS = ["US30", "US100", "XAUUSD", "BTCUSD"]
+
+# data/specs.json (bridge-cached broker specs) has NO rows for US100/ETHUSD/
+# XTIUSD (discovered Task 6). Same fallback used there and in
+# scripts/gyro2_gate.py's SPECS_EXTRA: bridge-measured 2026-07-28
+# (Gyroscope-2 gate; closes audit STRAT-04). Consulted only when specs.json
+# lacks the symbol so a real broker spec always wins.
+SPECS_EXTRA = {
+    "US100": {"tick_value": 0.1, "tick_size": 0.01},
+    "ETHUSD": {"tick_value": 0.1, "tick_size": 0.01},
+    "XTIUSD": {"tick_value": 10.0, "tick_size": 0.01},
+}
+
+_SPECS = None  # lazy-loaded inside _cost_r so import never touches the fs
+
+
+def _load_specs():
+    global _SPECS
+    if _SPECS is None:
+        with open(os.path.join(
+                os.path.dirname(__file__), "..", "data", "specs.json")) as f:
+            _SPECS = json.load(f)
+    return _SPECS
+
+
+def _cost_r(sym, risk, mult):
+    specs = _load_specs()
+    sp = specs.get(sym) or SPECS_EXTRA.get(sym, {})
+    tick = float(sp.get("tick_size") or 0) or 1e-5
+    tv = float(sp.get("tick_value") or 0) or 1.0
+    spread = SPREADS.get(sym, 20) * mult * tick
+    comm = (COMMISSION_USD_PER_LOT / tv) * tick
+    return (spread + comm) / risk
+
+
+def add_net(df, spread_mult, exit_model="managed"):
+    df = df.copy()
+    col = "managed_r" if exit_model == "managed" else "gross_r"
+    df["cost_r"] = [
+        _cost_r(s, r, spread_mult) for s, r in zip(df["sym"], df["risk"])]
+    df["net_r"] = df[col] - df["cost_r"]
+    return df
+
+
+def _boot_ci(net, draws, seed, lo_q, hi_q):
+    rng = np.random.default_rng(seed)
+    means = [rng.choice(net, size=len(net), replace=True).mean()
+             for _ in range(draws)]
+    return float(np.quantile(means, lo_q)), float(np.quantile(means, hi_q))
+
+
+def split_is_oos(df):
+    parts_is, parts_oos = [], []
+    for sym, g in df.groupby("sym"):
+        g = g.sort_values("time")
+        k = int(len(g) * IS_FRAC)
+        parts_is.append(g.iloc[:k])
+        parts_oos.append(g.iloc[k:])
+    return pd.concat(parts_is), pd.concat(parts_oos)
+
+
+def evaluate_kill(df, exit_model="managed"):
+    """Phase-1 kill-screen: N floor, bootstrap 95% CI excludes 0 upward,
+    majority of symbols positive, median cost sane.
+
+    `exit_model` is metadata (which R column fed the already-netted `df`,
+    via add_net) — it is not used to recompute anything here, only recorded
+    on the output dict so callers/tests can see what was evaluated.
+    """
+    out = {"n": len(df), "exit_model": exit_model}
+    if len(df) < KILL_MIN_N:
+        out["verdict"] = "INSUFFICIENT-N"
+        return out
+    net = df["net_r"].values
+    lo, hi = _boot_ci(net, KILL_BOOT_DRAWS, KILL_SEED, 0.025, 0.975)
+    out["mean"] = float(net.mean())
+    out["ci_lo"], out["ci_hi"] = lo, hi
+    per_sym = df.groupby("sym")["net_r"].mean()
+    out["syms_pos"] = int((per_sym > 0).sum())
+    out["syms_total"] = len(per_sym)
+    out["median_cost"] = float(df["cost_r"].median())
+    ok = (lo > 0
+          and out["syms_pos"] * 2 > out["syms_total"]
+          and out["median_cost"] <= GATE_COST_MAX_R)
+    out["verdict"] = "PASS" if ok else "FAIL"
+    return out
+
+
+def evaluate_gate(df, sweep_dfs):
+    """Phase-2, all seven pre-registered criteria on ALREADY-NETTED frames
+    (df from add_net at 1x). Stress renets at 1.5x internally."""
+    c = {}
+    is_df, oos_df = split_is_oos(df)
+    c["economics"] = (df["net_r"].mean() > 0
+                      and oos_df["net_r"].mean() >= GATE_OOS_MIN_R)
+    c["cost"] = df["cost_r"].median() <= GATE_COST_MAX_R
+    stress = add_net(df, GATE_STRESS_MULT)
+    c["stress"] = stress["net_r"].mean() >= 0
+    per_sym = df[df["sym"].isin(GATE_SYMS)].groupby("sym")["net_r"].mean()
+    c["breadth"] = int((per_sym >= 0).sum()) >= GATE_BREADTH_MIN
+    base_sign = df["net_r"].mean() > 0
+    flips = sum(1 for sw in sweep_dfs
+                if (sw["net_r"].mean() > 0) != base_sign)
+    c["robustness"] = flips <= GATE_SWEEP_MAX_FLIPS
+    lb, _ = _boot_ci(df["net_r"].values, 2000, KILL_SEED, 0.05, 0.95)
+    c["confidence"] = lb > GATE_BOOT_LB
+    days = pd.to_datetime(df["time"]).dt.date.nunique()
+    c["calibration"] = (len(df) / max(days, 1)) <= GATE_MAX_SIGNALS_PER_DAY
+    return {"criteria": c,
+            "verdict": "GO" if all(c.values()) else "NO-GO",
+            "flips": flips, "oos_mean": float(oos_df["net_r"].mean())}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--phase", choices=["kill", "gate"], required=True)
+    ap.add_argument("--setup", choices=["judas", "reprise"], required=True)
+    ap.add_argument("--exit", choices=["managed", "fixed"], default="managed")
+    ap.add_argument("--dir", default="data/results/gambit")
+    ap.add_argument("--sweeps", default="")
+    a = ap.parse_args()
+    df = pd.read_csv(os.path.join(a.dir, f"trades_{a.setup}.csv"))
+    df = add_net(df, 1.0, a.exit)
+    if a.phase == "kill":
+        out = evaluate_kill(df, a.exit)
+    else:
+        sweeps = [add_net(pd.read_csv(p), 1.0, a.exit)
+                  for p in a.sweeps.split(",") if p]
+        if len(sweeps) != 4:
+            print(f"WARNING: expected 4 sweep files, got {len(sweeps)}")
+        out = evaluate_gate(df, sweeps)
+    print(json.dumps(out, indent=2, default=str))
+
+
+if __name__ == "__main__":
+    main()

@@ -4,7 +4,7 @@ import { sessionStates, zoneOffsetMinutes } from "./sessions";
 describe("sessions", () => {
   it("london+newyork overlap active during Wed 14:00Z", () => {
     const now = new Date("2026-07-15T14:00:00Z");
-    const { sessions, overlaps, activeIds, weekendClosed } = sessionStates(now);
+    const { sessions, overlaps, activeIds, fxClosed } = sessionStates(now);
     const london = sessions.find((s) => s.id === "london")!;
     const newyork = sessions.find((s) => s.id === "newyork")!;
     expect(london.open).toBe(true);
@@ -15,13 +15,42 @@ describe("sessions", () => {
     expect(lnOverlap.active).toBe(true);
     expect(activeIds).toContain("london");
     expect(activeIds).toContain("newyork");
-    expect(weekendClosed).toBe(false);
+    expect(fxClosed).toBe(false);
   });
 
-  it("weekendClosed is true on Saturday", () => {
+  it("fxClosed is true on Saturday", () => {
     const now = new Date("2026-07-18T12:00:00Z");
-    const { weekendClosed } = sessionStates(now);
-    expect(weekendClosed).toBe(true);
+    const { fxClosed } = sessionStates(now);
+    expect(fxClosed).toBe(true);
+  });
+
+  // 2026-08-02: the GUI drew a hard "Markets closed" banner on a Sunday while
+  // SilverBullet was placing an ETHUSD limit. FX being shut is not the same as
+  // the book being shut, and only the caller knows which instruments are traded.
+  describe("crypto-aware closure", () => {
+    const saturday = new Date("2026-07-18T12:00:00Z");
+
+    it("a weekend with crypto in the book is fxClosed but not allClosed", () => {
+      const { fxClosed, allClosed } = sessionStates(saturday, { hasCrypto: true });
+      expect(fxClosed).toBe(true);
+      expect(allClosed).toBe(false);
+    });
+
+    it("a weekend on an FX-only book is allClosed", () => {
+      const { allClosed } = sessionStates(saturday, { hasCrypto: false });
+      expect(allClosed).toBe(true);
+    });
+
+    it("defaults to FX-only when the caller says nothing", () => {
+      expect(sessionStates(saturday).allClosed).toBe(true);
+    });
+
+    it("crypto does not make a weekday look closed", () => {
+      const wed = new Date("2026-07-15T14:00:00Z");
+      const { fxClosed, allClosed } = sessionStates(wed, { hasCrypto: true });
+      expect(fxClosed).toBe(false);
+      expect(allClosed).toBe(false);
+    });
   });
 
   it("london is closed and 'Opens in' before its open time", () => {

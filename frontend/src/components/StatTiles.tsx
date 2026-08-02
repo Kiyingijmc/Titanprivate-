@@ -59,15 +59,26 @@ export function StatTiles({
   dayPnl,
   openPnl,
   openCount,
+  pendingCount = 0,
 }: {
   account: Account;
   arbiter: ArbiterBlock;
-  dayPnl: number;
+  /**
+   * Day P&L measured against the RISK-01 daily anchor, or null when the day is
+   * not yet anchored. This used to be computed client-side as
+   * `equity - account.balance`, but `balance` is latched once at the first
+   * heartbeat after boot — so the tile actually showed floating P&L since
+   * process start and silently re-based on every restart. null renders "—"
+   * rather than a confident 0.00.
+   */
+  dayPnl: number | null;
   /** Live floating P&L summed across all open orders (Σ position.pnl). */
   openPnl: number;
   openCount: number;
+  /** Resting LIMIT/STOP orders — committed risk that has not filled yet. */
+  pendingCount?: number;
 }) {
-  const day = signedPnl(dayPnl);
+  const day = signedPnl(dayPnl ?? 0);
   const DayIcon = day.tone === "profit" ? ArrowUp : day.tone === "loss" ? ArrowDown : Minus;
 
   const open = signedPnl(openPnl);
@@ -88,13 +99,18 @@ export function StatTiles({
       />
       <Tile
         label="Day P&L"
-        value={day.text}
-        toneClass={pnlToneClass(day.tone)}
+        value={dayPnl === null ? "—" : day.text}
+        toneClass={dayPnl === null ? undefined : pnlToneClass(day.tone)}
         testId="tile-daypnl"
-        dataTone={day.tone}
-        icon={<DayIcon className="size-4" aria-hidden />}
+        dataTone={dayPnl === null ? "unanchored" : day.tone}
+        icon={dayPnl === null ? undefined : <DayIcon className="size-4" aria-hidden />}
       />
-      <Tile label="Open Positions" value={String(openCount)} testId="tile-open-positions" />
+      {/* Positions AND resting orders: "0 open" alone hid two live limits. */}
+      <Tile
+        label="Open / Pending"
+        value={`${openCount} / ${pendingCount}`}
+        testId="tile-open-positions"
+      />
       <Tile
         label="Arbiter Approved / Blocked"
         value={`${arbiter.stats.approved} / ${arbiter.stats.submitted - arbiter.stats.approved}`}

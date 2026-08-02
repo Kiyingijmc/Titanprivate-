@@ -50,14 +50,28 @@ const BAND_ALPHA = "B3"; // ~70% — vivid, still lets the now-marker + overlaps
  * 24h session timeline + status chips, driven by `sessionStates()` (T9).
  * Pass `now` for deterministic rendering (tests); defaults to a live tick.
  */
-export function MarketSessions({ now, className }: { now?: Date; className?: string }) {
+export function MarketSessions({
+  now,
+  hasCrypto = false,
+  className,
+}: {
+  now?: Date;
+  /** From the snapshot's market block — a 24/7 instrument in the book means a
+   *  weekend is not a closure, so the timeline keeps rendering. */
+  hasCrypto?: boolean;
+  className?: string;
+}) {
   const ticking = useNow();
   const at = now ?? ticking;
-  const { sessions, overlaps, weekendClosed } = sessionStates(at);
+  const { sessions, overlaps, fxClosed, allClosed } = sessionStates(at, { hasCrypto });
   const nowMin = at.getUTCHours() * 60 + at.getUTCMinutes();
   const byId = new Map(sessions.map((s) => [s.id, s]));
 
-  const activeOverlaps = overlaps.filter((o) => o.active);
+  // Suppress the overlap badge whenever the FX cash market is shut. It used to
+  // be computed outside the closed branch, so the card could show a live
+  // "Tokyo × London overlap" chip sitting directly on top of its own
+  // "Markets closed" banner.
+  const activeOverlaps = fxClosed ? [] : overlaps.filter((o) => o.active);
   const overlapBands = activeOverlaps.flatMap((o) => {
     const a = byId.get(o.ids[0]);
     const b = byId.get(o.ids[1]);
@@ -91,15 +105,25 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
         )}
       </div>
 
-      {weekendClosed ? (
+      {allClosed ? (
         <div
           data-testid="weekend-closed-banner"
           className="flex items-center justify-center rounded-md border border-border bg-surface-2 py-6 text-sm text-muted-foreground"
         >
-          Markets closed — opens Sunday
+          {/* Was "opens Sunday", which read as wrong when you looked at it on a
+              Sunday. Name the actual reopen instant instead. */}
+          Markets closed — FX reopens Sunday 22:00 UTC
         </div>
       ) : (
         <>
+          {fxClosed && (
+            <div
+              data-testid="crypto-only-note"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-muted-foreground"
+            >
+              FX closed — crypto trades through the weekend, so the engine is still live.
+            </div>
+          )}
           <div
             data-testid="session-timeline"
             className="relative h-8 w-full overflow-hidden rounded-md bg-surface-2"

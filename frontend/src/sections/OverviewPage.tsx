@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Panel, type PanelStatus } from "@/components/shell/Panel";
 import { StatTiles } from "@/components/StatTiles";
+import { RiskPanel } from "@/components/RiskPanel";
 import { EquitySparkline } from "@/components/EquitySparkline";
 import { Controls } from "@/components/Controls";
 import { MarketSessions } from "@/components/market/MarketSessions";
@@ -86,7 +87,7 @@ export default function OverviewPage() {
       {/* Market Context strip (Task 12): always-on session timeline + local
           clock + USD bias, above the account KPIs. */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
-        <MarketSessions />
+        <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />
       </div>
@@ -96,12 +97,19 @@ export default function OverviewPage() {
           <StatTiles
             account={snapshot.account}
             arbiter={snapshot.arbiter}
-            dayPnl={snapshot.account.equity - snapshot.account.balance}
+            dayPnl={snapshot.risk?.day_pnl ?? null}
             openPnl={snapshot.positions.reduce((sum, p) => sum + p.pnl, 0)}
             openCount={snapshot.positions.length}
+            pendingCount={snapshot.orders?.length ?? 0}
           />
         )}
       </Panel>
+
+      {snapshot?.risk && (
+        <Panel status={baseStatus} title="Risk">
+          <RiskPanel risk={snapshot.risk} />
+        </Panel>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel status={baseStatus} title="Equity">

@@ -67,7 +67,8 @@ describe("App", () => {
 
     // Default route (/overview) renders the real Overview page (Plan 2 Task 2): KPI tiles + top-positions panel.
     expect(await screen.findByText("Top Positions")).toBeInTheDocument();
-    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1");
+    // "open / pending" — the fixture has one position and no resting orders.
+    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1 / 0");
   });
 
   it("navigates to the real Positions page when the Positions nav link is clicked", async () => {

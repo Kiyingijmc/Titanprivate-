@@ -42,3 +42,81 @@ def compute_presession_range(ny_times, highs, lows,
     if n < min_bars:
         return None
     return hi, lo, n
+
+
+def _session_first_idx(ny_times, session_start_min):
+    """Index of the first bar of the CURRENT session instance (most recent
+    crossing of session_start at or before the last bar), or None."""
+    last = ny_times[-1]
+    anchor = last.replace(hour=session_start_min // 60,
+                          minute=session_start_min % 60,
+                          second=0, microsecond=0)
+    if anchor > last:
+        anchor -= timedelta(days=1)
+    first = None
+    for i in range(len(ny_times) - 1, -1, -1):
+        if ny_times[i] < anchor:
+            break
+        first = i
+    return first
+
+
+def detect_judas(bars, ny_times, rng, session_start_min, bias, cfg):
+    """Session-open sweep of the pre-session range, then displacement back
+    inside, traded with H1 bias. Evaluates the LAST bar; pure. Spec section 3."""
+    rng_hi, rng_lo = rng
+    i = len(ny_times) - 1
+    first = _session_first_idx(ny_times, session_start_min)
+    if first is None:
+        return None
+
+    hi_breach = lo_breach = None
+    for k in range(first, i + 1):
+        if hi_breach is None and bars["high"][k] > rng_hi:
+            hi_breach = k
+        if lo_breach is None and bars["low"][k] < rng_lo:
+            lo_breach = k
+    if (hi_breach is None) == (lo_breach is None):
+        return None                    # no sweep, or both sides = ambiguous
+
+    atr = float(bars["atr"][i])
+    if atr <= 0:
+        return None
+    body = abs(bars["close"][i] - bars["open"][i])
+    if body < cfg["body_min_atr"] * atr:
+        return None
+    close = float(bars["close"][i])
+    if not (rng_lo < close < rng_hi):
+        return None                    # must close strictly back inside
+
+    if hi_breach is not None:          # highs swept -> reversal SELL
+        if i - hi_breach > cfg["sweep_ttl_bars"]:
+            return None
+        if bias != "BEARISH" or close >= bars["open"][i]:
+            return None
+        if not bars["is_fvg_bear"][i]:
+            return None
+        entry = float(bars["fvg_bottom"][i])
+        sweep_ext = max(bars["high"][k] for k in range(hi_breach, i + 1))
+        sl = sweep_ext + cfg["stop_buffer_atr"] * atr
+        risk = sl - entry
+        if risk <= 0:
+            return None
+        return {"signal": "SELL", "type": "LIMIT", "price": entry,
+                "sl": sl, "tp": entry - cfg["rr"] * risk, "setup": "judas"}
+
+    # lows swept -> reversal BUY
+    if i - lo_breach > cfg["sweep_ttl_bars"]:
+        return None
+    if bias != "BULLISH" or close <= bars["open"][i]:
+        return None
+    if not bars["is_fvg_bull"][i]:
+        return None
+    entry = float(bars["fvg_top"][i])
+    sweep_ext = min(bars["low"][k] for k in range(lo_breach, i + 1))
+    sl = sweep_ext - cfg["stop_buffer_atr"] * atr
+    risk = entry - sl
+    if risk <= 0:
+        return None
+    return {"signal": "BUY", "type": "LIMIT", "price": entry,
+            "sl": sl, "tp": entry + cfg["rr"] * risk, "setup": "judas"}

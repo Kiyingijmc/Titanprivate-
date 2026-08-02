@@ -1,0 +1,240 @@
+{
+  "study": "aftershock_kill_screen",
+  "registered": "docs/research/2026-08-01-wave2-gate-triage.md",
+  "provenance": "data/lake/frozen/PROVENANCE.md",
+  "params": {
+    "q": 2.5,
+    "half_life": 24,
+    "window": 200,
+    "s_lo_pctile": 20.0,
+    "is_frac": 0.7,
+    "primary_horizon": 8,
+    "seed": 20260801,
+    "cost_mult": 8.0,
+    "min_pooled_n": 150
+  },
+  "pooled": {
+    "n": 701,
+    "mean_h8": -1.8779645079366244e-05,
+    "lo95": -0.00044346658845366595,
+    "hi95": 0.0004380490176454809,
+    "diff_mean": -1.2865482710408352e-05,
+    "diff_lo95": -0.00045661361110293803,
+    "diff_hi95": 0.0004492580510588467,
+    "ols_beta": -2.1581319382638123e-05,
+    "ols_lo95": -0.00046124993672901944,
+    "ols_hi95": 0.00042460758274226695,
+    "positive_symbols": 3
+  },
+  "criteria": {
+    "c1_pooled_ci": false,
+    "c2_separation": false,
+    "c3_session_control": false,
+    "c4_consistency": false,
+    "c5_sample_floor": true,
+    "c6_cost_dead_symbols": []
+  },
+  "verdict": "NO-GO",
+  "per_symbol": {
+    "EURUSD": {
+      "n_events": 92,
+      "n_used": 92,
+      "mean_signed_fwd_8": -0.0003804766815694058,
+      "median_event_range": 0.0039049999999999363,
+      "spread": 8e-05,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": -1.6745300879739902e-05,
+      "mean_h4": -0.0003144125071163013,
+      "mean_h8": -0.0003804766815694058,
+      "mean_h24": -0.0006429306513809106
+    },
+    "GBPUSD": {
+      "n_events": 76,
+      "n_used": 75,
+      "mean_signed_fwd_8": -0.00025287601584324525,
+      "median_event_range": 0.004345000000000043,
+      "spread": 0.00012000000000000002,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": 0.0001273144997674899,
+      "mean_h4": 2.272370220020174e-05,
+      "mean_h8": -0.00025287601584324525,
+      "mean_h24": -0.0004132349367476525
+    },
+    "USDJPY": {
+      "n_events": 49,
+      "n_used": 49,
+      "mean_signed_fwd_8": -5.630610613486763e-05,
+      "median_event_range": 0.7740000000000009,
+      "spread": 0.01,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": 7.010324902764595e-05,
+      "mean_h4": 8.938227900888921e-05,
+      "mean_h8": -5.630610613486763e-05,
+      "mean_h24": 0.00014730274464842678
+    },
+    "AUDUSD": {
+      "n_events": 60,
+      "n_used": 60,
+      "mean_signed_fwd_8": -0.00035968050006163026,
+      "median_event_range": 0.003025,
+      "spread": 0.0001,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": -3.4897130811290905e-05,
+      "mean_h4": -7.904563667132936e-05,
+      "mean_h8": -0.00035968050006163026,
+      "mean_h24": -0.0007260183304381626
+    },
+    "USDCAD": {
+      "n_events": 72,
+      "n_used": 72,
+      "mean_signed_fwd_8": 0.00023092306937759952,
+      "median_event_range": 0.0035450000000000204,
+      "spread": 0.00012000000000000002,
+      "cost_alive": true,
+      "positive": true,
+      "mean_h1": -0.0001095993372985413,
+      "mean_h4": 5.907189067747549e-05,
+      "mean_h8": 0.00023092306937759952,
+      "mean_h24": -0.00011530791203190338
+    },
+    "GBPJPY": {
+      "n_events": 46,
+      "n_used": 46,
+      "mean_signed_fwd_8": -0.00048251094144658856,
+      "median_event_range": 0.8004999999999995,
+      "spread": 0.025,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": -1.969661220366116e-06,
+      "mean_h4": -0.0005016643297965049,
+      "mean_h8": -0.00048251094144658856,
+      "mean_h24": -0.0013912671091946634
+    },
+    "XAUUSD": {
+      "n_events": 85,
+      "n_used": 84,
+      "mean_signed_fwd_8": 1.3077650353827897e-05,
+      "median_event_range": 16.76000000000022,
+      "spread": 0.2,
+      "cost_alive": true,
+      "positive": true,
+      "mean_h1": 0.00012268836788897504,
+      "mean_h4": 0.000383014727744718,
+      "mean_h8": 1.3077650353827897e-05,
+      "mean_h24": -0.0010489489670667805
+    },
+    "US30": {
+      "n_events": 120,
+      "n_used": 120,
+      "mean_signed_fwd_8": -0.0006356452954572767,
+      "median_event_range": 198.34999999999854,
+      "spread": 2.0,
+      "cost_alive": true,
+      "positive": false,
+      "mean_h1": -0.0005485057326704013,
+      "mean_h4": -0.0005458176623928631,
+      "mean_h8": -0.0006356452954572767,
+      "mean_h24": -0.0006232226690138305
+    },
+    "BTCUSD": {
+      "n_events": 103,
+      "n_used": 103,
+      "mean_signed_fwd_8": 0.001416435039153465,
+      "median_event_range": 1206.1800000000076,
+      "spread": 10.0,
+      "cost_alive": true,
+      "positive": true,
+      "mean_h1": -6.142750195416279e-06,
+      "mean_h4": 0.0011005060451579562,
+      "mean_h8": 0.001416435039153465,
+      "mean_h24": -8.379104493508666e-05
+    }
+  },
+  "robustness": [
+    {
+      "q": 2.0,
+      "half_life": 12,
+      "n": 1223,
+      "mean_h8": -0.00018804063650840156,
+      "lo95": -0.0005306270366177177,
+      "hi95": 0.00014880855674440796,
+      "primary": false
+    },
+    {
+      "q": 2.0,
+      "half_life": 24,
+      "n": 1326,
+      "mean_h8": -0.00012139817669010224,
+      "lo95": -0.0005016462783355712,
+      "hi95": 0.00025147295672169935,
+      "primary": false
+    },
+    {
+      "q": 2.0,
+      "half_life": 48,
+      "n": 1470,
+      "mean_h8": 7.623401276080518e-05,
+      "lo95": -0.00027520583209841474,
+      "hi95": 0.00043868136676097777,
+      "primary": false
+    },
+    {
+      "q": 2.5,
+      "half_life": 12,
+      "n": 672,
+      "mean_h8": 0.00012649645814885975,
+      "lo95": -0.00033175499279777994,
+      "hi95": 0.0005859042487154639,
+      "primary": false
+    },
+    {
+      "q": 2.5,
+      "half_life": 24,
+      "n": 701,
+      "mean_h8": -1.8779645079366244e-05,
+      "lo95": -0.00044346658845366595,
+      "hi95": 0.0004380490176454809,
+      "primary": true
+    },
+    {
+      "q": 2.5,
+      "half_life": 48,
+      "n": 781,
+      "mean_h8": -5.413665607957166e-05,
+      "lo95": -0.00046669984727520486,
+      "hi95": 0.0003607338215650428,
+      "primary": false
+    },
+    {
+      "q": 3.0,
+      "half_life": 12,
+      "n": 430,
+      "mean_h8": 0.00019166019582375705,
+      "lo95": -0.0003276878568308831,
+      "hi95": 0.0007196378550562439,
+      "primary": false
+    },
+    {
+      "q": 3.0,
+      "half_life": 24,
+      "n": 434,
+      "mean_h8": 9.591311102219026e-05,
+      "lo95": -0.0005083412745552395,
+      "hi95": 0.0006783445289903511,
+      "primary": false
+    },
+    {
+      "q": 3.0,
+      "half_life": 48,
+      "n": 485,
+      "mean_h8": 3.281730945035356e-05,
+      "lo95": -0.0005582216257464468,
+      "hi95": 0.000601704121328653,
+      "primary": false
+    }
+  ]
+}

@@ -135,6 +135,62 @@ class DailyDigest(unittest.TestCase):
         self.assertEqual(c.telemetry.sent, [])
 
 
+class TradingDayBoundaryCatchUp(unittest.TestCase):
+    """Round-2 regression (Critical, caught by review): `_trading_day_key`
+    rolls over 15 minutes EARLY (23:45 local, not midnight -- see its
+    docstring). The catch-up guard's `scheduled` must be anchored to the
+    trading day the KEY represents, not to `now_local`'s calendar date.
+
+    Anchoring to `now_local`'s date instead makes every single day
+    self-poison in the 23:45-23:59:59 window: `key` has already rolled to
+    TOMORROW, but `scheduled` (built off today's date) sits ~17h in the
+    past, so `elapsed_hours` blows past `catch_up_hours` immediately and the
+    catch-up branch marks tomorrow's key sent before tomorrow's real 07:00
+    ever arrives. Net effect under completely normal, continuous operation
+    (no restarts, no stalls): the digest fires once, ever, and then goes
+    silent forever.
+
+    test_a_new_trading_day_key_sends_again (above) jumps directly between
+    two 07:00 instants and never calls the method inside the danger window,
+    which is why it did not catch this."""
+
+    def test_five_consecutive_trading_days_each_get_exactly_one_digest(self):
+        c = _controller()
+        now = datetime(2026, 8, 1, 0, 0)
+        end = datetime(2026, 8, 6, 0, 0)
+        step = timedelta(seconds=60)
+        send_times = []
+        prev_len = 0
+        while now < end:
+            _run(c._maybe_send_news_digest(now))
+            if len(c.telemetry.sent) > prev_len:
+                send_times.append(now)
+                prev_len = len(c.telemetry.sent)
+            now += step
+
+        self.assertEqual(len(c.telemetry.sent), 5,
+                          f"sent at: {send_times}")
+        for t in send_times:
+            self.assertEqual((t.hour, t.minute), (7, 0))
+        self.assertEqual(len({t.date() for t in send_times}), 5)
+
+    def test_a_call_at_2350_does_not_poison_tomorrows_key(self):
+        """A call inside the early-rollover window (23:45-23:59:59, where
+        `key` has already rolled to tomorrow) must not mark tomorrow's key
+        as sent -- tomorrow's real 07:00 must still send."""
+        c = _controller()
+        at_2350 = datetime(2026, 8, 1, 23, 50)
+        _run(c._maybe_send_news_digest(at_2350))
+        self.assertEqual(c.telemetry.sent, [])   # nothing due yet today
+
+        tomorrow_key = c._trading_day_key(datetime(2026, 8, 2, 7, 0))
+        self.assertNotEqual(c.news_digest_sent_for_key, tomorrow_key,
+                            "23:50 call must not pre-mark tomorrow's key sent")
+
+        _run(c._maybe_send_news_digest(datetime(2026, 8, 2, 7, 0)))
+        self.assertEqual(len(c.telemetry.sent), 1)
+
+
 RELEASE = datetime(2026, 7, 30, 12, 30, tzinfo=timezone.utc)
 EVENT = {"when_utc": RELEASE.isoformat(), "currency": "USD", "title": "Core PCE",
          "forecast": "0.3%", "previous": "0.2%", "affects": ["EURUSD"]}

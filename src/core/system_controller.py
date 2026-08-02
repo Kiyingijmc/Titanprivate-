@@ -1176,12 +1176,26 @@ class SystemController:
 
             hour = int(cfg.get("hour", 7))
             minute = int(cfg.get("minute", 0))
-            if (now_local.hour, now_local.minute) < (hour, minute):
-                return
+
+            # `scheduled` must be anchored to the CALENDAR DATE the trading
+            # day `key` represents, not to `now_local`'s own calendar date --
+            # `_trading_day_key` rolls over 15 minutes EARLY (23:45 local),
+            # so during 23:45:00-23:59:59 `now_local`'s date is still today
+            # while `key` already names tomorrow. Anchoring to now_local's
+            # date there would make `scheduled` ~17h in the past relative to
+            # a `now_local` that is only minutes into the new key, tripping
+            # the catch-up branch and marking TOMORROW's key sent before
+            # tomorrow's real schedule ever arrives -- under continuous
+            # operation with no stalls at all, the digest would fire once
+            # and then never again (round-2 review finding).
+            key_date = datetime.strptime(key, "%Y-%m-%d").date()
+            scheduled = now_local.replace(
+                year=key_date.year, month=key_date.month, day=key_date.day,
+                hour=hour, minute=minute, second=0, microsecond=0)
+            if now_local < scheduled:
+                return   # not yet time for THIS trading day
 
             catch_up_hours = float(cfg.get("catch_up_hours", 3))
-            scheduled = now_local.replace(hour=hour, minute=minute, second=0,
-                                          microsecond=0)
             elapsed_hours = (now_local - scheduled).total_seconds() / 3600.0
             if elapsed_hours > catch_up_hours:
                 self.logger.log_event(

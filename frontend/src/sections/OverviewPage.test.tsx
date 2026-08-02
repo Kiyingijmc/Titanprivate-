@@ -142,4 +142,18 @@ describe("OverviewPage", () => {
     expect(screen.getAllByTestId("dollar-bias").length).toBeGreaterThan(0);
     expect(screen.getByText(/33/)).toBeInTheDocument();
   });
+
+  it("renders the NewsPanel when the snapshot carries a news block", async () => {
+    renderOverview({
+      snapshot: makeSnapshot({
+        news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} },
+      }),
+    });
+    expect(await screen.findByTestId("news-panel")).toBeInTheDocument();
+  });
+
+  it("still renders the NewsPanel (in its unavailable state) when snapshot.news is undefined", async () => {
+    renderOverview();
+    expect(await screen.findByTestId("news-panel")).toBeInTheDocument();
+  });
 });

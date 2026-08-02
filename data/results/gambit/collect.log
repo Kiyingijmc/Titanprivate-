@@ -1,0 +1,8 @@
+  US30: 166 intents, 93 filled
+  US100: 172 intents, 101 filled
+  XAUUSD: 307 intents, 160 filled
+  BTCUSD: 571 intents, 309 filled
+  ETHUSD: 487 intents, 254 filled
+  XTIUSD: 121 intents, 68 filled
+judas: n=100 -> data/results/gambit/trades_judas.csv
+reprise: n=885 -> data/results/gambit/trades_reprise.csv

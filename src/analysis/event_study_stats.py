@@ -16,8 +16,14 @@ def session_bucket(hours: np.ndarray) -> np.ndarray:
 
 def bootstrap_mean_ci(x, rng, n_draws: int = 5000):
     x = np.asarray(x, dtype=float)
-    idx = rng.integers(0, len(x), size=(n_draws, len(x)))
-    means = x[idx].mean(axis=1)
+    n = len(x)
+    chunk_size = max(1, 5_000_000 // max(n, 1))
+    means = np.empty(n_draws)
+    for i in range(0, n_draws, chunk_size):
+        end = min(i + chunk_size, n_draws)
+        chunk_len = end - i
+        idx = rng.integers(0, n, size=(chunk_len, n))
+        means[i:end] = x[idx].mean(axis=1)
     lo, hi = np.percentile(means, [2.5, 97.5])
     return float(x.mean()), float(lo), float(hi)
 
@@ -25,9 +31,15 @@ def bootstrap_mean_ci(x, rng, n_draws: int = 5000):
 def bootstrap_diff_ci(a, b, rng, n_draws: int = 5000):
     a = np.asarray(a, dtype=float)
     b = np.asarray(b, dtype=float)
-    ia = rng.integers(0, len(a), size=(n_draws, len(a)))
-    ib = rng.integers(0, len(b), size=(n_draws, len(b)))
-    diffs = a[ia].mean(axis=1) - b[ib].mean(axis=1)
+    na, nb = len(a), len(b)
+    chunk_size = max(1, 5_000_000 // max(na, nb, 1))
+    diffs = np.empty(n_draws)
+    for i in range(0, n_draws, chunk_size):
+        end = min(i + chunk_size, n_draws)
+        chunk_len = end - i
+        ia = rng.integers(0, na, size=(chunk_len, na))
+        ib = rng.integers(0, nb, size=(chunk_len, nb))
+        diffs[i:end] = a[ia].mean(axis=1) - b[ib].mean(axis=1)
     lo, hi = np.percentile(diffs, [2.5, 97.5])
     return float(a.mean() - b.mean()), float(lo), float(hi)
 

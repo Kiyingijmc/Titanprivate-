@@ -2,13 +2,20 @@ import { useEffect, useRef, useState } from "react";
 
 const MAX_POINTS = 300;
 
-/** One live sample. `ts` is a REAL UTC epoch second (`Date.now() / 1000`) —
- * unlike `useEquityBuffer`'s synthetic monotonic counter, that is the whole
- * point here: these points get stitched onto the end of a fetched
- * `EquitySeries`, whose x-axis is real epoch seconds, so a fake x-value would
- * misplace them on the shared axis. */
+/**
+ * One live sample.
+ *
+ * The field is `clientTs`, not `ts`, and the name is load-bearing: it is a
+ * BROWSER epoch second (`Date.now() / 1000`) and is NOT comparable to the
+ * server `ts` values in an `EquitySeries`. These points get stitched onto the
+ * end of a fetched series that shares one X axis with them, so they must be
+ * translated onto the server clock first (`serverClockOffset` in
+ * `useEquitySeries`, applied by `withLiveTail`). An earlier revision called
+ * this `ts` and compared it to server timestamps directly — a client a few
+ * minutes slow then rendered no tail at all, silently.
+ */
 export interface LiveEquityPoint {
-  ts: number;
+  clientTs: number;
   equity: number;
 }
 
@@ -34,9 +41,9 @@ export function useLiveEquityTail(equity: number | undefined): LiveEquityPoint[]
   useEffect(() => {
     if (equity === undefined || equity === lastRef.current) return;
     lastRef.current = equity;
-    const ts = Date.now() / 1000;
+    const clientTs = Date.now() / 1000;
     setPoints((prev) => {
-      const next = [...prev, { ts, equity }];
+      const next = [...prev, { clientTs, equity }];
       return next.length > MAX_POINTS ? next.slice(next.length - MAX_POINTS) : next;
     });
   }, [equity]);

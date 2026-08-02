@@ -4,7 +4,13 @@ import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
 import type { EquitySeries } from "@/lib/types";
 
-export interface EquityPoint {
+/**
+ * A point in the legacy live-tail buffer. `t` is a monotonic SAMPLE COUNTER,
+ * not a clock — deliberately, so the streaming chart stays deterministic in
+ * tests. Distinct from `EquityPoint` in `@/lib/types`, whose `ts` is real UTC
+ * epoch seconds; the two must never be mixed on one axis.
+ */
+export interface BufferPoint {
   t: number;
   equity: number;
 }
@@ -24,9 +30,16 @@ function formatTick(ts: number, range: string): string {
  * Equity trend as a streaming area chart (dataviz: `--accent` stroke + fading
  * gradient fill, recessive grid, hover tooltip, no entrance animation). The Y
  * domain AUTO-FITS the sampled range (with padding) so small live equity moves
- * are visible instead of a flat line pinned to the top of a 0-based axis. The X
- * axis is UTC epoch seconds, rendered in the viewer's local time. Current value
- * + session delta sit top-right.
+ * are visible instead of a flat line pinned to the top of a 0-based axis.
+ *
+ * The X axis differs by render path: on the `series` path it is UTC epoch
+ * seconds rendered in the viewer's local time; on the legacy `points` path it
+ * is a monotonic sample counter carrying no time meaning, and stays hidden.
+ *
+ * The value + delta readout sits top-right and is ALWAYS labelled with the
+ * basis it was computed over, because the two paths measure different things
+ * ("session" = since this tab opened, vs the selected window) and would
+ * otherwise swap an unexplained number under the user on first fetch.
  *
  * Two render paths: the legacy `points` prop (a plain live-tail buffer, used by
  * the WS streaming path) and the optional `series` prop (a full API response
@@ -40,7 +53,7 @@ export function EquitySparkline({
   width = "100%",
   height = 140,
 }: {
-  points: EquityPoint[];
+  points: BufferPoint[];
   series?: EquitySeries;
   width?: number | string;
   height?: number;
@@ -77,13 +90,16 @@ export function EquitySparkline({
       className="relative"
       style={{ width: "100%", height }}
       role="img"
-      aria-label={`Equity trend. Current ${money(last)}, ${up ? "up" : "down"} ${money(Math.abs(delta))} over the last ${points.length} samples.`}
+      aria-label={`Equity trend. Current ${money(last)}, ${up ? "up" : "down"} ${money(Math.abs(delta))} this session (since this tab opened).`}
     >
       <div className="pointer-events-none absolute right-1 top-0 z-10 flex items-baseline gap-2" aria-hidden>
         <span className="font-mono tabnum text-sm font-semibold text-foreground">{money(last)}</span>
         <span className={cn("font-mono tabnum text-xs", up ? "text-profit" : "text-loss")}>
           {up ? "+" : ""}
           {money(delta)}
+        </span>
+        <span data-testid="equity-delta-basis" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          session
         </span>
       </div>
       <ResponsiveContainer width={width} height={height}>
@@ -115,6 +131,7 @@ export function EquitySparkline({
               fontSize: 12,
             }}
             labelStyle={{ display: "none" }}
+            isAnimationActive={false}
             formatter={(v: number) => [money(v), "Equity"] as [string, string]}
           />
           <Area
@@ -145,8 +162,14 @@ function SeriesChart({
 }) {
   const rows = toChartRows(series);
 
-  const equityValues = rows.map((r) => r.equity).filter((v): v is number => v !== null);
-  const balanceValues = rows.map((r) => r.balance).filter((v): v is number => v !== null);
+  // Guard on FINITE, not merely `!== null`. `EquityPoint`'s index signature in
+  // lib/types.ts means TypeScript types an ABSENT series key as `number`, so a
+  // future registry change that drops e.g. `balance` would slip `undefined`
+  // past a null check, put it in the domain array, and make Math.min return
+  // NaN — rendering an empty chart with no error and no empty state.
+  const isFinite_ = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  const equityValues = rows.map((r) => r.equity).filter(isFinite_);
+  const balanceValues = rows.map((r) => r.balance).filter(isFinite_);
   const allValues = [...equityValues, ...balanceValues];
 
   if (allValues.length === 0) {
@@ -174,7 +197,7 @@ function SeriesChart({
   // in source, invisible on screen. Domain is [floor, 0] with headroom below
   // the deepest drawdown in the window; when every drawdown is 0 (no losses
   // yet) fall back to a small fixed band so the axis stays well-formed.
-  const drawdownValues = rows.map((r) => r.drawdown).filter((v): v is number => v !== null);
+  const drawdownValues = rows.map((r) => r.drawdown).filter(isFinite_);
   const minDrawdown = drawdownValues.length > 0 ? Math.min(...drawdownValues) : 0;
   const ddFloor = minDrawdown < 0 ? minDrawdown * 1.18 : -1;
 
@@ -189,13 +212,16 @@ function SeriesChart({
       className="relative"
       style={{ width: "100%", height }}
       role="img"
-      aria-label={`Equity trend for the ${series.range} window. Current ${money(last)}, ${up ? "up" : "down"} ${money(Math.abs(delta))}.`}
+      aria-label={`Equity trend for the ${series.range} window. Current ${money(last)}, ${up ? "up" : "down"} ${money(Math.abs(delta))} over that window.`}
     >
       <div className="pointer-events-none absolute right-1 top-0 z-10 flex items-baseline gap-2" aria-hidden>
         <span className="font-mono tabnum text-sm font-semibold text-foreground">{money(last)}</span>
         <span className={cn("font-mono tabnum text-xs", up ? "text-profit" : "text-loss")}>
           {up ? "+" : ""}
           {money(delta)}
+        </span>
+        <span data-testid="equity-delta-basis" className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {series.range}
         </span>
       </div>
       <ResponsiveContainer width={width} height={height}>
@@ -243,6 +269,7 @@ function SeriesChart({
               color: "hsl(var(--foreground))",
               fontSize: 12,
             }}
+            isAnimationActive={false}
             labelFormatter={(v: number) => formatTick(v, series.range)}
             formatter={(v: number, name: string) => [
               money(v),

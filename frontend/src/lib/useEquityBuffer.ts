@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { EquityPoint } from "@/components/EquitySparkline";
+import type { BufferPoint } from "@/components/EquitySparkline";
 
 const MAX_POINTS = 120;
 const STORAGE_KEY = "titan.equity.buffer";
 
 /** Restore the last persisted trend so a reload shows recent history, not one point. */
-function loadPersisted(): EquityPoint[] {
+function loadPersisted(): BufferPoint[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
@@ -29,8 +29,8 @@ function loadPersisted(): EquityPoint[] {
  * The buffer is persisted to localStorage and restored on mount, so a browser
  * reload keeps the recent trend instead of collapsing to a single point.
  */
-export function useEquityBuffer(equity: number | undefined): EquityPoint[] {
-  const [points, setPoints] = useState<EquityPoint[]>(loadPersisted);
+export function useEquityBuffer(equity: number | undefined): BufferPoint[] {
+  const [points, setPoints] = useState<BufferPoint[]>(loadPersisted);
   const counterRef = useRef(points.length ? points[points.length - 1].t : 0);
   const lastRef = useRef<number | undefined>(points.length ? points[points.length - 1].equity : undefined);
 

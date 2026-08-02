@@ -7,10 +7,24 @@ export interface ChartRow {
   drawdown: number | null;
 }
 
+/**
+ * The single admission gate for a number entering the chart.
+ *
+ * `null` from the API is a declared gap; `undefined` is an ABSENT series key
+ * (see `EquityPoint`) and `NaN`/`Infinity` are corrupt. All three must become
+ * `null` here rather than being passed through, because every downstream
+ * consumer treats "not null" as "safe to do arithmetic with" — and a single
+ * `undefined` reaching `Math.min(...)` yields `NaN`, which Recharts renders as
+ * an empty chart with no error.
+ */
+export function finiteOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 function nextRealTs(points: (EquityPoint | null)[], from: number): number | null {
   for (let i = from; i < points.length; i++) {
     const p = points[i];
-    if (p !== null) return p.ts;
+    if (p !== null && finiteOrNull(p.ts) !== null) return p.ts;
   }
   return null;
 }
@@ -34,6 +48,14 @@ function nextRealTs(points: (EquityPoint | null)[], from: number): number | null
  * real point before and after it; if there isn't a real point on both sides
  * (e.g. a trailing null with nothing after it), we drop the row rather than
  * guess a position.
+ *
+ * Every emitted value passes `finiteOrNull` first. In particular `drawdown` is
+ * computed ONLY when equity and peak are BOTH finite: `null - 10000` coerces to
+ * `-10000` in JS, so a bucket that is null for equity but numeric for peak would
+ * otherwise fabricate a full-equity drawdown, set the drawdown axis floor by
+ * itself, and squash every real drawdown in the window into an invisible sliver
+ * — the same Critical the dedicated drawdown axis already fixed once, arriving
+ * through a different door.
  */
 export function toChartRows(series: EquitySeries): ChartRow[] {
   const rows: ChartRow[] = [];
@@ -58,9 +80,14 @@ export function toChartRows(series: EquitySeries): ChartRow[] {
       rows.push({ ts, equity: null, balance: null, drawdown: null });
       continue;
     }
-    const peak = typeof p.peak === "number" ? p.peak : p.equity;
-    rows.push({ ts: p.ts, equity: p.equity, balance: p.balance, drawdown: p.equity - peak });
-    lastRealTs = p.ts;
+    const ts = finiteOrNull(p.ts);
+    if (ts === null) continue;   // an unplottable x would crater the dataMin/dataMax domain
+    const equity = finiteOrNull(p.equity);
+    const balance = finiteOrNull(p.balance);
+    const peak = finiteOrNull(p.peak) ?? equity;
+    const drawdown = equity !== null && peak !== null ? equity - peak : null;
+    rows.push({ ts, equity, balance, drawdown });
+    lastRealTs = ts;
   }
   return rows;
 }

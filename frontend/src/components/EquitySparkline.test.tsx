@@ -93,10 +93,116 @@ describe("EquitySparkline", () => {
     expect(container.querySelector("path.recharts-line-curve")).not.toBeNull();
   });
 
-  it("never animates any series", () => {
-    // guards the motion decision: a functional trading chart switched many
-    // times a minute must not re-animate on every range change
-    const src = EquitySparkline.toString();
-    expect(src).not.toContain("isAnimationActive={true}");
+  /**
+   * Assert on the RENDERED DOM, never on component source.
+   *
+   * The previous version of this guard did
+   * `expect(EquitySparkline.toString()).not.toContain("isAnimationActive={true}")`,
+   * which could not fail for two independent reasons: JSX compiles away, so
+   * that literal string never exists in the output, and `.toString()` covers
+   * only the outer function while three of the four series live in the separate
+   * top-level `SeriesChart`.
+   *
+   * These are the real signatures recharts 2.15 leaves behind when a series
+   * animates (verified by mutation — flipping any one series to
+   * `isAnimationActive={true}` makes this fail):
+   *   - an animated <Area> emits `<clipPath id="animationClipPath-…">` and
+   *     wraps its curve in `clip-path="url(#animationClipPath-…)"`,
+   *   - an animated <Line> gets a `stroke-dasharray` on its curve path.
+   */
+  function expectNoAnimation(container: HTMLElement) {
+    expect(container.querySelectorAll('[id^="animationClipPath"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[clip-path^="url(#animationClipPath"]')).toHaveLength(0);
+    expect(container.querySelectorAll("animate, animateTransform, animateMotion")).toHaveLength(0);
+    const curves = container.querySelectorAll("path.recharts-curve");
+    expect(curves.length).toBeGreaterThan(0);   // or the assertion is vacuous
+    curves.forEach((c) => expect(c.hasAttribute("stroke-dasharray")).toBe(false));
+  }
+
+  it("never animates on the legacy buffer path", () => {
+    const { container } = render(
+      <EquitySparkline
+        points={[{ t: 1, equity: 10000 }, { t: 2, equity: 10050 }, { t: 3, equity: 9980 }]}
+        width={400}
+        height={200}
+      />,
+    );
+    expectNoAnimation(container);
+  });
+
+  it("never animates any of the series-path series", () => {
+    // Covers all three (drawdown Area, balance Line, equity Area) — the ones the
+    // old source-string check could not see at all.
+    const series = {
+      range: "1d", tier: "coarse" as const, bucket_s: 300,
+      series: ["equity", "balance", "peak"],
+      points: [
+        { ts: 1000, equity: 10000, balance: 9990, peak: 10000 },
+        { ts: 1500, equity: 9950, balance: 9990, peak: 10000 },
+        { ts: 2000, equity: 10080, balance: 10000, peak: 10080 },
+      ],
+      coverage: { first_sample_ts: 1000, n: 3, series_first_ts: {}, gaps: [] as [number, number][] },
+    };
+    const { container } = render(
+      <EquitySparkline points={[]} series={series as never} width={400} height={200} />,
+    );
+    // all three graphical series really are on screen, so this isn't vacuous
+    expect(container.querySelectorAll("path.recharts-area-area")).toHaveLength(2);
+    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(1);
+    expectNoAnimation(container);
+  });
+
+  // ---- I4: an absent series key must not blank the chart ----
+
+  it("renders when the registry drops `balance` from the series entirely", () => {
+    // Phase 1 builds a point as one tuple entry per registered series, so
+    // removal is exactly as easy as addition. `undefined` sails through a
+    // `!== null` filter, and one `undefined` in the domain array makes
+    // `Math.min(...)` NaN — a blank chart with no error and no empty state.
+    const series = {
+      range: "1d", tier: "coarse" as const, bucket_s: 300,
+      series: ["equity"],
+      points: [
+        { ts: 1000, equity: 10000 },
+        { ts: 1500, equity: 10050 },
+        { ts: 2000, equity: 9980 },
+      ],
+      coverage: { first_sample_ts: 1000, n: 3, series_first_ts: {}, gaps: [] as [number, number][] },
+    };
+    const { container } = render(
+      <EquitySparkline points={[]} series={series as never} width={400} height={200} />,
+    );
+
+    expect(screen.queryByText(/no data/i)).not.toBeInTheDocument();
+    const equityCurve = container.querySelector("path.recharts-area-curve");
+    expect(equityCurve).not.toBeNull();
+    const d = equityCurve!.getAttribute("d")!;
+    expect(d).not.toMatch(/NaN/);
+    // a real, drawn curve — three plotted vertices, not a degenerate/empty path
+    const coords = Array.from(d.matchAll(/(-?[\d.]+),(-?[\d.]+)/g));
+    expect(coords.length).toBeGreaterThanOrEqual(3);
+    coords.forEach(([, x, y]) => {
+      expect(Number.isFinite(Number(x))).toBe(true);
+      expect(Number.isFinite(Number(y))).toBe(true);
+    });
+    // and the readout is a real number, not "NaN"
+    expect(screen.getByTestId("equity-sparkline").textContent).not.toMatch(/NaN/);
+  });
+
+  it("labels the delta's basis differently on the two paths", () => {
+    const { unmount } = render(
+      <EquitySparkline points={[{ t: 1, equity: 10000 }, { t: 2, equity: 10050 }]} width={400} height={200} />,
+    );
+    expect(screen.getByTestId("equity-delta-basis")).toHaveTextContent("session");
+    unmount();
+
+    const series = {
+      range: "4h", tier: "fine" as const, bucket_s: 30,
+      series: ["equity", "balance", "peak"],
+      points: [{ ts: 1000, equity: 10000, balance: 9990, peak: 10000 }],
+      coverage: { first_sample_ts: 1000, n: 1, series_first_ts: {}, gaps: [] as [number, number][] },
+    };
+    render(<EquitySparkline points={[]} series={series as never} width={400} height={200} />);
+    expect(screen.getByTestId("equity-delta-basis")).toHaveTextContent("4h");
   });
 });

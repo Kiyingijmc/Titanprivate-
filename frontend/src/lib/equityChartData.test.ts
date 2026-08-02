@@ -73,3 +73,64 @@ describe("toChartRows", () => {
     expect(rows.map((r) => r.ts)).toEqual([5_000_100, 5_000_150, 5_000_200]);
   });
 });
+
+describe("toChartRows — non-finite defence", () => {
+  // ---- M7 ----
+  it("emits a NULL drawdown when equity is null but peak is numeric, not a fabricated extreme", () => {
+    // `null - 10000` is -10000 in JS. One such row would set the drawdown axis
+    // floor by itself and squash every real drawdown in the window into an
+    // invisible sliver — re-opening a Critical that was already fixed once.
+    const rows = toChartRows(base({
+      points: [
+        { ts: 100, equity: 10000, balance: 9990, peak: 10000 } as never,
+        { ts: 200, equity: null, balance: null, peak: 10000 } as never,
+        { ts: 300, equity: 9950, balance: 9990, peak: 10000 } as never,
+      ],
+    }));
+    expect(rows[1].drawdown).toBeNull();
+    expect(rows[1].equity).toBeNull();
+    // the surviving real drawdowns still set the axis, and none is fabricated
+    const dds = rows.map((r) => r.drawdown).filter((v): v is number => v !== null);
+    expect(Math.min(...dds)).toBe(-50);
+  });
+
+  it("emits a null drawdown when equity is present but peak is absent-or-corrupt", () => {
+    // peak absent -> peak falls back to equity -> drawdown 0 (truthful: no
+    // recorded high to be down from). peak NaN must NOT become NaN drawdown.
+    const rows = toChartRows(base({
+      points: [
+        { ts: 100, equity: 10000, balance: 9990 } as never,
+        { ts: 200, equity: 9900, balance: 9990, peak: NaN } as never,
+      ],
+    }));
+    expect(rows[0].drawdown).toBe(0);
+    expect(rows[1].drawdown).toBe(0);   // NaN peak falls back to equity, never NaN
+    expect(rows.every((r) => !Number.isNaN(r.drawdown as number))).toBe(true);
+  });
+
+  // ---- I4 ----
+  it("maps an ABSENT series key to null rather than letting `undefined` through", () => {
+    // A registry change that drops `balance` yields points with no such key.
+    // `undefined` passes a `!== null` filter and turns Math.min into NaN.
+    const rows = toChartRows(base({
+      series: ["equity"],
+      points: [{ ts: 100, equity: 10000 } as never, { ts: 200, equity: 10050 } as never],
+    }));
+    expect(rows).toEqual([
+      { ts: 100, equity: 10000, balance: null, drawdown: 0 },
+      { ts: 200, equity: 10050, balance: null, drawdown: 0 },
+    ]);
+    rows.forEach((r) => expect(r.balance).not.toBeUndefined());
+  });
+
+  it("drops a point whose ts is not finite instead of cratering the x domain", () => {
+    const rows = toChartRows(base({
+      points: [
+        { ts: 100, equity: 10000, balance: 9990, peak: 10000 } as never,
+        { ts: NaN, equity: 10010, balance: 9990, peak: 10010 } as never,
+        { ts: 300, equity: 10020, balance: 9990, peak: 10020 } as never,
+      ],
+    }));
+    expect(rows.map((r) => r.ts)).toEqual([100, 300]);
+  });
+});

@@ -11,12 +11,12 @@ describe("useLiveEquityTail", () => {
     vi.useRealTimers();
   });
 
-  it("appends only on distinct equity values, stamped with a real epoch-second ts", () => {
+  it("appends only on distinct equity values, stamped with a CLIENT epoch-second clientTs", () => {
     const { result, rerender } = renderHook(({ e }) => useLiveEquityTail(e), {
       initialProps: { e: 100 as number | undefined },
     });
     expect(result.current).toHaveLength(1);
-    expect(result.current[0]).toEqual({ ts: 1785542400, equity: 100 });
+    expect(result.current[0]).toEqual({ clientTs: 1785542400, equity: 100 });
 
     rerender({ e: 100 }); // same value → no append
     expect(result.current).toHaveLength(1);
@@ -24,7 +24,7 @@ describe("useLiveEquityTail", () => {
     vi.setSystemTime(new Date("2026-08-01T00:00:05Z"));
     rerender({ e: 101 }); // distinct → append, with the new ts
     expect(result.current).toHaveLength(2);
-    expect(result.current[1]).toEqual({ ts: 1785542405, equity: 101 });
+    expect(result.current[1]).toEqual({ clientTs: 1785542405, equity: 101 });
   });
 
   it("is a no-op while equity is undefined", () => {

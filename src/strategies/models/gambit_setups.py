@@ -9,10 +9,6 @@
 from datetime import timedelta
 
 
-def _minutes(dt):
-    return dt.hour * 60 + dt.minute
-
-
 def compute_presession_range(ny_times, highs, lows,
                              range_start_min, range_end_min, min_bars=12):
     """High/low of the pre-session range anchored to the most recent

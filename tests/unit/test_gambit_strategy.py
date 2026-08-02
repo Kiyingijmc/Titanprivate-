@@ -114,6 +114,16 @@ class TestGambitChassis(unittest.TestCase):
         df2 = arm_reprise_sell(m5_frame(datetime(2026, 7, 15, 9, 30)))
         self.assertIsNone(run(self.strat, df2, ctx("US30", "09:30:00")))
 
+    def test_fired_rearms_next_day(self):
+        # Day 1: fires and then the (symbol, session, date) key blocks a
+        # second intent same day (covered by test_one_intent_per_session).
+        # Day 2, same symbol/session: must be able to fire again — the
+        # "fired" gate is per calendar day, not permanent.
+        df = arm_reprise_sell(m5_frame(datetime(2026, 7, 15, 9, 0)))
+        self.assertIsNotNone(run(self.strat, df, ctx("US30", "09:00:00")))
+        df2 = arm_reprise_sell(m5_frame(datetime(2026, 7, 16, 9, 0)))
+        self.assertIsNotNone(run(self.strat, df2, ctx("US30", "09:00:00")))
+
     def test_cost_floor_blocks_thin_stop(self):
         # risk = |sl-entry| = |106+0.2 - 99.5|? No: STRUCT d includes far
         # extreme. Use a NEAR far-extreme so d < min_stop_price (10.0).

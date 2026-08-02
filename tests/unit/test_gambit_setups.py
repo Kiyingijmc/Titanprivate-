@@ -70,9 +70,32 @@ class TestJudas(unittest.TestCase):
         b["high"][1] = 105.0                   # exactly the extreme: NOT swept
         self.assertIsNone(detect_judas(b, ts, self.RNG, self.S, "BEARISH", CFG))
 
+    def test_touch_is_not_a_sweep_buy_side(self):
+        # Low exactly at rng_lo (not swept); if low < rng_lo is changed to <=, test fails.
+        n = 3
+        b = flat_bars(n)
+        b["low"][1] = 95.0                     # exactly rng_lo: NOT swept
+        b["open"][2] = 95.5
+        b["close"][2] = 97.0
+        b["high"][2] = 97.1
+        b["low"][2] = 95.4
+        b["is_fvg_bull"][2] = True
+        b["fvg_top"][2] = 96.0
+        b["fvg_bottom"][2] = 95.6
+        ts = ny_seq(datetime(2026, 7, 15, 8, 30), n)
+        self.assertIsNone(detect_judas(b, ts, self.RNG, self.S, "BULLISH", CFG))
+
     def test_close_back_inside_is_strict(self):
+        # Bearish displacement with close AT rng_hi (exactly at boundary, not strictly inside).
+        # If close < rng_hi inequality is changed to <=, this test fails.
         b, ts = judas_sell_fixture()
-        b["close"][-1] = 105.0                 # close AT range-hi: not inside
+        b["open"][-1] = 105.9                  # close < open (bearish)
+        b["close"][-1] = 105.0                 # close AT range-hi = 105.0, not < 105.0
+        b["high"][-1] = 105.8
+        b["low"][-1] = 104.9
+        # body = 105.9 - 105.0 = 0.9 >= 0.8*ATR(1.0) ✓
+        b["is_fvg_bear"][-1] = True
+        b["fvg_bottom"][-1] = 104.5
         self.assertIsNone(detect_judas(b, ts, self.RNG, self.S, "BEARISH", CFG))
 
     def test_both_sides_swept_is_ambiguous(self):

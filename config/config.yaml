@@ -200,6 +200,14 @@ ops:
     enabled: true
     bind: 127.0.0.1
     port: 8787
+  equity:
+    # NOTE: the sample cadence (10s) and coarse bucket size (300s) are NOT here.
+    # They are baked into every row already on disk, so they are structural
+    # constants in src/ops/equity_recorder.py, not knobs.
+    enabled: true
+    fine_retention_h: 48      # fine tier pruned beyond this
+    flush_interval_s: 60      # buffer -> sqlite
+    max_buffer_samples: 600   # hard cap; overflow drops oldest and counts
 
 # Economic calendar. ForexFactory is the PRIMARY source; MT5 is a fallback
 # added in a later session. Only High ("red folder") events halt trading, and

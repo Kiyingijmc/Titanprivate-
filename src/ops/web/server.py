@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 from pathlib import Path
 
@@ -12,14 +13,29 @@ from starlette.websockets import WebSocketState
 
 from src.core.events import GuiActionExecuted
 
-from . import auth
+from . import auth, equity_view
 from .commands import execute_command
+from .equity_view import equity_series
 from .registry_view import execute_registry_action, registry_report
 from .state_view import build_snapshot, history_rows
 
 _LOG = logging.getLogger(__name__)
 _WS_AUTH_TIMEOUT_S = 3.0
 _DEFAULT_DIST_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+
+# A structurally valid range token: short and alphanumeric-only. This is
+# deliberately narrower than the set of RECOGNISED range names in
+# equity_view.RANGES -- a well-formed-but-unrecognised token (e.g. "nope")
+# still falls back to the default range with 200; only a value that could
+# not plausibly be a range name at all (too long, or containing characters
+# outside [A-Za-z0-9]) is rejected outright with 422.
+_RANGE_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+
+# NOTE: there is no cadence-mismatch guard here any more. The sample cadence and
+# the coarse bucket size are structural constants in equity_recorder (they are
+# baked into stored rows), not config keys, so live-vs-view drift is structurally
+# impossible rather than merely reported. See I3 in the 2026-07-31 branch review.
 
 
 def _audit(controller, request, action: str, payload, outcome: str) -> None:
@@ -49,6 +65,24 @@ def create_app(controller, settings_store, bridge, dist_dir: Path | None = None)
     @app.get("/api/history", dependencies=read)
     def get_history(limit: int = 50):
         return {"history": history_rows(controller.state_manager.conn, limit=limit)}
+
+    @app.get("/api/equity", dependencies=read)
+    def get_equity(range: str = "1d"):
+        if not _RANGE_TOKEN_RE.match(range):
+            return JSONResponse(status_code=422, content={
+                "detail": f"malformed range value: {range!r}"})
+        rec = getattr(controller, "equity_recorder", None)
+        # A SHORT-LIVED read connection, never the recorder's writer: SQLite
+        # serialises per connection, so reading there stalls the asyncio trading
+        # loop's flush()/prune() and, past 60s, trips the watchdog reboot.
+        conn, owned = equity_view.read_connection(rec)
+        if conn is None:
+            return equity_view.empty_series(range)
+        try:
+            return equity_series(conn, range)
+        finally:
+            if owned:
+                conn.close()
 
     @app.post("/api/command", dependencies=write)
     async def post_command(payload: dict, request: Request):

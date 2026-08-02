@@ -54,6 +54,13 @@ class FakeRisk:
     def money_for_move(self, symbol, price_distance, lots): return 0.0
 
 
+class FakeEquityRecorder:
+    def __init__(self):
+        self.recorded = []
+    def record(self, balance, equity):
+        self.recorded.append((balance, equity))
+
+
 def make_controller():
     sc = object.__new__(SystemController)
     sc.bridge = FakeBridge()
@@ -61,6 +68,7 @@ def make_controller():
     sc.logger = FakeLogger()
     sc.telemetry = FakeTelemetry()
     sc.risk_manager = FakeRisk()
+    sc.equity_recorder = FakeEquityRecorder()
     sc.pending_signal_meta = {}
     sc.current_open_positions = []
     sc.current_pending_orders = []

@@ -335,16 +335,36 @@ class BootRestoreIsTestable(unittest.TestCase):
     # --- MEDIUM-4: a READ FAILURE must not look like "never saved" ---
 
     def test_read_failure_is_logged_loudly_not_silently_swallowed(self):
+        """A read failure must reach the operator as an ACTIONABLE risk event.
+
+        Asserting merely that the exception text appears somewhere is too weak
+        -- a mutation that reclassified the event and stripped the guidance
+        still passed it, because repr(e) leaked the words either way. What
+        matters is that it is filed where an operator looks (RISK/ANCHOR) and
+        says which file to investigate.
+        """
         s = _BootStub(raise_on_read=sqlite3.DatabaseError("database disk image is malformed"))
         self.assertFalse(s.boot(NOW))
         self.assertTrue(s.logger.events, "a failed read produced NO operator signal")
-        self.assertIn("malformed", s.logger.text())
+
+        cats = {(c, sub) for c, sub, _ in s.logger.events}
+        self.assertIn(("RISK", "ANCHOR"), cats,
+                      f"read failure not filed under RISK/ANCHOR: {cats}")
+        text = s.logger.text()
+        self.assertIn("malformed", text)
+        self.assertIn("trade_state.db", text,
+                      "operator is not told which file to investigate")
 
     def test_absent_row_is_logged_distinctly_from_a_failure(self):
+        """The clean first boot must NOT look like a fault, or the real fault
+        becomes unnoticeable in the noise."""
         s = _BootStub(None)
         s.boot(NOW)
         self.assertTrue(s.logger.events, "no signal at all on a clean first boot")
-        self.assertNotIn("malformed", s.logger.text())
+        text = s.logger.text()
+        self.assertNotIn("malformed", text)
+        self.assertNotIn("trade_state.db", text,
+                         "a normal first boot is being reported as a DB fault")
 
     # --- MINOR-7: never claim a restore that did not happen ---
 

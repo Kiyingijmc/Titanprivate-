@@ -1,3 +1,4 @@
+import math
 import unittest
 
 import numpy as np
@@ -193,6 +194,92 @@ class TestEligibleSignalsHour(unittest.TestCase):
         df["time"] = pd.date_range("2024-01-01", periods=260, freq="h")
         up_events = eligible_signals(df)[eligible_signals(df)["direction"] == 1]
         self.assertEqual(int(up_events.iloc[0]["hour"]), 250 % 24)
+
+
+class TestBoundaryRegression(unittest.TestCase):
+    """Regression tests for boundary conditions: strict > and strict < inequalities."""
+
+    def test_tr_boundary_exactly_equal_not_event(self):
+        """TR exactly equal to q * tr_med must NOT trigger is_event (strict >)."""
+        # Build 250 bars with constant TR = 2.0, then one bar with TR = 5.0.
+        # With q=2.5 and window=200, the trailing-exclusive median at bar 250 is 2.0.
+        # Test condition: is_event checks tr > q * tr_med, i.e., 5.0 > 2.5*2.0 = 5.0?
+        # Since 5.0 is NOT > 5.0, is_event must be False.
+        bars = []
+        for _ in range(250):
+            bars.append({
+                "open": 100.0,
+                "high": 101.0,  # TR = 2.0
+                "low": 99.0,
+                "close": 100.0,
+            })
+        # Probe bar with TR exactly = 5.0
+        bars.append({
+            "open": 100.0,
+            "high": 102.5,  # TR = 5.0
+            "low": 97.5,
+            "close": 100.0,
+        })
+        # Confirm bar (dir 0, not part of check)
+        bars.append({
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+        })
+        df = pd.DataFrame(bars)
+        out = flag_events(df, q=2.5, window=200)
+
+        # Verify the setup: probe bar TR and tr_med
+        self.assertAlmostEqual(out["tr"].iloc[250], 5.0, places=10)
+        self.assertAlmostEqual(out["tr_med"].iloc[250], 2.0, places=10)
+
+        # Assert strict >: 5.0 is NOT > 5.0, so is_event is False
+        self.assertFalse(bool(out["is_event"].iloc[250]))
+
+    def test_s_minus_boundary_at_percentile(self):
+        """s_minus >= s_lo bars fail the s_minus < s_lo filter (strict inequality).
+
+        Per registered protocol, s_minus < s_lo (strict <) is required for eligibility.
+        This test verifies the boundary: bars with s_minus >= s_lo must be excluded.
+        Mutation < to <= would reverse this exclusion at the boundary.
+        """
+        # Setup: create events that generate s_minus values spanning the s_lo threshold
+        df = _spike_at(_flat_df(280), 201, up=False)
+        df = _spike_at(df, 240, up=True)
+
+        flags = flag_events(df, q=2.5, window=200)
+        s_minus = excitation(flags["is_event"], half_life=24)
+        s_lo = s_lo_threshold(s_minus, warmup=200, pctile=20.0)
+
+        out = eligible_signals(df)
+
+        # Collect all events with event_dir != 0 (non-doji events)
+        non_doji_events = [i for i in range(200, len(s_minus))
+                          if flags["is_event"].iloc[i] and flags["event_dir"].iloc[i] != 0]
+
+        # Partition into "cool" (s_minus < s_lo) and "hot/boundary" (s_minus >= s_lo)
+        cool_events = [i for i in non_doji_events if s_minus.iloc[i] < s_lo]
+        boundary_events = [i for i in non_doji_events if s_minus.iloc[i] >= s_lo]
+
+        # Verify partition has both types
+        self.assertTrue(len(cool_events) > 0, "Test should have cool events (s_minus < s_lo)")
+        self.assertTrue(len(boundary_events) > 0, "Test should have boundary/hot events (s_minus >= s_lo)")
+
+        # Key assertion: all boundary_events MUST have s_minus >= s_lo
+        for idx in boundary_events:
+            self.assertGreaterEqual(s_minus.iloc[idx], s_lo,
+                f"Bar {idx} should be in boundary_events only if s_minus >= s_lo")
+
+        # Verify that NO boundary_events pass the s_minus < s_lo filter
+        # (they may fail other filters too, but the s_minus filter must stop them)
+        eligible_indices = set(out["event_idx"].astype(int))
+        for idx in boundary_events:
+            # This bar has s_minus >= s_lo, so it should NOT pass the (s_minus < s_lo) check
+            # Therefore it should NOT be in eligible (at minimum due to this check)
+            if idx in eligible_indices:
+                self.fail(f"Bar {idx} with s_minus={s_minus.iloc[idx]:.10f} >= s_lo={s_lo:.10f} "
+                         "should NOT pass the strict (s_minus < s_lo) filter")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,29 @@ Proceed with kill-screen verdicts:
    (numbers, INSUFFICIENT-N included) and add a Gambit row to
    docs/strategies/ARSENAL.md. Commit CSVs + doc.
 
+### Gate-input filters (pre-registered)
+
+`scripts/gambit_gate.py` applies two filters to every collected CSV (main
+df AND each sweep df) BEFORE any criterion runs, both pre-registered here so
+they are on record before any kill-screen/gate verdict is read:
+
+- **Gate universe (MF-1).** The kill-screen and gate criteria evaluate only
+  `GATE_SYMS = ["US30", "US100", "XAUUSD", "BTCUSD"]` — the 4 symbols the
+  spec defines the symbol-majority/breadth checks over. `ETHUSD`/`XTIUSD`
+  are collected as an informational arm (mechanism-generality check, not
+  part of the verdict) and are reported separately as
+  `out["arms_excluded"] = {"n": ..., "per_sym": {...}}`; they never enter
+  `evaluate_kill`/`evaluate_gate`.
+- **Live-cost floor (MF-2).** A row whose recorded `risk` is below the live
+  chassis's cost floor is dropped before evaluation — live would have
+  refused to fire it, so it is not a trade the gate should be scored on.
+  Floor formula (same specs machinery as `_cost_r`, and definitionally the
+  same formula Task 6 used to derive config `min_stop_price`):
+  `floor_price = COST_FLOOR_MULT * (SPREADS[sym] * tick_size +
+  (COMMISSION_USD_PER_LOT / tick_value) * tick_size)`, with
+  `COST_FLOOR_MULT = 4` a pre-registered module constant (never CLI-tunable).
+  Dropped-row count is reported as `out["floor_excluded"]`.
+
 ## Phase 2 — full gate (only for setups whose kill-screen PASSED)
 
 Sweeps (+/-30% one-at-a-time, 4 runs — pre-registered parameter pairs):
@@ -44,3 +67,6 @@ hold under BOTH exits. Record GO/NO-GO doc per setup.
   will be auto-filled on next specs refresh).
 - Confirm time_exits.Gambit flat_at_ny row present. Restart per
   demo-forward-test memory (ss -tlnp PID, not pgrep). ~2-week checkpoint.
+- Verify FBS server UTC offset seasonally before enabling — live
+  `broker_gmt_offset` is fixed at 2 but FBS runs UTC+3 in summer; a wrong
+  offset shifts the session windows ~1h off true NY (final-review finding).

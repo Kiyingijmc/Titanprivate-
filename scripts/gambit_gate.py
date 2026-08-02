@@ -32,6 +32,13 @@ GATE_MAX_SIGNALS_PER_DAY = 2.0
 IS_FRAC = 0.70
 GATE_SYMS = ["US30", "US100", "XAUUSD", "BTCUSD"]
 
+# Live-chassis cost floor (final-review MF-2): definitionally the same
+# formula the runbook uses to derive config `min_stop_price` (Task 6 /
+# docs/superpowers/plans/2026-08-02-gambit-m5-playbook.md Step 4) — a row
+# whose recorded risk is below this, live would have refused to fire, so it
+# must not feed the gate criteria. Pre-registered constant, not CLI-tunable.
+COST_FLOOR_MULT = 4
+
 # data/specs.json (bridge-cached broker specs) has NO rows for US100/ETHUSD/
 # XTIUSD (discovered Task 6). Same fallback used there and in
 # scripts/gyro2_gate.py's SPECS_EXTRA: bridge-measured 2026-07-28
@@ -63,6 +70,45 @@ def _cost_r(sym, risk, mult):
     spread = SPREADS.get(sym, 20) * mult * tick
     comm = (COMMISSION_USD_PER_LOT / tv) * tick
     return (spread + comm) / risk
+
+
+def _floor_price(sym):
+    """Live-chassis min-stop-price floor in price units: COST_FLOOR_MULT x
+    (nominal 1x spread + commission), same specs machinery (SPECS_EXTRA
+    fallback included) as `_cost_r`."""
+    specs = _load_specs()
+    sp = specs.get(sym) or SPECS_EXTRA.get(sym, {})
+    tick = float(sp.get("tick_size") or 0) or 1e-5
+    tv = float(sp.get("tick_value") or 0) or 1.0
+    spread_px = SPREADS.get(sym, 20) * tick
+    comm_px = (COMMISSION_USD_PER_LOT / tv) * tick
+    return COST_FLOOR_MULT * (spread_px + comm_px)
+
+
+def filter_gate_inputs(df):
+    """Pre-registered gate-input filters (final-review MF-1/MF-2), applied
+    BEFORE add_net/evaluation:
+
+    MF-1: restrict to the 4-symbol gate universe (GATE_SYMS). Arm-only
+    symbols (ETHUSD/XTIUSD) are informational, never fed into any criterion.
+
+    MF-2: drop rows whose recorded risk is below the live-chassis cost
+    floor for their symbol — live would have refused to fire these, so a
+    kill-screen/gate that includes them is not testing what live will do.
+
+    Returns (filtered_df, report) where report = {"arms_excluded":
+    {"n": int, "per_sym": {sym: n}}, "floor_excluded": int}.
+    """
+    arms_df = df[~df["sym"].isin(GATE_SYMS)]
+    arms_report = {"n": int(len(arms_df)),
+                    "per_sym": {str(s): int(n) for s, n in
+                                arms_df["sym"].value_counts().items()}}
+    df = df[df["sym"].isin(GATE_SYMS)]
+    floors = df["sym"].map(_floor_price)
+    keep = df["risk"] >= floors
+    floor_excluded = int((~keep).sum())
+    df = df[keep]
+    return df, {"arms_excluded": arms_report, "floor_excluded": floor_excluded}
 
 
 def add_net(df, spread_mult, exit_model="managed"):
@@ -160,15 +206,23 @@ def main():
     ap.add_argument("--sweeps", default="")
     a = ap.parse_args()
     df = pd.read_csv(os.path.join(a.dir, f"trades_{a.setup}.csv"))
+    df, report = filter_gate_inputs(df)
     df = add_net(df, 1.0, a.exit)
     if a.phase == "kill":
         out = evaluate_kill(df, a.exit)
     else:
-        sweeps = [add_net(pd.read_csv(p), 1.0, a.exit)
-                  for p in a.sweeps.split(",") if p]
+        sweeps = []
+        for p in a.sweeps.split(","):
+            if not p:
+                continue
+            sw, _ = filter_gate_inputs(pd.read_csv(p))
+            sweeps.append(add_net(sw, 1.0, a.exit))
         if len(sweeps) != 4:
             print(f"WARNING: expected 4 sweep files, got {len(sweeps)}")
         out = evaluate_gate(df, sweeps, a.exit)
+    # Informational only (final-review MF-1/MF-2) — never fed into criteria.
+    out["arms_excluded"] = report["arms_excluded"]
+    out["floor_excluded"] = report["floor_excluded"]
     print(json.dumps(out, indent=2, default=str))
 
 

@@ -4,7 +4,8 @@ import unittest
 import pandas as pd
 
 from scripts.gambit_gate import (
-    KILL_MIN_N, evaluate_kill, evaluate_gate, add_net, split_is_oos)
+    KILL_MIN_N, evaluate_kill, evaluate_gate, add_net, split_is_oos,
+    filter_gate_inputs, _floor_price)
 
 
 def frame(n, sym="US30", net=0.5, t0="2024-01-01"):
@@ -73,6 +74,39 @@ class TestGate(unittest.TestCase):
                              exit_model="fixed")
         self.assertFalse(out["criteria"]["stress"])
         self.assertEqual(out["exit_model"], "fixed")
+
+    def test_arms_excluded_from_criteria(self):
+        # MF-1: ETHUSD/XTIUSD are arm-only symbols, not in GATE_SYMS — they
+        # must never feed the criteria, only be reported.
+        good = frame(KILL_MIN_N, sym="US30", net=0.5)
+        poison = frame(50, sym="ETHUSD", net=-50.0)
+        raw = pd.concat([good, poison], ignore_index=True)
+
+        # Sanity: unfiltered, the poison ETHUSD rows DO flip the verdict —
+        # proves this test actually exercises the filter, not a no-op.
+        unfiltered = evaluate_kill(add_net(raw, 1.0), "managed")
+        self.assertEqual(unfiltered["verdict"], "FAIL")
+
+        filtered, report = filter_gate_inputs(raw)
+        self.assertEqual(report["arms_excluded"],
+                         {"n": 50, "per_sym": {"ETHUSD": 50}})
+        self.assertNotIn("ETHUSD", filtered["sym"].unique())
+        out = evaluate_kill(add_net(filtered, 1.0), "managed")
+        self.assertEqual(out["verdict"], "PASS")
+
+    def test_floor_excluded_dropped(self):
+        # MF-2: rows whose recorded risk is below the live cost floor for
+        # their symbol are live-ineligible and must be dropped + counted.
+        floor = _floor_price("XAUUSD")
+        good = frame(KILL_MIN_N, sym="XAUUSD", net=0.5)   # risk=100 >> floor
+        thin = frame(30, sym="XAUUSD", net=0.5)
+        thin["risk"] = floor / 2.0                        # below the floor
+        raw = pd.concat([good, thin], ignore_index=True)
+
+        filtered, report = filter_gate_inputs(raw)
+        self.assertEqual(report["floor_excluded"], 30)
+        self.assertEqual(len(filtered), KILL_MIN_N)
+        self.assertTrue((filtered["risk"] >= floor).all())
 
 
 if __name__ == "__main__":

@@ -96,7 +96,8 @@ def collect(sym, cfg, quick=False):
              "is_fvg_bull", "is_fvg_bear", "fvg_top", "fvg_bottom")}
     n = len(enr)
     signals = []
-    fired = set()                                 # (setup, session, date)
+    fired = set()          # (session, date) -> one intent per symbol/session/day
+                            # across BOTH setups, matching gambit.py._fired
     bias_at = make_bias_fn(enr)
 
     # Candidate mask: displacement body + FVG (cheap prefilter — the ONLY
@@ -116,6 +117,9 @@ def collect(sym, cfg, quick=False):
                 break
         if sname is None:
             continue
+        key = (sname, ny_date[i])
+        if key in fired:                # one intent per symbol/session/day
+            continue                     # across BOTH setups (chassis parity)
         lo = i - TAIL + 1
         tail_times = ny_py[lo:i + 1]
         bars = {("atr" if k == "ATR" else k): v[lo:i + 1]
@@ -124,8 +128,6 @@ def collect(sym, cfg, quick=False):
         sess = SESSIONS[sname]
 
         for setup in ("judas", "reprise"):        # same-bar precedence
-            if (setup, sname, ny_date[i]) in fired:
-                continue
             if setup == "judas":
                 rng = compute_presession_range(
                     tail_times, bars["high"], bars["low"],
@@ -153,7 +155,7 @@ def collect(sym, cfg, quick=False):
                             "sl": intent["sl"], "tp": intent["tp"],
                             "risk": abs(intent["sl"] - intent["price"]),
                             "end_idx": int(end_idx)})
-            fired.add((setup, sname, ny_date[i]))
+            fired.add(key)
             break                                  # one intent per bar
     bars_out = {"high": cols["high"], "low": cols["low"],
                 "close": cols["close"]}

@@ -34,6 +34,9 @@ class RiskManager:
         self.starting_balance = 0.0
         self.current_equity = 0.0
         self.day_start_equity = 0.0  # daily DD anchor; re-set by reset_daily_metrics
+        # True only between restore_daily_anchor() and the first heartbeat
+        # that can corroborate it (RS-RISK-01 MEDIUM-2).
+        self._anchor_needs_corroboration = False
         self.symbol_specs = {}
         # Set by aggregate_open_risk when it returns None: the row that made
         # the book un-computable, so the operator halt alert can name it
@@ -44,12 +47,46 @@ class RiskManager:
         self.equity_max = 0.0
         self.equity_min = float('inf')
 
+    # RS-RISK-01 MEDIUM-2. A restored anchor comes off DISK, so it is an
+    # externally-sourced number controlling a safety limit -- the same class of
+    # input as the broker specs above, which are bounded rather than trusted.
+    # A tiny positive anchor (0.01) makes pnl_pct enormously positive, so
+    # check_can_trade() returns True forever and throttle_factor() returns 1.0:
+    # the 3% breaker and the throttle are BOTH off for the whole day, and the
+    # value survives restarts. `> 0` alone does not catch that.
+    #
+    # A real trading day cannot move equity by this factor -- the breaker halts
+    # at 3% long before -- so a breach means corruption, not a bad day. Wide
+    # enough that a genuine catastrophic day is never mistaken for corruption.
+    MAX_ANCHOR_EQUITY_RATIO = 20.0
+
     def update_account_info(self, balance, equity):
         """Standard oper.txt logic: Permanent lock of starting balance on init"""
         if self.starting_balance == 0 and balance > 0:
             self.starting_balance = balance
         if self.day_start_equity == 0 and equity > 0:
             self.day_start_equity = equity
+        elif self._anchor_needs_corroboration and equity > 0:
+            # First heartbeat after a restore: this is the earliest moment a
+            # persisted anchor can be checked against reality, because at boot
+            # there is no equity to compare it with.
+            self._anchor_needs_corroboration = False
+            anchor = self.day_start_equity
+            if anchor > 0:
+                ratio = max(anchor / equity, equity / anchor)
+                if ratio > self.MAX_ANCHOR_EQUITY_RATIO:
+                    # Fail CLOSED: fall back to anchoring from live equity (the
+                    # pre-RISK-01 behaviour) rather than keeping a value that
+                    # would switch the breaker off entirely.
+                    self.day_start_equity = equity
+                    if self.logger:
+                        self.logger.log_event(
+                            "RISK", "ANCHOR",
+                            f"Rejected restored DD anchor {anchor!r}: {ratio:.4g}x "
+                            f"from live equity {equity} (max {self.MAX_ANCHOR_EQUITY_RATIO}x). "
+                            f"Re-anchored to {equity} -- the breaker would otherwise "
+                            f"have been disabled for the whole day.",
+                            {"rejected": anchor, "equity": equity, "ratio": ratio})
 
         self.current_equity = equity
         self.track_equity(equity)
@@ -79,6 +116,7 @@ class RiskManager:
             return
         if math.isfinite(value) and value > 0:
             self.day_start_equity = value
+            self._anchor_needs_corroboration = True
 
     def track_equity(self, equity):
         """V14 Feature: Tracks intraday range for the Ugandan Report"""

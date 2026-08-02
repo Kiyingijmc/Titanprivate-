@@ -186,27 +186,7 @@ class SystemController:
         # without it a stale anchor was re-labelled with the new day's key here
         # and restored for the rest of that day.
         self._last_persisted_anchor = None
-        self._current_day_key = self._trading_day_key(datetime.now(self.uganda_tz))
-        try:
-            saved = self.state_manager.get_risk_anchor()
-            today_key = self._current_day_key
-            if saved and saved.get('trading_day_key') == today_key:
-                self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
-                self._last_persisted_anchor = (today_key,
-                                               self.risk_manager.day_start_equity)
-                self.logger.log_event(
-                    "RISK", "ANCHOR",
-                    f"Restored daily DD anchor {self.risk_manager.day_start_equity:.2f} "
-                    f"for trading day {today_key} (survived restart).")
-            elif saved:
-                self.logger.log_event(
-                    "RISK", "ANCHOR",
-                    f"Persisted anchor is for {saved.get('trading_day_key')}, "
-                    f"today is {today_key}; anchoring fresh.")
-        except Exception as e:
-            # Never let anchor restore stop the bot booting; falling through
-            # lands on today's existing first-heartbeat behaviour.
-            self.logger.log_event("RISK", "ANCHOR", f"Anchor restore skipped: {e}")
+        self._restore_daily_anchor_at_boot(datetime.now(self.uganda_tz))
 
         self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
                                           config=self.config)
@@ -239,6 +219,69 @@ class SystemController:
     def _trading_day_key(now_uganda):
         """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
         return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
+    def _restore_daily_anchor_at_boot(self, now_uganda):
+        """Restore today's persisted DD anchor. Returns True if one was applied.
+
+        Extracted from __init__ (RS-RISK-01 MEDIUM-8). MAJOR-1 lived inside
+        this block and no test could reach it, because nothing in the suite
+        constructs SystemController through __init__ -- every fixture uses
+        object.__new__ and hand-sets attributes. As a method it is driven by a
+        stub `self`, exactly as _persist_daily_anchor already is, so "known
+        coverage boundary" stops being the resting place for the code that
+        decides whether a safety limit is armed.
+        """
+        self._current_day_key = self._trading_day_key(now_uganda)
+        today_key = self._current_day_key
+
+        # MEDIUM-4: a failed READ must not look like "nothing saved yet".
+        # Both left the fix disabled, but only one is a fault, and the operator
+        # cannot act on a signal that never appears.
+        try:
+            saved = self.state_manager.get_risk_anchor()
+        except Exception as e:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Could not READ the persisted DD anchor ({e!r}). The daily "
+                f"drawdown breaker will anchor from live equity instead, so a "
+                f"restart today re-grants the full allowance. Investigate "
+                f"data/db/trade_state.db.",
+                {"error": repr(e)})
+            return False
+
+        if not saved:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"No persisted DD anchor; anchoring fresh for {today_key}.")
+            return False
+
+        if saved.get('trading_day_key') != today_key:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Persisted anchor is for {saved.get('trading_day_key')}, "
+                f"today is {today_key}; anchoring fresh.")
+            return False
+
+        # MINOR-7: only claim a restore that actually happened. A NULL column
+        # makes restore_daily_anchor a no-op, and the old code still logged
+        # "Restored daily DD anchor 0.00 ... (survived restart)" -- a false
+        # positive in the very log an operator reads to diagnose corruption.
+        self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
+        applied = self.risk_manager.day_start_equity
+        if applied <= 0:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Persisted anchor for {today_key} was REJECTED as unusable "
+                f"({saved.get('day_start_equity')!r}); anchoring fresh.",
+                {"value": repr(saved.get('day_start_equity'))})
+            return False
+
+        self._last_persisted_anchor = (today_key, applied)
+        self.logger.log_event(
+            "RISK", "ANCHOR",
+            f"Restored daily DD anchor {applied:.2f} for trading day "
+            f"{today_key} (survived restart).")
+        return True
 
     def _roll_trading_day_if_needed(self, now_uganda):
         """Edge-triggered trading-day rollover for the DD anchor (RS-RISK-01 MAJOR-1).
@@ -287,8 +330,13 @@ class SystemController:
         key = self._trading_day_key(now_uganda)
         if self._last_persisted_anchor == (key, equity):
             return
-        self.state_manager.save_risk_anchor(key, equity)
-        self._last_persisted_anchor = (key, equity)
+        # MEDIUM-3: cache ONLY on success. Caching unconditionally meant one
+        # transient "database is locked" suppressed every later attempt for
+        # that (key, equity) pair -- RISK-01 silently off for the rest of the
+        # day after a single failed write. Leaving the cache untouched makes
+        # the next loop iteration retry.
+        if self.state_manager.save_risk_anchor(key, equity):
+            self._last_persisted_anchor = (key, equity)
 
     def _load_env(self):
         env_path = self.root_dir / ".env"

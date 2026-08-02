@@ -1,0 +1,21 @@
+[Unit]
+# RS-RISK-01 MEDIUM-5. Templated failure notifier, referenced by
+# `OnFailure=titan-alert@%n.service` in titan-live.service / titan-demo.service.
+# %i is the failed unit's name.
+#
+# Without this, StartLimitBurst=3 means the live engine can enter `failed` and
+# stay there indefinitely holding open positions -- no break-even move, no
+# partials, no trailing stop, no daily-drawdown breaker -- with nothing telling
+# the operator. The cap without the alert trades one silent failure for another.
+Description=Telegram alert for failed Titan unit %i
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/kiyingijmc/projects/Titan_ICT_Bot_v14_3pro
+# Deliberately the SYSTEM python, not the project venv: this must still run
+# when the venv is what broke. The script is stdlib-only for the same reason.
+ExecStart=/usr/bin/python3 /home/kiyingijmc/projects/Titan_ICT_Bot_v14_3pro/scripts/notify_unit_failure.py %i
+StandardOutput=journal
+StandardError=journal
+# Never let a failing notifier trigger its own OnFailure chain.
+Restart=no

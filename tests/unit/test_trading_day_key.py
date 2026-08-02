@@ -7,6 +7,7 @@ A midnight boundary would disagree with that reset for 15 minutes every night
 had already superseded, or to discard one that was still valid.
 """
 import os
+import sqlite3
 import sys
 import unittest
 from datetime import datetime
@@ -76,6 +77,7 @@ class _FakeStore:
 
     def save_risk_anchor(self, key, equity):
         self.writes.append((key, equity))
+        return True          # RS-RISK-01 MEDIUM-3: the real one reports success
 
 
 class _Stub:
@@ -255,6 +257,198 @@ class TradingDayRollover(unittest.TestCase):
         s.risk_manager.update_account_info(10300.0, 10300.0)
         s.persist(now)
         self.assertEqual(s.state_manager.writes, [("2026-08-01", 10300.0)])
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.events = []
+
+    def log_event(self, cat, sub, msg, *a, **kw):
+        self.events.append((cat, sub, msg))
+
+    def text(self):
+        return " | ".join(m for _, _, m in self.events)
+
+
+class _BootStore:
+    """StateManager stand-in for the boot-restore seam."""
+
+    def __init__(self, row=None, raise_on_read=None):
+        self.row = row
+        self.raise_on_read = raise_on_read
+        self.writes = []
+
+    def get_risk_anchor(self):
+        if self.raise_on_read:
+            raise self.raise_on_read
+        return self.row
+
+    def save_risk_anchor(self, key, equity):
+        self.writes.append((key, equity))
+        return True
+
+
+class _BootStub:
+    """Drives _restore_daily_anchor_at_boot with a REAL RiskManager."""
+
+    def __init__(self, row=None, raise_on_read=None):
+        from src.risk.risk_manager import RiskManager
+        self.risk_manager = RiskManager(CFG)
+        self.state_manager = _BootStore(row, raise_on_read)
+        self.logger = _RecordingLogger()
+        self.uganda_tz = EAT
+        self._last_persisted_anchor = None
+        self._current_day_key = None
+
+    _trading_day_key = SystemController.__dict__["_trading_day_key"]
+
+    def boot(self, now):
+        return SystemController._restore_daily_anchor_at_boot(self, now)
+
+
+NOW = at(2026, 8, 1, 12, 0)          # trading day "2026-08-01"
+
+
+class BootRestoreIsTestable(unittest.TestCase):
+    """RS-RISK-01 MEDIUM-8. The boot-restore block held MAJOR-1 and no test
+    could reach it, because nothing constructs SystemController through
+    __init__. Extracted to a seam driven by a stub `self`, exactly as
+    _persist_daily_anchor already was."""
+
+    def test_restores_todays_anchor(self):
+        s = _BootStub({'trading_day_key': '2026-08-01', 'day_start_equity': 1000.0})
+        self.assertTrue(s.boot(NOW))
+        self.assertAlmostEqual(s.risk_manager.day_start_equity, 1000.0)
+        self.assertIn("Restored", s.logger.text())
+
+    def test_stale_row_is_not_restored(self):
+        s = _BootStub({'trading_day_key': '2026-07-31', 'day_start_equity': 1000.0})
+        self.assertFalse(s.boot(NOW))
+        self.assertEqual(s.risk_manager.day_start_equity, 0.0)
+        self.assertIn("anchoring fresh", s.logger.text())
+
+    def test_seeds_the_day_key_even_when_nothing_is_restored(self):
+        s = _BootStub(None)
+        s.boot(NOW)
+        self.assertEqual(s._current_day_key, "2026-08-01")
+
+    # --- MEDIUM-4: a READ FAILURE must not look like "never saved" ---
+
+    def test_read_failure_is_logged_loudly_not_silently_swallowed(self):
+        s = _BootStub(raise_on_read=sqlite3.DatabaseError("database disk image is malformed"))
+        self.assertFalse(s.boot(NOW))
+        self.assertTrue(s.logger.events, "a failed read produced NO operator signal")
+        self.assertIn("malformed", s.logger.text())
+
+    def test_absent_row_is_logged_distinctly_from_a_failure(self):
+        s = _BootStub(None)
+        s.boot(NOW)
+        self.assertTrue(s.logger.events, "no signal at all on a clean first boot")
+        self.assertNotIn("malformed", s.logger.text())
+
+    # --- MINOR-7: never claim a restore that did not happen ---
+
+    def test_rejected_value_does_not_log_a_successful_restore(self):
+        """A NULL column makes float(None) raise, so restore is a no-op. The
+        old code still logged 'Restored daily DD anchor 0.00 ... (survived
+        restart)' -- a false positive in the very log an operator reads to
+        diagnose the corruption."""
+        s = _BootStub({'trading_day_key': '2026-08-01', 'day_start_equity': None})
+        self.assertFalse(s.boot(NOW))
+        self.assertNotIn("survived restart", s.logger.text())
+        self.assertEqual(s.risk_manager.day_start_equity, 0.0)
+        self.assertIsNone(s._last_persisted_anchor,
+                          "cached a (key, 0.0) anchor that was never applied")
+
+
+class ImplausibleAnchorFailsClosed(unittest.TestCase):
+    """RS-RISK-01 MEDIUM-2. This change made a FILE ON DISK a control input to
+    a safety limit, gated only by `> 0`. A tiny positive anchor makes pnl_pct
+    enormously positive, so check_can_trade() returns True forever and the 3%
+    breaker plus the throttle are switched off for the whole day."""
+
+    def _rm_with_restored(self, anchor):
+        from src.risk.risk_manager import RiskManager
+        rm = RiskManager(CFG)
+        rm.restore_daily_anchor(anchor)
+        return rm
+
+    def test_tiny_anchor_is_rejected_when_the_first_heartbeat_corroborates(self):
+        rm = self._rm_with_restored(0.01)
+        rm.update_account_info(500.0, 500.0)     # first heartbeat: equity 500
+        self.assertAlmostEqual(rm.day_start_equity, 500.0,
+                               msg="implausible anchor survived corroboration")
+        # and the breaker works again
+        rm.update_account_info(500.0, 480.0)     # -4%
+        self.assertFalse(rm.check_can_trade())
+
+    def test_the_breaker_would_be_disabled_without_the_check(self):
+        """Pins the consequence, so a regression is visible as a safety fact."""
+        rm = self._rm_with_restored(0.01)
+        rm.update_account_info(500.0, 500.0)
+        rm.update_account_info(500.0, 250.0)     # equity HALVED on the day
+        self.assertFalse(rm.check_can_trade(),
+                         "3% breaker did not halt a 50% drawdown")
+
+    def test_a_plausible_anchor_is_kept(self):
+        rm = self._rm_with_restored(1000.0)
+        rm.update_account_info(1000.0, 985.0)
+        self.assertAlmostEqual(rm.day_start_equity, 1000.0)
+
+    def test_a_real_bad_day_is_not_mistaken_for_corruption(self):
+        """A genuine intraday loss must NOT trip the plausibility guard and
+        re-anchor -- that would itself be fail-open."""
+        rm = self._rm_with_restored(1000.0)
+        rm.update_account_info(1000.0, 900.0)    # -10% on the day, plausible
+        self.assertAlmostEqual(rm.day_start_equity, 1000.0)
+        self.assertFalse(rm.check_can_trade())
+
+    def test_corroboration_happens_once_not_on_every_heartbeat(self):
+        rm = self._rm_with_restored(1000.0)
+        rm.update_account_info(1000.0, 1000.0)
+        for eq in (900.0, 800.0, 700.0, 50.0):   # a catastrophic real day
+            rm.update_account_info(1000.0, eq)
+        self.assertAlmostEqual(rm.day_start_equity, 1000.0,
+                               msg="anchor drifted after corroboration")
+
+
+class FailedWriteIsRetried(unittest.TestCase):
+    """RS-RISK-01 MEDIUM-3. save_risk_anchor swallowed every exception, but the
+    caller cached (key, equity) unconditionally -- so one transient 'database
+    is locked' left RISK-01 off for the rest of the day, retried never."""
+
+    class _FailingStore:
+        def __init__(self, fail_times):
+            self.fail_times = fail_times
+            self.attempts = 0
+            self.writes = []
+
+        def save_risk_anchor(self, key, equity):
+            self.attempts += 1
+            if self.attempts <= self.fail_times:
+                return False
+            self.writes.append((key, equity))
+            return True
+
+    def _stub(self, store):
+        s = _RollStub("2026-08-01", equity=1000.0)
+        s.state_manager = store
+        return s
+
+    def test_a_failed_write_is_retried_on_the_next_iteration(self):
+        store = self._FailingStore(fail_times=3)
+        s = self._stub(store)
+        for _ in range(10):
+            s.persist(NOW)
+        self.assertGreaterEqual(store.attempts, 4, "never retried after failure")
+        self.assertEqual(store.writes, [("2026-08-01", 1000.0)])
+
+    def test_a_successful_write_still_suppresses_repeats(self):
+        store = self._FailingStore(fail_times=0)
+        s = self._stub(store)
+        for _ in range(50):
+            s.persist(NOW)
+        self.assertEqual(store.attempts, 1)
 
 
 if __name__ == "__main__":

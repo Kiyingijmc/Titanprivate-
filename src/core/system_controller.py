@@ -116,6 +116,9 @@ class SystemController:
         self.report_sent_today = False
         self.news_digest_sent_today = False
         self.news_alerts_sent = set()
+        self.news_daily_reset_done = False
+        self._news_alert_cache = None
+        self._news_alert_cache_at = None
         
         # Logic Engine Instantiation
         offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
@@ -362,13 +365,24 @@ class SystemController:
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
 
+                # Guarded so it fires ONCE per day, and BEFORE this tick's sends -- a
+                # bare per-tick clear (or a reset placed after the sends) would wipe the
+                # dedup marker _maybe_send_news_alerts writes on this same tick, letting
+                # an event whose lead window overlaps hour 0 re-alert on the very next
+                # iteration (unguarded: ~1000 Telegram sends/sec; reset-after-send:
+                # exactly one spurious duplicate on the first hour-0 tick every day).
+                if now_uganda.hour == 0:
+                    if not self.news_daily_reset_done:
+                        self.news_digest_sent_today = False
+                        self.news_alerts_sent.clear()
+                        self.news_daily_reset_done = True
+                else:
+                    self.news_daily_reset_done = False
+
                 await self._maybe_send_news_digest(now_uganda)
                 await self._maybe_send_news_alerts(datetime.now(timezone.utc))
 
                 if now_uganda.hour == 0: self.report_sent_today = False
-                if now_uganda.hour == 0:
-                    self.news_digest_sent_today = False
-                    self.news_alerts_sent.clear()
 
                 # --- G. PULSE SYNC ---
                 # 10s PING to keep connection alive
@@ -1010,23 +1024,39 @@ class SystemController:
             self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
 
     async def _maybe_send_news_alerts(self, now_utc):
-        """One heads-up per red-folder event, `alert_lead_min` before it."""
+        """One heads-up per red-folder event, `alert_lead_min` before it.
+
+        digest() is cached for 30s (keyed on the `now_utc` argument, never a
+        wall clock read here) -- a 15-minute lead window doesn't need
+        millisecond-fresh data, and calling digest() every loop tick was
+        measured to throttle the live loop to ~65-200Hz.
+        """
         cfg = self._news_digest_cfg()
         if not cfg.get("enabled", True):
             return
         lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
         try:
             from src.ops.telegram_format import format_news_alert
-            for event in (self.news_manager.digest().get("events") or []):
-                when = datetime.fromisoformat(event["when_utc"])
-                delta = when - now_utc
-                if not (timedelta(0) < delta <= lead):
-                    continue
-                marker = f"{event['when_utc']}|{event.get('title', '')}"
-                if marker in self.news_alerts_sent:
-                    continue
-                await self.telemetry.send_message(format_news_alert(event), parse_mode="HTML")
-                self.news_alerts_sent.add(marker)
+            if (self._news_alert_cache_at is None
+                    or (now_utc - self._news_alert_cache_at).total_seconds() >= 30):
+                self._news_alert_cache = self.news_manager.digest()
+                self._news_alert_cache_at = now_utc
+            events = (self._news_alert_cache or {}).get("events") or []
+            for event in events:
+                # Per-event guard: one malformed event (e.g. missing when_utc)
+                # must not swallow every other event's alert this tick.
+                try:
+                    when = datetime.fromisoformat(event["when_utc"])
+                    delta = when - now_utc
+                    if not (timedelta(0) < delta <= lead):
+                        continue
+                    marker = f"{event['when_utc']}|{event.get('title', '')}"
+                    if marker in self.news_alerts_sent:
+                        continue
+                    await self.telemetry.send_message(format_news_alert(event), parse_mode="HTML")
+                    self.news_alerts_sent.add(marker)
+                except Exception as exc:
+                    self.logger.log_event("WARN", "NEWS", f"News alert event failed: {exc}")
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"News alert failed: {exc}")
 

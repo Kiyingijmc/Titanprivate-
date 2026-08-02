@@ -190,6 +190,51 @@ class TradingDayBoundaryCatchUp(unittest.TestCase):
         _run(c._maybe_send_news_digest(datetime(2026, 8, 2, 7, 0)))
         self.assertEqual(len(c.telemetry.sent), 1)
 
+    def test_month_boundary_sends_exactly_once(self):
+        """Round-3 coverage gap (Minor, but this function has now produced
+        two Critical defects of the same class): the 23:50 tick on the last
+        day of a month carries a key naming the 1st of the NEXT month. If
+        `scheduled`'s construction ever dropped `month=` (keeping only
+        `day=key_date.day`), `scheduled` would land in the wrong month and
+        the catch-up branch would poison the key -- exactly the round-2 bug,
+        just one field over. The August-only round-2 tests can't see this;
+        this one crosses Jul 31 -> Aug 1."""
+        c = _controller()
+        now = datetime(2026, 7, 31, 23, 0)
+        end = datetime(2026, 8, 1, 8, 0)
+        step = timedelta(seconds=60)
+        send_times = []
+        prev_len = 0
+        while now < end:
+            _run(c._maybe_send_news_digest(now))
+            if len(c.telemetry.sent) > prev_len:
+                send_times.append(now)
+                prev_len = len(c.telemetry.sent)
+            now += step
+
+        self.assertEqual(len(c.telemetry.sent), 1, f"sent at: {send_times}")
+        self.assertEqual(send_times, [datetime(2026, 8, 1, 7, 0)])
+
+    def test_year_boundary_sends_exactly_once(self):
+        """Same as test_month_boundary_sends_exactly_once, one field further:
+        a dropped `year=` would misplace `scheduled` in the wrong year across
+        Dec 31 -> Jan 1."""
+        c = _controller()
+        now = datetime(2026, 12, 31, 23, 0)
+        end = datetime(2027, 1, 1, 8, 0)
+        step = timedelta(seconds=60)
+        send_times = []
+        prev_len = 0
+        while now < end:
+            _run(c._maybe_send_news_digest(now))
+            if len(c.telemetry.sent) > prev_len:
+                send_times.append(now)
+                prev_len = len(c.telemetry.sent)
+            now += step
+
+        self.assertEqual(len(c.telemetry.sent), 1, f"sent at: {send_times}")
+        self.assertEqual(send_times, [datetime(2027, 1, 1, 7, 0)])
+
 
 RELEASE = datetime(2026, 7, 30, 12, 30, tzinfo=timezone.utc)
 EVENT = {"when_utc": RELEASE.isoformat(), "currency": "USD", "title": "Core PCE",

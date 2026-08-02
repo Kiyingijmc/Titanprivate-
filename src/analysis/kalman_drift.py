@@ -2,20 +2,25 @@
 Wald SPRT decision layer and an NIS (chi-square) integrity monitor.
 
 Blueprint: docs/research/2026-07-12-novel-arsenal-brainstorm.md sections 1
-and 14.2, with one deliberate, documented deviation adopted during Plan-07
-implementation (spec design note + gate doc): the SPRT runs on the filter's
-**standardized velocity** z = v_hat / sqrt(P_vel), NOT on whitened one-step
-innovations. Reason: for a level+velocity filter the one-step innovations are
-absorbed within a few bars of a drift onset, and the NIS integrity monitor
-(which flags large innovations) then suspends on exactly the drift transient
-the innovation-SPRT would need -- the two layers fight. The velocity state IS
-the quantity the filter estimates well ("trend with an error bar", section 3),
-so testing it directly is both well-posed and faithful to the blueprint's
-stated principle. The pre-registered alpha/beta/delta carry over unchanged as
-the Wald boundaries and effect size (delta now in velocity-sigma units). alpha
-/beta are NOMINAL (z is autocorrelated across bars); the gate validates the
-realized error rate empirically (OOS + realized-false-entry diagnostic + the
-+-30% sweep).
+and 14.2. Two SPRT modes (sprt_on):
+
+  "velocity" (v1, default): the SPRT runs on the filter's standardized
+    velocity z = v_hat / sqrt(P_vel). z is autocorrelated across bars, so
+    alpha/beta are NOMINAL only -- the 2026-07-14 gate measured 27.1%
+    realized false-entry vs the 5% design and NO-GO'd this mode. Kept
+    bit-identical for reproducibility of that result. (Its original
+    justification -- that an innovation-SPRT would fight the NIS monitor on
+    drift transients -- is void: suspension needs nis_persist consecutive
+    out-of-band bars, which a transient never produces. See
+    docs/research/2026-08-01-gyroscope-audit.md F1/F2.)
+  "innovation" (v2): the SPRT runs on the signed standardized one-step
+    innovation u = eps/sqrt(S), which is approximately white when NIS~=1
+    (the filter's own calibration target), so the Wald alpha/beta are
+    approximately real. Drift is detected at ONSET and the SPRT self-quiets
+    once the filter absorbs the new velocity -- episodic by construction.
+    A crossing must additionally agree with the filter's trend estimate by
+    z_confirm sigma (disagreement spends the evidence). Pre-registration:
+    docs/research/2026-08-01-gyroscope2-gate.md.
 
 Pure deterministic stdlib math -- no I/O, no wall-clock, no randomness, no
 numpy. One instance per symbol, fed exactly once per closed H1 bar via
@@ -56,6 +61,7 @@ class Reading:
     lam_short: float      # SPRT statistic, short test
     crossed: str          # "LONG" | "SHORT" | "" (no boundary crossing)
     state: str            # "WARMUP" | "OBSERVE" | "SUSPENDED"
+    u: float = 0.0        # signed standardized innovation eps/sqrt(S) (v2 SPRT input)
 
 
 def _variance(values) -> float:
@@ -72,15 +78,22 @@ class KalmanDrift:
 
     def __init__(self, warmup_bars=200, q_atr_frac=0.05, r_frac=1.0,
                  alpha=0.05, beta=0.20, delta=0.40, nis_window=50,
-                 nis_z=2.576):
+                 nis_z=2.576, sprt_on="velocity", z_confirm=0.0,
+                 nis_persist=None):
+        if sprt_on not in ("velocity", "innovation"):
+            raise ValueError(f"sprt_on must be 'velocity' or 'innovation', got {sprt_on!r}")
+        self.sprt_on = sprt_on
+        self.z_confirm = float(z_confirm)
         self.warmup_bars = int(warmup_bars)
         self.q_atr_frac = float(q_atr_frac)
         self.r_frac = float(r_frac)
         self.delta = float(delta)
         self.nis_window = int(nis_window)
-        # Suspension requires a full window of sustained out-of-band NIS: a
-        # rare failsafe, never tripped by a brief drift-onset spike.
-        self.nis_persist = self.nis_window
+        # Suspension requires nis_persist consecutive out-of-band bars.
+        # Default (v1) is a full window -- a rare failsafe never tripped by a
+        # brief drift-onset spike; v2 sets a smaller value so the brake is
+        # reachable on a genuine sustained regime break (audit F7).
+        self.nis_persist = self.nis_window if nis_persist is None else int(nis_persist)
         self.A = math.log((1.0 - float(beta)) / float(alpha))
         self.B = math.log(float(beta) / (1.0 - float(alpha)))
         band = float(nis_z) * math.sqrt(2.0 / self.nis_window)
@@ -158,11 +171,16 @@ class KalmanDrift:
         warmed = self.n >= self.warmup_bars
         p_vel_pos = self.P[1][1] if self.P[1][1] > 0 else 1e-18
         z = x1 / math.sqrt(p_vel_pos)
+        u = eps / math.sqrt(S) if S > 0 else 0.0
         crossed = ""
         if warmed and not self.suspended:
             d = self.delta
-            self.lam_long += d * z - 0.5 * d * d
-            self.lam_short += -d * z - 0.5 * d * d
+            # v1 tests the (autocorrelated) velocity statistic; v2 tests the
+            # ~white standardized innovation, so drift is detected at ONSET and
+            # the SPRT self-quiets once the filter absorbs the new velocity.
+            s = z if self.sprt_on == "velocity" else u
+            self.lam_long += d * s - 0.5 * d * d
+            self.lam_short += -d * s - 0.5 * d * d
             if self.lam_long <= self.B:
                 self.lam_long = 0.0
             if self.lam_short <= self.B:
@@ -171,6 +189,16 @@ class KalmanDrift:
                 crossed = "LONG"
             elif self.lam_short >= self.A:
                 crossed = "SHORT"
+            if crossed and self.sprt_on == "innovation":
+                # crossing must agree with the filter's own trend estimate by
+                # at least z_confirm sigma; a disagreeing crossing still spends
+                # its accumulated evidence (both lambdas reset below).
+                if crossed == "LONG" and z < self.z_confirm:
+                    crossed = ""
+                    self.lam_long = self.lam_short = 0.0
+                elif crossed == "SHORT" and z > -self.z_confirm:
+                    crossed = ""
+                    self.lam_long = self.lam_short = 0.0
             if crossed:
                 self.lam_long = 0.0
                 self.lam_short = 0.0
@@ -180,4 +208,4 @@ class KalmanDrift:
                        sqrt_S_price=math.sqrt(S) * math.exp(x0),
                        nis=nis, nis_mean=nis_mean,
                        lam_long=self.lam_long, lam_short=self.lam_short,
-                       crossed=crossed, state=state)
+                       crossed=crossed, state=state, u=u)

@@ -36,6 +36,13 @@ class GyroscopeStrategy(BaseStrategy):
         self.beta = float(sprt.get('beta', 0.20))
         self.delta = float(sprt.get('delta', 0.40))
         self.nis_window = int(config.get('nis_window', 50))
+        # v2 (docs/research/2026-08-01-gyroscope2-gate.md): innovation-SPRT
+        # mode + velocity confirmation + reachable NIS brake. Defaults keep
+        # the v1 velocity mode bit-identical.
+        self.sprt_on = str(config.get('sprt_on', 'velocity'))
+        self.z_confirm = float(config.get('z_confirm', 0.0))
+        nis_persist = config.get('nis_persist')
+        self.nis_persist = None if nis_persist is None else int(nis_persist)
         self.k_sl = float(config.get('k_sl', 3.0))
         self.sl_atr_floor = float(config.get('sl_atr_floor', 0.8))
         self.rr_target = float(config.get('rr_target', 2.0))
@@ -53,7 +60,9 @@ class GyroscopeStrategy(BaseStrategy):
             self._filters[symbol] = KalmanDrift(
                 warmup_bars=self.warmup_bars, q_atr_frac=self.q_atr_frac,
                 r_frac=self.r_frac, alpha=self.alpha, beta=self.beta,
-                delta=self.delta, nis_window=self.nis_window)
+                delta=self.delta, nis_window=self.nis_window,
+                sprt_on=self.sprt_on, z_confirm=self.z_confirm,
+                nis_persist=self.nis_persist)
         return self._filters[symbol]
 
     async def analyze_tick(self, tick_data, history_df):

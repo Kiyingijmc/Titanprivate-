@@ -54,6 +54,32 @@ class RiskManager:
         self.current_equity = equity
         self.track_equity(equity)
 
+    def restore_daily_anchor(self, equity):
+        """Prime today's DD anchor from persisted state, before any heartbeat.
+
+        RISK-01: day_start_equity was in-memory only, so every restart re-set it
+        to whatever equity the first post-boot heartbeat reported -- discarding
+        the day's realised drawdown and granting a fresh allowance. The caller
+        (SystemController, at boot) supplies the anchor persisted earlier today.
+
+        Once restored the anchor is non-zero, so update_account_info's existing
+        `if self.day_start_equity == 0` guard declines to re-anchor. The fix is
+        to prime that guard before the first heartbeat, not to add a second one.
+
+        No I/O here on purpose: RiskManager stays a pure class that ~10 test
+        modules construct from a bare config dict. Storage is StateManager's job.
+
+        A non-positive or unusable value is a NO-OP, not a coercion: a corrupt
+        persisted row must leave the existing first-heartbeat path intact rather
+        than anchor the breaker to nonsense.
+        """
+        try:
+            value = float(equity)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value) and value > 0:
+            self.day_start_equity = value
+
     def track_equity(self, equity):
         """V14 Feature: Tracks intraday range for the Ugandan Report"""
         if equity > self.equity_max: self.equity_max = equity
@@ -429,6 +455,26 @@ class RiskManager:
             total += risk
 
         return total
+
+    def roll_daily_anchor(self):
+        """New trading day: re-anchor the DD breaker, or INVALIDATE it.
+
+        RS-RISK-01 MAJOR-1. Sets day_start_equity to live equity when known.
+        When equity is NOT yet known -- restarted across the day boundary with
+        no heartbeat in yet -- it zeroes the anchor instead of leaving
+        yesterday's in place, so update_account_info's `== 0` guard anchors
+        fresh on the first heartbeat. Keeping the stale value is precisely what
+        let a previous day's anchor be written under the NEW day's key and then
+        restored on every restart for the rest of that day, handing back a
+        larger loss allowance than intended -- the failure class RISK-01 exists
+        to kill.
+
+        Deliberately does NOT touch equity_max/equity_min. Those are the daily
+        report's range trackers and reset_daily_metrics owns them; the rollover
+        fires just before the 23:45 report in the same loop iteration, so
+        clearing them here would make the report describe an empty day.
+        """
+        self.day_start_equity = self.current_equity if self.current_equity > 0 else 0.0
 
     def reset_daily_metrics(self):
         """New trading day: reset range trackers and re-anchor the daily DD."""

@@ -10,7 +10,10 @@
 
 import time
 import math
+from datetime import datetime, timezone
+
 from src.utils.instrument import InstrumentHelper
+from src.analysis import trading_days
 
 class TradeManager:
     """
@@ -48,6 +51,52 @@ class TradeManager:
         self.runner_hwm = {}      # ticket -> best price in trade direction (in-memory)
         self.tightened = set()    # tickets whose trail has been tightened (one-way)
 
+        # Time exits: strategy NAME -> rule. Two variants share the hook:
+        #   calendar (Almanac): {exit_trading_day: 3} or a plain int -- close
+        #     once the turn-of-month window has passed
+        #     (src/analysis/trading_days.should_time_exit).
+        #   duration (Gyroscope v2b GO): {max_bars: 48} -- close once held
+        #     >= max_bars H1 bars, measured as wall-clock hours since
+        #     time_placed. Weekend hours count, so a weekend-spanning trade
+        #     exits up to ~2 bars earlier than the offline replay's
+        #     market-bar count (4/1112 gate trades reached the stop; the
+        #     skew only ever shortens exposure).
+        # Empty or absent config keeps this hook fully inert.
+        self.time_exits = {}
+        self.time_exits_bars = {}
+        for name, rule in (mgmt.get('time_exits') or {}).items():
+            try:
+                if isinstance(rule, dict) and 'max_bars' in rule:
+                    self.time_exits_bars[str(name)] = int(rule['max_bars'])
+                    continue
+                day = rule.get('exit_trading_day', 3) if isinstance(rule, dict) else rule
+                self.time_exits[str(name)] = int(day)
+            except (ValueError, TypeError, AttributeError):
+                continue
+
+    def _time_exit_due(self, ticket, now):
+        """True when the ticket belongs to a time-exit strategy whose calendar
+        window has passed. UTC dates on both sides (time_placed is stored as
+        time.time() at registration); the broker-vs-UTC skew of a few hours
+        only shifts the day-4 boundary, identically live and in replay."""
+        if not self.time_exits and not self.time_exits_bars:
+            return False
+        meta = self.state_manager.get_order_meta(ticket)
+        if not meta:
+            return False
+        strat_name, placed = meta
+        if not placed or placed <= 0:
+            return False
+        max_bars = self.time_exits_bars.get(strat_name)
+        if max_bars is not None:
+            return (now - placed) >= max_bars * 3600.0
+        exit_day = self.time_exits.get(strat_name)
+        if exit_day is None:
+            return False
+        entry_d = datetime.fromtimestamp(placed, tz=timezone.utc).date()
+        today = datetime.fromtimestamp(now, tz=timezone.utc).date()
+        return trading_days.should_time_exit(today, entry_d, exit_day)
+
     def sync_positions(self, position_list_json, current_prices_dict):
         """
         Iterates active MT5 positions and applies management logic.
@@ -83,7 +132,17 @@ class TradeManager:
                     self.command_cooldowns[ticket] = now
                     continue
 
-                # 3. State Retrieval: original Entry/TP from SQLite
+                # 3. Time Exit (calendar strategies, e.g. Almanac): close once
+                # the turn-of-month window has passed, before ratchet logic.
+                if self._time_exit_due(ticket, now):
+                    self.logger.log_event("TRADE_MGR", "TIME_EXIT",
+                                          f"Closing #{ticket}: calendar window passed")
+                    commands.append({"action": "CLOSE_POS", "ticket": ticket,
+                                     "comment": "Time Exit"})
+                    self.command_cooldowns[ticket] = now
+                    continue
+
+                # 4. State Retrieval: original Entry/TP from SQLite
                 r_level, init_entry, init_tp = self.state_manager.get_ratchet_state(ticket)
                 if init_entry == 0 or init_tp == 0:
                     continue

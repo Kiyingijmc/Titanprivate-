@@ -52,7 +52,7 @@ Each row's description carries the register's own fields, in this order:
 
 | ID | Stage | Effort | Finding | Location | Backlog slug |
 |---|---|---|---|---|---|
-| **RISK-01** | A | 2 h | Daily drawdown anchor resets on every process restart; no restart cap | `risk_manager.py:51; titan-live.service:29` | `risk-01-daily-drawdown-anchor-resets` |
+| **RISK-01** | A | 2 h — **DONE 2026-07-31** (`feat/risk-01-daily-anchor`, unmerged) | Daily drawdown anchor resets on every process restart; no restart cap | `risk_manager.py:51; titan-live.service:29` | `risk-01-daily-drawdown-anchor-resets` |
 | **RISK-02** | A | 1 h | Position-count and per-symbol caps are blind to resting pending orders | `exposure.py:92,100; arbiter.py:250` | `risk-02-position-count-and-per` |
 | **RISK-10** | A | 1 h | Live bars and history bars are timestamped in two different timezones, in the same buffer | `candle_maker.py:113; data_store.py:79` | `risk-10-live-bars-and-history` |
 | **SEC-05** | A | 2 h | ZMQ unauthenticated, bound tcp://*, inbound messages never validated | `bridge_zmq.py:25,36,53; risk_manager.py:62; TitanZmq.mqh` | `sec-05-zmq-unauthenticated-bound-tcp` |

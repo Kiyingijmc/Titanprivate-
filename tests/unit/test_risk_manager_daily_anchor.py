@@ -42,5 +42,78 @@ class DailyDrawdownAnchor(unittest.TestCase):
         self.assertTrue(rm.check_can_trade())
 
 
+class RestoredAnchorSurvivesRestart(unittest.TestCase):
+    """RISK-01: a restart must not re-anchor the breaker to mid-day equity.
+
+    day_start_equity was in-memory only, so update_account_info's
+    `if day_start_equity == 0` guard re-anchored on every boot, discarding the
+    day's realised drawdown and granting a fresh 3% allowance.
+    """
+
+    def test_restored_anchor_survives_the_first_heartbeat(self):
+        # The bug, reproduced: bot restarts already 3.1% down on the day.
+        rm = RiskManager(CFG)
+        rm.restore_daily_anchor(1000.0)
+        rm.update_account_info(1000.0, 969.0)   # first post-boot heartbeat
+        self.assertAlmostEqual(rm.day_start_equity, 1000.0)
+        # Without the fix update_account_info re-anchors to 969.0, computes a
+        # 0% drawdown, and hands back a fresh 3% allowance.
+        self.assertFalse(rm.check_can_trade())
+
+    def test_restored_anchor_still_allows_inside_the_limit(self):
+        rm = RiskManager(CFG)
+        rm.restore_daily_anchor(1000.0)
+        rm.update_account_info(1000.0, 980.0)   # -2% on the day
+        self.assertTrue(rm.check_can_trade())
+
+    def test_restore_is_a_noop_for_zero_and_negative(self):
+        """A corrupt persisted row must not poison the breaker."""
+        for bad in (0.0, -1.0, -1000.0):
+            rm = RiskManager(CFG)
+            rm.restore_daily_anchor(bad)
+            self.assertEqual(rm.day_start_equity, 0.0)
+            # The normal fresh-anchor path must still work afterwards.
+            rm.update_account_info(1000.0, 1000.0)
+            self.assertAlmostEqual(rm.day_start_equity, 1000.0)
+
+    def test_a_bad_value_never_wipes_an_anchor_that_already_exists(self):
+        """The `> 0` guard must reject, not assign.
+
+        Asserting only that day_start_equity stays 0.0 after restoring 0.0
+        cannot tell "rejected" from "assigned 0.0" -- both leave it at 0.0. The
+        difference is only observable once a good anchor is already in place,
+        which is exactly the case that matters: a corrupt persisted row must not
+        be able to erase a live drawdown anchor and re-open the breaker.
+        """
+        for bad in (0.0, -5.0, None, "abc", float("nan"), float("inf")):
+            rm = RiskManager(CFG)
+            rm.update_account_info(1000.0, 1000.0)   # good anchor established
+            rm.restore_daily_anchor(bad)
+            self.assertAlmostEqual(rm.day_start_equity, 1000.0,
+                                   msg=f"{bad!r} wiped the anchor")
+            rm.update_account_info(1000.0, 969.0)    # -3.1%
+            self.assertFalse(rm.check_can_trade(),
+                             msg=f"{bad!r} re-opened the breaker")
+
+    def test_restore_is_a_noop_for_unusable_types(self):
+        for bad in (None, "", "abc", float("nan"), float("inf")):
+            rm = RiskManager(CFG)
+            rm.restore_daily_anchor(bad)
+            self.assertEqual(rm.day_start_equity, 0.0)
+
+    def test_restored_anchor_also_drives_the_throttle(self):
+        """throttle_factor shares the anchor; it must see the restored one."""
+        cfg = {"risk": {"account": {"max_daily_drawdown_pct": 3.0,
+                                    "max_global_exposure_pct": 6.0},
+                        "trade": {"risk_per_trade_pct": 1.0, "hard_max_lots": 5.0,
+                                  "static_commission_usd": 7.0},
+                        "drawdown_throttle": {"enabled": True,
+                                              "trigger_dd_pct": 2.0, "factor": 0.5}}}
+        rm = RiskManager(cfg)
+        rm.restore_daily_anchor(1000.0)
+        rm.update_account_info(1000.0, 975.0)   # -2.5% vs the restored anchor
+        self.assertEqual(rm.throttle_factor(), 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

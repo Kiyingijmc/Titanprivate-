@@ -12,6 +12,7 @@ import asyncio
 import yaml
 import sys
 import os
+import math
 import subprocess
 import pytz
 import time
@@ -109,6 +110,7 @@ class SystemController:
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
+        self.live_spreads = {}   # symbol -> ask-bid from the latest TICK (price units)
         self.active_symbols = set()
         
         # REPORTING
@@ -175,7 +177,42 @@ class SystemController:
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
-        
+
+        # RISK-01: restore today's drawdown anchor before the first heartbeat.
+        # Without this, every restart re-anchored the 3% breaker to whatever
+        # equity happened to be live at boot, discarding the day's realised
+        # drawdown. An absent or stale row changes nothing here, so boot
+        # restore alone can only KEEP an anchor the old code threw away.
+        #
+        # That is NOT by itself sufficient, and the original design's claim
+        # that the whole change was "strictly monotone" was FALSE (RS-RISK-01
+        # MAJOR-1): safety also depends on the anchor's day being rolled on the
+        # same key the row is stamped with. See _roll_trading_day_if_needed --
+        # without it a stale anchor was re-labelled with the new day's key here
+        # and restored for the rest of that day.
+        self._last_persisted_anchor = None
+        self._current_day_key = self._trading_day_key(datetime.now(self.uganda_tz))
+        try:
+            saved = self.state_manager.get_risk_anchor()
+            today_key = self._current_day_key
+            if saved and saved.get('trading_day_key') == today_key:
+                self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
+                self._last_persisted_anchor = (today_key,
+                                               self.risk_manager.day_start_equity)
+                self.logger.log_event(
+                    "RISK", "ANCHOR",
+                    f"Restored daily DD anchor {self.risk_manager.day_start_equity:.2f} "
+                    f"for trading day {today_key} (survived restart).")
+            elif saved:
+                self.logger.log_event(
+                    "RISK", "ANCHOR",
+                    f"Persisted anchor is for {saved.get('trading_day_key')}, "
+                    f"today is {today_key}; anchoring fresh.")
+        except Exception as e:
+            # Never let anchor restore stop the bot booting; falling through
+            # lands on today's existing first-heartbeat behaviour.
+            self.logger.log_event("RISK", "ANCHOR", f"Anchor restore skipped: {e}")
+
         self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
                                           config=self.config)
         
@@ -195,6 +232,68 @@ class SystemController:
         
         # Default safety
         if not self.active_symbols: self.active_symbols.add("BTCUSD")
+
+    # RISK-01. The daily DD anchor is keyed by TRADING day, not calendar day.
+    # The bot already re-anchors at 23:45 Africa/Kampala (the Uganda report block
+    # in the main loop), so a restore that used a midnight boundary would
+    # disagree with that reset for 15 minutes every night -- long enough for a
+    # restart in that window to resurrect an anchor the reset had superseded.
+    # Shifting the clock forward 15 minutes makes plain strftime roll over at
+    # exactly 23:45.
+    @staticmethod
+    def _trading_day_key(now_uganda):
+        """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
+        return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
+    def _roll_trading_day_if_needed(self, now_uganda):
+        """Edge-triggered trading-day rollover for the DD anchor (RS-RISK-01 MAJOR-1).
+
+        The 23:45 report block re-anchored as a side effect, but it is
+        LEVEL-triggered on a one-minute wall-clock window and the main loop is
+        not always running during that minute -- `_wait_for_bridge_connection`
+        is an unbounded `while True`, so a restart while the EA is down parks
+        the process for hours and resumes on a later day having never observed
+        23:45. The anchor then still belonged to the old day while
+        `_persist_daily_anchor` stamped it with the NEW day's key.
+
+        Rolling on the key itself makes the anchor and the key provably the
+        same boundary, which is what the design claimed but did not achieve.
+        Returns True when a roll happened (for tests and logging).
+        """
+        key = self._trading_day_key(now_uganda)
+        if key == self._current_day_key:
+            return False
+        self.risk_manager.roll_daily_anchor()
+        self._current_day_key = key
+        return True
+
+    def _persist_daily_anchor(self, now_uganda):
+        """Write the DD anchor when it CHANGES (RISK-01).
+
+        Driven from the main loop rather than the HEARTBEAT branch: this is
+        periodic bookkeeping, and _process_incoming_data stays pure
+        data-routing. The loop already holds `now_uganda`, so this adds no
+        extra clock read.
+
+        The loop spins roughly every millisecond, so the (key, equity) cache
+        is what keeps this to a real write twice a day -- once when the boot
+        anchor first appears, once after the 23:45 reset.
+
+        An anchor that is not a usable positive number is skipped rather than
+        written, exactly as RiskManager.restore_daily_anchor skips one: a
+        malformed value must not be able to overwrite a good persisted anchor.
+        """
+        try:
+            equity = float(self.risk_manager.day_start_equity)
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(equity) and equity > 0):
+            return
+        key = self._trading_day_key(now_uganda)
+        if self._last_persisted_anchor == (key, equity):
+            return
+        self.state_manager.save_risk_anchor(key, equity)
+        self._last_persisted_anchor = (key, equity)
 
     def _load_env(self):
         env_path = self.root_dir / ".env"
@@ -359,6 +458,14 @@ class SystemController:
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
+
+                # RISK-01: roll the DD anchor on the trading-day KEY, before
+                # anything reads it. Edge-triggered, so an outage spanning the
+                # boundary still rolls (the 23:45 window below can be missed
+                # entirely). Anchor only -- the report's range trackers below
+                # must survive to describe the day being reported on.
+                self._roll_trading_day_if_needed(now_uganda)
+
                 if now_uganda.hour == 23 and now_uganda.minute == 45:
                     if not self.report_sent_today:
                         await self._send_detailed_performance_report()
@@ -389,6 +496,15 @@ class SystemController:
                 await self._maybe_send_news_alerts(datetime.now(timezone.utc))
 
                 if now_uganda.hour == 0: self.report_sent_today = False
+
+                # RISK-01: persist LAST (RS-RISK-01 MINOR-6). Running before
+                # the rollover/reset wrote the OLD day's anchor under the NEW
+                # day's key on the first iteration after the boundary -- a real
+                # wrong-day row observed live on 2026-08-01 23:45:00.748.
+                # Kept out of the HEARTBEAT branch on purpose: this is periodic
+                # bookkeeping like the Sync Guard and ghost cleanup above, and
+                # _process_incoming_data must stay pure data-routing.
+                self._persist_daily_anchor(now_uganda)
 
                 # --- G. PULSE SYNC ---
                 # 10s PING to keep connection alive
@@ -463,7 +579,17 @@ class SystemController:
         throttle_fn = getattr(getattr(self, 'risk_manager', None), 'throttle_factor', None)
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
-        if lot <= 0: return
+        if lot <= 0:
+            # Fail-safe skip (specs missing, or min-lot risk exceeds the
+            # per-trade budget at this balance). Must be LOUD: a graded,
+            # passing signal that vanishes silently is indistinguishable
+            # from a dead pipeline (cost a live debugging session 2026-08-01
+            # when Gyroscope's first BTCUSD signal was unsizeable at $459).
+            self.logger.log_event(
+                "RISK", "SIZING",
+                f"{symbol} {name} signal skipped: lot=0 "
+                f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
+            return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
         if not allowed:
@@ -737,6 +863,9 @@ class SystemController:
             if not symbol: return
             
             self.live_prices[symbol] = float(msg.get('b', 0))
+            if msg.get('a') is not None:
+                # live spread for strategy screens (Gyroscope max_spread_atr_frac)
+                self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
             if self.state == BotState.ACTIVE:
                 closed_candles = self.market_data[symbol].process_tick(msg)
@@ -867,10 +996,12 @@ class SystemController:
         }
 
     async def _run_strategies(self, symbol, tf_df, tf="M5"):
-        # Only strategies triggered by this timeframe's close; skip the SMC
-        # enrichment entirely when none match (e.g. H1 closes with an M5-only
-        # strategy set, and vice versa).
-        active = [s for s in self.strategies if getattr(s, 'timeframe', 'M5') == tf]
+        # Only strategies triggered by this timeframe's close AND scoped to
+        # this symbol (a strategy with a `pairs` list never sees other
+        # symbols); skip the SMC enrichment entirely when none match.
+        active = [s for s in self.strategies
+                  if getattr(s, 'timeframe', 'M5') == tf
+                  and (getattr(s, 'pairs', None) is None or symbol in s.pairs)]
         if not active:
             return
 
@@ -895,7 +1026,10 @@ class SystemController:
             'bias': bias_str,
             'liquidity': liq,
             'ny_time': self.time_engine.get_current_ny_string(),
-            'smc_df': enriched_df
+            'smc_df': enriched_df,
+            # latest tick spread (price units); None until a two-sided tick
+            # arrives. getattr: legacy __new__ fixtures predate the attr.
+            'spread': getattr(self, 'live_spreads', {}).get(symbol),
         }
 
         # v15.2: strategies submit Intents; the Arbiter resolves conflicts
@@ -924,7 +1058,7 @@ class SystemController:
                     f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
                     payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
                 )
-                if not self.signal_grader.passes(g['grade']):
+                if not self.signal_grader.passes(g['grade'], strat.name):
                     self.logger.log_event("SIGNAL", strat.name,
                                           f"{symbol} skipped: {g['grade']} below floor "
                                           f"{self.signal_grader.min_grade}")

@@ -43,6 +43,8 @@ NY_SHIFT = -7               # broker(GMT+3ish) -> NY approx; +/-1h DST wobble ac
 SPREADS = {                 # indicative FBS spread in ticks (same table as harness)
     "EURUSD": 8, "GBPUSD": 12, "USDJPY": 10, "AUDUSD": 10, "USDCAD": 12,
     "GBPCAD": 30, "GBPJPY": 25, "XAUUSD": 20, "US30": 200, "BTCUSD": 1000, "XBRUSD": 30,
+    # Measured 2026-07-28 (Gyroscope-2 gate; closes audit STRAT-04):
+    "US100": 200, "ETHUSD": 193, "XTIUSD": 2,
 }
 COMMISSION_USD_PER_LOT = 7.0
 

@@ -4,7 +4,8 @@
 # --- Python ---
 __pycache__/
 *.py[cod]
-.venv/
+# no trailing slash: worktrees carry .venv as a symlink, which `.venv/` misses
+.venv
 venv/
 
 # --- Runtime state (databases) ---

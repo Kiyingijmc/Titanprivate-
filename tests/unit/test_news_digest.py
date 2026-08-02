@@ -20,10 +20,10 @@ class _StubLogger:
 
 
 def _event(title, currency="USD", importance="HIGH", when=DAY,
-           forecast=None, previous=None):
+           forecast=None, previous=None, url=None):
     return CalendarEvent(key=make_key(currency, title, when), when_utc=when,
                          currency=currency, importance=importance, title=title,
-                         forecast=forecast, previous=previous)
+                         forecast=forecast, previous=previous, url=url)
 
 
 def _manager(events):
@@ -39,6 +39,14 @@ class DigestContents(unittest.TestCase):
         self.assertEqual(d["events"][0]["title"], "Core PCE")
         self.assertEqual(d["events"][0]["forecast"], "0.3%")
         self.assertEqual(d["events"][0]["previous"], "0.2%")
+
+    def test_event_carries_url_when_the_source_had_one(self):
+        d = _manager([_event("Core PCE", url="https://example.test/pce")]).digest(now=DAY)
+        self.assertEqual(d["events"][0]["url"], "https://example.test/pce")
+
+    def test_event_url_is_none_when_the_source_had_none(self):
+        d = _manager([_event("Core PCE")]).digest(now=DAY)
+        self.assertIsNone(d["events"][0]["url"])
 
     def test_excludes_medium_and_low(self):
         d = _manager([_event("ifo", importance="MEDIUM"),
@@ -123,6 +131,47 @@ class DigestDayIsAlwaysUtc(unittest.TestCase):
                 d = manager.digest(now=bad)        # must not raise
                 self.assertEqual(d["status"], "unavailable")
                 self.assertEqual(d["events"], [])
+
+
+class SnapshotTodayStrip(unittest.TestCase):
+    """Spec §5: snapshot()["today"] -- today's HIGH events, UTC-day-filtered,
+    time-ordered, reusing digest()'s existing filter rather than
+    re-implementing it. See also §2.1: the CSV URL column must reach the
+    dashboard via both `today` entries and the `next` object."""
+
+    def test_today_lists_only_todays_high_impact_events_in_time_order(self):
+        d = _manager([_event("Later", when=DAY + timedelta(hours=3)),
+                      _event("Earlier", when=DAY - timedelta(hours=3))]).snapshot(now=DAY)
+        self.assertEqual([e["title"] for e in d["today"]], ["Earlier", "Later"])
+
+    def test_today_excludes_medium_low_and_other_days(self):
+        d = _manager([_event("ifo", importance="MEDIUM"),
+                      _event("M3", importance="LOW"),
+                      _event("Tomorrow", when=DAY + timedelta(days=1))]).snapshot(now=DAY)
+        self.assertEqual(d["today"], [])
+
+    def test_today_is_empty_list_not_missing_on_a_quiet_day(self):
+        d = _manager([]).snapshot(now=DAY)
+        self.assertIn("today", d)
+        self.assertEqual(d["today"], [])
+
+    def test_today_entries_and_next_carry_url(self):
+        manager = _manager([_event("Core PCE", url="https://example.test/pce")])
+        d = manager.snapshot(now=DAY - timedelta(minutes=5))
+        self.assertEqual(d["today"][0]["url"], "https://example.test/pce")
+        self.assertEqual(d["next"]["url"], "https://example.test/pce")
+
+    def test_url_is_none_when_the_source_had_none(self):
+        manager = _manager([_event("Core PCE")])
+        d = manager.snapshot(now=DAY - timedelta(minutes=5))
+        self.assertIsNone(d["today"][0]["url"])
+        self.assertIsNone(d["next"]["url"])
+
+    def test_snapshot_degrades_to_unavailable_when_today_computation_raises(self):
+        manager = _manager([_event("Core PCE")])
+        manager.digest = lambda now=None: (_ for _ in ()).throw(RuntimeError("today boom"))
+        d = manager.snapshot(now=DAY)
+        self.assertEqual(d, {"status": "unavailable"})
 
 
 from src.ops.telegram_format import format_news_alert, format_news_digest

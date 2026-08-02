@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { NewsPanel } from "./NewsPanel";
 import type { NewsBlock } from "@/lib/types";
@@ -51,5 +51,68 @@ describe("NewsPanel", () => {
   it("marks a stale calendar", () => {
     render(<NewsPanel data={{ status: "stale", cache_age_min: 3000 }} />);
     expect(screen.getByTestId("news-panel-stale")).toBeInTheDocument();
+  });
+
+  it("renders a today strip when today has events", () => {
+    render(
+      <NewsPanel
+        data={{
+          ...OK,
+          today: [
+            { when_utc: "2026-07-30T12:30:00+00:00", title: "Core PCE m/m",
+              currency: "USD", forecast: "0.3%", previous: "0.2%",
+              affects: ["EURUSD"] },
+          ],
+        }}
+      />
+    );
+    const strip = screen.getByTestId("news-today-strip");
+    expect(strip).toBeInTheDocument();
+    expect(within(strip).getByText(/Core PCE m\/m/)).toBeInTheDocument();
+    expect(within(strip).getByText("USD")).toBeInTheDocument();
+  });
+
+  it("renders no today strip when today is an empty list", () => {
+    render(<NewsPanel data={{ ...OK, today: [] }} />);
+    expect(screen.queryByTestId("news-today-strip")).not.toBeInTheDocument();
+  });
+
+  it("renders no today strip when today is absent", () => {
+    render(<NewsPanel data={OK} />);
+    expect(screen.queryByTestId("news-today-strip")).not.toBeInTheDocument();
+  });
+
+  it("renders a today title with a url as a link", () => {
+    render(
+      <NewsPanel
+        data={{
+          ...OK,
+          today: [
+            { when_utc: "2026-07-30T12:30:00+00:00", title: "Core PCE m/m",
+              currency: "USD", affects: [], url: "https://example.test/pce" },
+          ],
+        }}
+      />
+    );
+    const link = screen.getByRole("link", { name: /Core PCE m\/m/ });
+    expect(link).toHaveAttribute("href", "https://example.test/pce");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("renders a today title without a url as plain text, no link", () => {
+    render(
+      <NewsPanel
+        data={{
+          ...OK,
+          today: [
+            { when_utc: "2026-07-30T12:30:00+00:00", title: "Core PCE m/m",
+              currency: "USD", affects: [] },
+          ],
+        }}
+      />
+    );
+    expect(screen.getByText(/Core PCE m\/m/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Core PCE m\/m/ })).not.toBeInTheDocument();
   });
 });

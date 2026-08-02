@@ -1,5 +1,5 @@
 import { Calendar } from "lucide-react";
-import type { NewsBlock } from "@/lib/types";
+import type { NewsBlock, NewsTodayEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Economic calendar widget: next high-impact release, symbols it affects,
@@ -32,6 +32,7 @@ export function NewsPanel({ data, className }: { data?: NewsBlock; className?: s
   const next = data.next ?? null;
   const affects = next?.affects ?? [];
   const blocked = Object.entries(data.blocked_symbols ?? {});
+  const today = data.today ?? [];
 
   return (
     <div
@@ -80,6 +81,20 @@ export function NewsPanel({ data, className }: { data?: NewsBlock; className?: s
         <span className="text-xs text-muted-foreground">No upcoming high-impact events.</span>
       )}
 
+      {today.length > 0 && (
+        <div
+          data-testid="news-today-strip"
+          className="flex flex-col gap-1 border-t border-border pt-2"
+        >
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Today
+          </span>
+          {today.map((event, i) => (
+            <TodayRow key={`${event.when_utc}-${i}`} event={event} />
+          ))}
+        </div>
+      )}
+
       {blocked.length > 0 && (
         <div className="flex flex-col gap-1 border-t border-border pt-2">
           <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -91,6 +106,43 @@ export function NewsPanel({ data, className }: { data?: NewsBlock; className?: s
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+const todayTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+});
+
+function formatTodayTime(whenUtc: string): string {
+  const parsed = new Date(whenUtc);
+  if (Number.isNaN(parsed.getTime())) return "--:--";
+  return `${todayTimeFormatter.format(parsed)}Z`;
+}
+
+/** One row of the "today" strip: time + currency + title. A title with a
+ * dashboard `url` (spec §2.1) opens in a new tab; without one it's plain
+ * text -- never an anchor with an empty/undefined href. */
+function TodayRow({ event }: { event: NewsTodayEvent }) {
+  return (
+    <div className="flex items-baseline gap-2 text-xs text-muted-foreground">
+      <span className="font-mono tabnum">{formatTodayTime(event.when_utc)}</span>
+      <span className="font-mono text-foreground">{event.currency}</span>
+      {event.url ? (
+        <a
+          href={event.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate text-foreground underline-offset-2 hover:underline"
+        >
+          {event.title}
+        </a>
+      ) : (
+        <span className="truncate text-foreground">{event.title}</span>
       )}
     </div>
   );

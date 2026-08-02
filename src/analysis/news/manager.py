@@ -137,6 +137,7 @@ class NewsManager:
                     "title": event.title,
                     "forecast": event.forecast,
                     "previous": event.previous,
+                    "url": event.url,
                     "affects": [s for s in symbols
                                 if event.currency in self.policy.currencies_for(s)],
                 })
@@ -158,6 +159,12 @@ class NewsManager:
             # entry (once for the test, once for the value) doubles the work and
             # can disagree with itself if `now` is not pinned.
             gates = {s: self.check_symbol(s, now) for s in symbols}
+            # Reuse digest()'s own UTC-day/HIGH-importance filter for the
+            # "today" strip (spec §5) rather than re-implementing it here.
+            # digest() never raises (it degrades internally), so this stays
+            # inside snapshot()'s own try/except purely as a safety net for
+            # this call site, not because digest() is expected to throw.
+            today = self.digest(now)["events"]
             return {
                 "status": "stale" if self.policy.is_stale(age)
                           else ("degraded" if self.feed_degraded else "ok"),
@@ -168,13 +175,14 @@ class NewsManager:
                     "in_min": int((nxt.when_utc - now).total_seconds() // 60),
                     "title": nxt.title, "currency": nxt.currency,
                     "importance": nxt.importance, "forecast": nxt.forecast,
-                    "previous": nxt.previous,
+                    "previous": nxt.previous, "url": nxt.url,
                     "affects": [s for s in symbols
                                 if nxt.currency in self.policy.currencies_for(s)],
                 },
                 "blocked_symbols": {
                     s: reason for s, (blocked, reason) in gates.items() if blocked
                 },
+                "today": today,
             }
         except Exception as exc:  # the GUI payload must never break on news
             self.logger.log_event("WARN", "NEWS", f"Snapshot failed: {exc}")

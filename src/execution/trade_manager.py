@@ -10,7 +10,8 @@
 
 import time
 import math
-from datetime import datetime, timezone
+import pytz
+from datetime import datetime, timezone, timedelta
 
 from src.utils.instrument import InstrumentHelper
 from src.analysis import trading_days
@@ -51,7 +52,7 @@ class TradeManager:
         self.runner_hwm = {}      # ticket -> best price in trade direction (in-memory)
         self.tightened = set()    # tickets whose trail has been tightened (one-way)
 
-        # Time exits: strategy NAME -> rule. Two variants share the hook:
+        # Time exits: strategy NAME -> rule. Three variants share the hook:
         #   calendar (Almanac): {exit_trading_day: 3} or a plain int -- close
         #     once the turn-of-month window has passed
         #     (src/analysis/trading_days.should_time_exit).
@@ -61,11 +62,24 @@ class TradeManager:
         #     exits up to ~2 bars earlier than the offline replay's
         #     market-bar count (4/1112 gate trades reached the stop; the
         #     skew only ever shortens exposure).
+        #   flat_at_ny (Gambit): {flat_at_ny: ["05:00","11:00"]} -- close once
+        #     any listed NY wall-clock time has been crossed since placement
+        #     (session-end flat for intraday strategies). DST handled by pytz.
         # Empty or absent config keeps this hook fully inert.
         self.time_exits = {}
         self.time_exits_bars = {}
+        self.time_exits_flat_ny = {}
+        self._ny_tz = pytz.timezone('US/Eastern')
         for name, rule in (mgmt.get('time_exits') or {}).items():
             try:
+                if isinstance(rule, dict) and 'flat_at_ny' in rule:
+                    parsed = []
+                    for s in rule['flat_at_ny']:
+                        hh, mm = str(s).split(':')
+                        parsed.append((int(hh), int(mm)))
+                    if parsed:
+                        self.time_exits_flat_ny[str(name)] = parsed
+                    continue
                 if isinstance(rule, dict) and 'max_bars' in rule:
                     self.time_exits_bars[str(name)] = int(rule['max_bars'])
                     continue
@@ -79,13 +93,28 @@ class TradeManager:
         window has passed. UTC dates on both sides (time_placed is stored as
         time.time() at registration); the broker-vs-UTC skew of a few hours
         only shifts the day-4 boundary, identically live and in replay."""
-        if not self.time_exits and not self.time_exits_bars:
+        if not self.time_exits and not self.time_exits_bars and not self.time_exits_flat_ny:
             return False
         meta = self.state_manager.get_order_meta(ticket)
         if not meta:
             return False
         strat_name, placed = meta
         if not placed or placed <= 0:
+            return False
+        flat_times = self.time_exits_flat_ny.get(strat_name)
+        if flat_times is not None:
+            placed_ny = datetime.fromtimestamp(placed, tz=timezone.utc).astimezone(self._ny_tz)
+            now_ny = datetime.fromtimestamp(now, tz=timezone.utc).astimezone(self._ny_tz)
+            day = placed_ny.date()
+            # Walk each NY calendar day from placement to now (bounded: a
+            # flat-by-close trade should never span days, but an outage might).
+            while day <= now_ny.date():
+                for hh, mm in flat_times:
+                    b = self._ny_tz.localize(
+                        datetime(day.year, day.month, day.day, hh, mm))
+                    if placed_ny < b <= now_ny:
+                        return True
+                day += timedelta(days=1)
             return False
         max_bars = self.time_exits_bars.get(strat_name)
         if max_bars is not None:

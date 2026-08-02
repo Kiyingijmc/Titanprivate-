@@ -1,6 +1,6 @@
 # Aftershock — Hawkes self-exciting volatility-cascade trader
 
-> **Status:** candidate (Wave 2, pre-registration pending) · **Family:** point-process / volatility-event ·
+> **Status:** NO-GO at kill-screen (2026-08-02, docs/research/2026-08-01-wave2-gate-triage.md) · **Family:** point-process / volatility-event ·
 > **Timeframe:** H1 ·
 > **Origin:** `docs/research/2026-07-12-novel-arsenal-brainstorm.md` §2 (lines 92-153), §12 comparative
 > matrix (row 2), §13 ranked shortlist (#2) · **Doc version:** 2026-08-01

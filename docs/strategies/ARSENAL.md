@@ -59,7 +59,7 @@ complete; nothing deploys before Stage B.
 
 | Strategy | Doc | Concept | Wave | Standing |
 |---|---|---|---|---|
-| **Aftershock** | [aftershock.md](aftershock.md) | Hawkes vol-cascade trader | 2 | Brainstorm rank #2; best cost-survival; event-study-first |
+| **Aftershock** | [aftershock.md](aftershock.md) | Hawkes vol-cascade trader | 2 | NO-GO kill-screen 2026-08-02; promoted Rubicon |
 | **Rubicon** | [rubicon.md](rubicon.md) | BOCPD regime-break trader | 2 | Rank #3; highest salvage value (regime clock infra) |
 | **Rainflow** | [rainflow.md](rainflow.md) | Fatigue-accumulation breakout | 2 | Merge its gate with Coil (same family, two detectors) |
 | **Spring** | [spring.md](spring.md) | OU half-life mean reversion | 3 | Cost screen is the expected kill point |

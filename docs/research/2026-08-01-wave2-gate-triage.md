@@ -83,3 +83,22 @@ never deciding. Exhaustion leg: out of scope (continuation-only v1).
   docs/research/2026-07-14-gyroscope-gate.md (separate session).
 - NO-GO / INSUFFICIENT-N → record in this doc's appendix, update
   docs/strategies/aftershock.md + ARSENAL.md standing, promote Rubicon.
+
+## Appendix — screen outcome (added after the run; protocol above unchanged)
+
+Run: 2026-08-02 · commit of protocol: 6a46e00 · results: `data/results/aftershock_screen/run_card.json`
+
+Verdict: **NO-GO**
+
+| Criterion | Result | Value |
+|---|---|---|
+| 1 pooled +8 CI > 0 | fail | mean=-0.000019, CI=[-0.000443, 0.000438] |
+| 2 separation vs control | fail | diff=-0.000013, CI=[-0.000457, 0.000449] |
+| 3 session-controlled beta | fail | beta=-0.000022, CI=[-0.000461, 0.000425] |
+| 4 symbols positive | fail | 3/9 |
+| 5 pooled N ≥ 150 | pass | N=701 |
+| 6 cost-dead symbols | (acts via 1–4) | excluded: none |
+
+Robustness cells: 4 of 9 (q × half_life) cells agree in sign with the primary cell (negative mean); all 9 cells have 95% CIs crossing zero. See cells.csv for the full table.
+
+Disposition: NO-GO path fires — Rubicon Wave-2 cycle promoted as follow-on backlog row (see Task 7).

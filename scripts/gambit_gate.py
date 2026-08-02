@@ -118,15 +118,22 @@ def evaluate_kill(df, exit_model="managed"):
     return out
 
 
-def evaluate_gate(df, sweep_dfs):
+def evaluate_gate(df, sweep_dfs, exit_model="managed"):
     """Phase-2, all seven pre-registered criteria on ALREADY-NETTED frames
-    (df from add_net at 1x). Stress renets at 1.5x internally."""
+    (df from add_net at 1x). Stress renets at 1.5x internally.
+
+    `exit_model` must match whatever basis (managed_r vs gross_r) `df` and
+    `sweep_dfs` were already netted with via add_net — it is threaded into
+    the internal stress re-net so stress evaluates the SAME basis as the
+    other six criteria (the dual-exit runbook runs both --exit managed and
+    --exit fixed; mixing bases there would silently corrupt the gate).
+    """
     c = {}
     is_df, oos_df = split_is_oos(df)
     c["economics"] = (df["net_r"].mean() > 0
                       and oos_df["net_r"].mean() >= GATE_OOS_MIN_R)
     c["cost"] = df["cost_r"].median() <= GATE_COST_MAX_R
-    stress = add_net(df, GATE_STRESS_MULT)
+    stress = add_net(df, GATE_STRESS_MULT, exit_model)
     c["stress"] = stress["net_r"].mean() >= 0
     per_sym = df[df["sym"].isin(GATE_SYMS)].groupby("sym")["net_r"].mean()
     c["breadth"] = int((per_sym >= 0).sum()) >= GATE_BREADTH_MIN
@@ -140,7 +147,8 @@ def evaluate_gate(df, sweep_dfs):
     c["calibration"] = (len(df) / max(days, 1)) <= GATE_MAX_SIGNALS_PER_DAY
     return {"criteria": c,
             "verdict": "GO" if all(c.values()) else "NO-GO",
-            "flips": flips, "oos_mean": float(oos_df["net_r"].mean())}
+            "flips": flips, "oos_mean": float(oos_df["net_r"].mean()),
+            "exit_model": exit_model}
 
 
 def main():
@@ -160,7 +168,7 @@ def main():
                   for p in a.sweeps.split(",") if p]
         if len(sweeps) != 4:
             print(f"WARNING: expected 4 sweep files, got {len(sweeps)}")
-        out = evaluate_gate(df, sweeps)
+        out = evaluate_gate(df, sweeps, a.exit)
     print(json.dumps(out, indent=2, default=str))
 
 

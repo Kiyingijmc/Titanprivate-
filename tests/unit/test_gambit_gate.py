@@ -52,6 +52,28 @@ class TestGate(unittest.TestCase):
                           "economics", "robustness", "stress"])
         self.assertIn(out["verdict"], ("GO", "NO-GO"))
 
+    def test_stress_criterion_uses_the_gate_exit_model(self):
+        # managed_r and gross_r deliberately diverge in sign so the stress
+        # criterion's basis is observable: under exit_model="fixed" (net_r
+        # built from gross_r), stress at 1.5x must come out negative even
+        # though the managed_r basis would be positive. If evaluate_gate's
+        # internal stress re-net ever drops exit_model and silently falls
+        # back to "managed", this flips to True and the test catches it.
+        n = 200
+        times = pd.date_range("2024-01-01", periods=n, freq="6h")
+        raw = pd.DataFrame({
+            "sym": ["US30"] * n, "setup": ["judas"] * n,
+            "session": ["ny_am"] * n, "time": times.astype(str),
+            "dir": ["SELL"] * n, "entry": 100.0, "sl": 200.0, "tp": -100.0,
+            "risk": 100.0, "outcome": ["TP"] * n,
+            "gross_r": [-0.5] * n, "managed_r": [0.5] * n,
+        })
+        df = add_net(raw, 1.0, "fixed")
+        out = evaluate_gate(df, sweep_dfs=[df, df, df, df],
+                             exit_model="fixed")
+        self.assertFalse(out["criteria"]["stress"])
+        self.assertEqual(out["exit_model"], "fixed")
+
 
 if __name__ == "__main__":
     unittest.main()

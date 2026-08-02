@@ -16,7 +16,7 @@ import math
 import subprocess
 import pytz
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from enum import Enum
 from dotenv import load_dotenv
@@ -114,8 +114,17 @@ class SystemController:
         self.active_symbols = set()
         
         # REPORTING
-        self.daily_closed_trades = [] 
+        self.daily_closed_trades = []
         self.report_sent_today = False
+        # Edge-triggered per trading day (RS-RISK-01 pattern): the trading-day
+        # key this digest was last sent for, or None. Replaces the old pair of
+        # level-triggered flags (news_digest_sent_today / news_daily_reset_done)
+        # that depended on the main loop observing an exact wall-clock minute --
+        # see _maybe_send_news_digest.
+        self.news_digest_sent_for_key = None
+        self.news_alerts_sent = set()
+        self._news_alert_cache = None
+        self._news_alert_cache_at = None
         
         # Logic Engine Instantiation
         offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
@@ -466,6 +475,9 @@ class SystemController:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
+
+                await self._maybe_send_news_digest(now_uganda)
+                await self._maybe_send_news_alerts(datetime.now(timezone.utc))
 
                 if now_uganda.hour == 0: self.report_sent_today = False
 
@@ -1111,6 +1123,171 @@ class SystemController:
             self._publish(SystemStateChanged(state="ACTIVE"))
             await self.telemetry.send_message(
                 "✅ News calendar refreshed. Resuming.", parse_mode="Markdown")
+
+    def _news_cfg(self):
+        """Total: whatever `config["news"]` holds, this never raises. A
+        misconfigured/scalar value (e.g. `news: "yes"`) degrades to {}
+        rather than blowing up every caller that does `.get(...)` on it."""
+        news = self.config.get("news")
+        return news if isinstance(news, dict) else {}
+
+    def _news_digest_cfg(self):
+        digest = self._news_cfg().get("digest")
+        return digest if isinstance(digest, dict) else {}
+
+    async def _maybe_send_news_digest(self, now_local):
+        """Once-a-day red-folder summary, edge-triggered per TRADING day
+        (RS-RISK-01 pattern reused here -- see `_trading_day_key` /
+        `_roll_trading_day_if_needed`).
+
+        The old gate was LEVEL-triggered on a one-minute wall-clock window
+        (`now.hour == hour and now.minute == minute`). `_wait_for_bridge_
+        connection` is an unbounded `while True`, so the loop can be parked
+        for hours and resume having never observed that minute -- the digest
+        then silently skips the day. Keying on `_trading_day_key` instead and
+        firing once the scheduled time has been REACHED OR PASSED for that
+        key makes a stall recoverable: the very next tick after a stall still
+        sends, whatever time it lands at.
+
+        That recoverability needs a ceiling, or a restart late in the day
+        would Telegram a digest of a day that is basically over. `catch_up_
+        hours` (config, default 3) bounds it: past that many hours since the
+        scheduled time, the key is marked sent WITHOUT sending -- a single
+        INFO log, not a WARN, because skipping a stale digest on purpose is
+        not a failure.
+
+        Never raises -- the main loop's handler re-raises. Every config read
+        (including the int()/float() coercions) lives inside this try: a bad
+        value (null/garbage hour, non-dict news block, ...) must degrade to a
+        WARN log and a skipped send, not an escaped exception -- this
+        coroutine is awaited from the main loop's `except Exception: raise
+        e`, and the bot runs outside systemd, so an escape here is a fatal,
+        non-restarting crash on the next tick."""
+        try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+
+            key = self._trading_day_key(now_local)
+            if self.news_digest_sent_for_key == key:
+                return
+
+            hour = int(cfg.get("hour", 7))
+            minute = int(cfg.get("minute", 0))
+
+            # `scheduled` must be anchored to the CALENDAR DATE the trading
+            # day `key` represents, not to `now_local`'s own calendar date --
+            # `_trading_day_key` rolls over 15 minutes EARLY (23:45 local),
+            # so during 23:45:00-23:59:59 `now_local`'s date is still today
+            # while `key` already names tomorrow. Anchoring to now_local's
+            # date there would make `scheduled` ~17h in the past relative to
+            # a `now_local` that is only minutes into the new key, tripping
+            # the catch-up branch and marking TOMORROW's key sent before
+            # tomorrow's real schedule ever arrives -- under continuous
+            # operation with no stalls at all, the digest would fire once
+            # and then never again (round-2 review finding).
+            key_date = datetime.strptime(key, "%Y-%m-%d").date()
+            scheduled = now_local.replace(
+                year=key_date.year, month=key_date.month, day=key_date.day,
+                hour=hour, minute=minute, second=0, microsecond=0)
+            if now_local < scheduled:
+                return   # not yet time for THIS trading day
+
+            catch_up_hours = float(cfg.get("catch_up_hours", 3))
+            elapsed_hours = (now_local - scheduled).total_seconds() / 3600.0
+            if elapsed_hours > catch_up_hours:
+                self.logger.log_event(
+                    "INFO", "NEWS",
+                    f"Digest for trading day {key} skipped as stale "
+                    f"({elapsed_hours:.1f}h past the {hour:02d}:{minute:02d} "
+                    f"schedule, catch_up_hours={catch_up_hours}).")
+                self.news_digest_sent_for_key = key
+                return
+
+            from src.ops.telegram_format import format_news_digest
+            digest = self.news_manager.digest()
+            await self.telemetry.send_message(format_news_digest(digest), parse_mode="HTML")
+            self.news_digest_sent_for_key = key
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
+
+    def _alert_marker_pending(self, marker, now_utc):
+        """A marker matters only until its event releases. Never raises: an
+        unparseable marker is treated as resolved and dropped."""
+        try:
+            return datetime.fromisoformat(marker.split("|", 1)[0]) > now_utc
+        except Exception:
+            return False
+
+    async def _maybe_send_news_alerts(self, now_utc):
+        """One heads-up per red-folder event, `alert_lead_min` before it.
+
+        digest() is cached for 30s (keyed on the `now_utc` argument, never a
+        wall clock read here) -- a 15-minute lead window doesn't need
+        millisecond-fresh data, and calling digest() every loop tick was
+        measured to throttle the live loop to ~65-200Hz. The parsed
+        `when_utc` for each cached event is cached alongside it (as
+        `self._news_alert_cache`, a list of `(event, when_dt)` pairs) so
+        `datetime.fromisoformat` also runs once per 30s refresh rather than
+        once per tick per event -- re-parsing unchanged timestamps every
+        tick was the rest of that throttling. An event whose `when_utc`
+        fails to parse is dropped at cache-build time (logged once) instead
+        of being retried every tick.
+
+        Every config read (including the int() coercion) lives inside this
+        try, for the same reason as `_maybe_send_news_digest`: this coroutine
+        is awaited from the main loop's `except Exception: raise e`, and a
+        bad config value escaping here is a fatal, non-restarting crash.
+        """
+        try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+            lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
+            from src.ops.telegram_format import format_news_alert
+            if (self._news_alert_cache_at is None
+                    or (now_utc - self._news_alert_cache_at).total_seconds() >= 30):
+                raw_events = (self.news_manager.digest() or {}).get("events") or []
+                parsed = []
+                for event in raw_events:
+                    try:
+                        when = datetime.fromisoformat(event["when_utc"])
+                    except Exception as exc:
+                        self.logger.log_event(
+                            "WARN", "NEWS", f"News alert event failed: {exc}")
+                        continue
+                    parsed.append((event, when))
+                self._news_alert_cache = parsed
+                self._news_alert_cache_at = now_utc
+            events = self._news_alert_cache or []
+            # Markers expire when their event releases -- not on a wall-clock day
+            # boundary. A daily .clear() wiped markers for events still pending across
+            # Kampala midnight (21:00 UTC), re-alerting them once.
+            if self.news_alerts_sent:
+                self.news_alerts_sent = {
+                    m for m in self.news_alerts_sent
+                    if self._alert_marker_pending(m, now_utc)
+                }
+            for event, when in events:
+                # Per-event guard: one bad send must not swallow every other
+                # event's alert this tick.
+                try:
+                    delta = when - now_utc
+                    if not (timedelta(0) < delta <= lead):
+                        continue
+                    marker = f"{event['when_utc']}|{event.get('title', '')}"
+                    if marker in self.news_alerts_sent:
+                        continue
+                    await self.telemetry.send_message(format_news_alert(event), parse_mode="HTML")
+                    self.news_alerts_sent.add(marker)
+                except Exception as exc:
+                    self.logger.log_event("WARN", "NEWS", f"News alert event failed: {exc}")
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"News alert failed: {exc}")
 
     def get_status_report(self):
         eq = self.risk_manager.current_equity

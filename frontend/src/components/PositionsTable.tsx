@@ -7,6 +7,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { SideChip } from "@/components/SideChip";
 import type { Position } from "@/lib/types";
 import { signedPnl, price, lots, pnlToneClass } from "@/lib/format";
@@ -16,10 +17,14 @@ export function PositionsTable({
   positions,
   onClose,
   readOnly,
+  blockedSymbols = {},
 }: {
   positions: Position[];
   onClose: (ticket: number) => void;
   readOnly: boolean;
+  /** symbol -> human reason it is currently news-blocked (Task 6). Omitted by
+   * an old caller or absent snapshot.news is equivalent to "nothing blocked". */
+  blockedSymbols?: Record<string, string>;
 }) {
   return (
     <Table>
@@ -44,7 +49,21 @@ export function PositionsTable({
           return (
             <TableRow key={p.ticket}>
               <TableCell className="font-mono tabnum">{p.ticket}</TableCell>
-              <TableCell>{p.symbol}</TableCell>
+              <TableCell>
+                <span className="flex items-center gap-1.5">
+                  {p.symbol}
+                  {blockedSymbols[p.symbol] && (
+                    <Badge
+                      data-testid="news-blocked-badge"
+                      variant="outline"
+                      title={blockedSymbols[p.symbol]}
+                      className="border-transparent bg-blocked/15 text-blocked"
+                    >
+                      News
+                    </Badge>
+                  )}
+                </span>
+              </TableCell>
               <TableCell>
                 <SideChip side={p.side} />
               </TableCell>

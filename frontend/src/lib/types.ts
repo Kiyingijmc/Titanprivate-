@@ -50,6 +50,24 @@ export interface DollarBias {
   trend: number[];
   contributors: { symbol: string; contribution: number }[];
 }
+export interface NewsEventSummary {
+  in_min: number; title: string; currency: string; importance: string;
+  forecast?: string | null; previous?: string | null; affects: string[];
+  url?: string | null;
+}
+export interface NewsTodayEvent {
+  when_utc: string; title: string; currency: string;
+  forecast?: string | null; previous?: string | null; affects: string[];
+  url?: string | null;
+}
+export interface NewsBlock {
+  status: "ok" | "degraded" | "stale" | "unavailable";
+  cache_age_min?: number | null;
+  sources?: Record<string, string>;
+  next?: NewsEventSummary | null;
+  blocked_symbols?: Record<string, string>;
+  today?: NewsTodayEvent[];
+}
 export interface Snapshot {
   health: Health; account: Account; positions: Position[]; arbiter: ArbiterBlock; registry: RegistryRow[];
   dollar?: DollarBias;
@@ -57,6 +75,7 @@ export interface Snapshot {
   orders?: PendingOrder[];
   risk?: RiskBlock;
   market?: MarketBlock;
+  news?: NewsBlock;
 }
 export interface FeedEvent { topic: string; ts: number; [k: string]: unknown; }
 export interface SettingRow { key: string; value: unknown; source: "default" | "override"; tier: "live" | "restart"; }

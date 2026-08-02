@@ -7,6 +7,7 @@ import { Controls } from "@/components/Controls";
 import { MarketSessions } from "@/components/market/MarketSessions";
 import { LocalityClock } from "@/components/market/LocalityClock";
 import { DollarBias } from "@/components/market/DollarBias";
+import { NewsPanel } from "@/components/market/NewsPanel";
 import { Badge } from "@/components/ui/badge";
 import { SideChip } from "@/components/SideChip";
 import { useController } from "@/context/ControllerContext";
@@ -85,11 +86,12 @@ export default function OverviewPage() {
   return (
     <div className="grid gap-4">
       {/* Market Context strip (Task 12): always-on session timeline + local
-          clock + USD bias, above the account KPIs. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          clock + USD bias + economic calendar, above the account KPIs. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
         <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />
+        <NewsPanel data={snapshot?.news} />
       </div>
 
       <Panel status={baseStatus} title="Overview">

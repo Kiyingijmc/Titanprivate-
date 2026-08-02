@@ -1,0 +1,12 @@
+# config/manifests/gambit.yaml
+# Gambit — M5 session playbook (Judas + Reprise), spec 2026-08-02.
+# status research: loads for the research/registry path, NEVER activated live
+# until a setup passes its pre-registered gate (docs spec section 6).
+id: gambit
+version: "0.1.0"
+class_path: "src.strategies.models.gambit:Gambit"
+family: smc
+timeframe: M5
+requires: [smc.enriched_df, smc.bias_context]
+status: research
+priority: 50

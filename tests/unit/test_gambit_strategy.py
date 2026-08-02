@@ -150,5 +150,26 @@ class TestGambitChassis(unittest.TestCase):
         self.assertEqual(self.strat.pairs, ["US30", "XAUUSD"])
 
 
+class TestGambitRegistry(unittest.TestCase):
+    def test_manifest_loads_and_stays_research(self):
+        from pathlib import Path
+        from src.strategies.manifest import load_manifests
+        from src.strategies.registry import StrategyRegistry
+        root = Path(__file__).resolve().parents[2]
+        manifests = load_manifests(root / "config" / "manifests")
+        ids = {m.id for m in manifests}
+        self.assertIn("gambit", ids)
+        gm = next(m for m in manifests if m.id == "gambit")
+        self.assertEqual(gm.status, "research")
+        self.assertEqual(gm.timeframe, "M5")
+        # Registry with ONLY the gambit manifest: other strategies' config
+        # blocks aren't this test's concern.
+        reg = StrategyRegistry([gm], {"gambit": dict(CONFIG)}, _Logger())
+        reg.load_all()
+        reg.activate_eligible()
+        names = [s.name for s in reg.active_instances()]
+        self.assertNotIn("Gambit", names)
+
+
 if __name__ == "__main__":
     unittest.main()

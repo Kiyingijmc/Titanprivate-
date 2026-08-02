@@ -237,6 +237,29 @@ class TestBoundaryRegression(unittest.TestCase):
         # Assert strict >: 5.0 is NOT > 5.0, so is_event is False
         self.assertFalse(bool(out["is_event"].iloc[250]))
 
+    def test_s_minus_exactly_equal_to_s_lo_not_eligible(self):
+        """A probe whose s_minus EXACTLY equals s_lo must be rejected (strict <).
+
+        This is the degenerate case that produced the original `<=` bug: with no
+        prior events anywhere in the frame, s_minus is identically 0.0, so
+        s_lo (its 20th percentile) is also exactly 0.0. Under the registered
+        strict `<` the probe is excluded; under `<=` it would be admitted, so
+        this discriminates the two.
+        """
+        df = _spike_at(_flat_df(260), 250, up=True)  # probe only, NO warm-up event
+        flags = flag_events(df, q=2.5, window=200)
+        s_minus = excitation(flags["is_event"], half_life=24)
+        s_lo = s_lo_threshold(s_minus, warmup=200, pctile=20.0)
+
+        # The probe is a genuine event that clears every other gate...
+        self.assertTrue(bool(flags["is_event"].iloc[250]))
+        self.assertTrue(bool(flags["closes_beyond_mid"].iloc[250]))
+        # ...and sits EXACTLY on the threshold.
+        self.assertEqual(s_minus.iloc[250], s_lo)
+
+        # Strict `<` therefore excludes it. `<=` would return one row.
+        self.assertEqual(len(eligible_signals(df)), 0)
+
     def test_s_minus_boundary_at_percentile(self):
         """s_minus >= s_lo bars fail the s_minus < s_lo filter (strict inequality).
 

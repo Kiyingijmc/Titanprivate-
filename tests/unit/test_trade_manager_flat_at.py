@@ -55,10 +55,11 @@ class TestFlatAtNY(unittest.TestCase):
         self.assertTrue(tm._time_exit_due(1, ny_epoch(2026, 7, 15, 11, 0)))
 
     def test_outage_spanning_boundary_closes_on_restart(self):
-        # Bot down over the 05:00 boundary and past midnight: still due.
-        placed = ny_epoch(2026, 7, 15, 4, 0)
+        # Placed after both day-1 boundaries (23:30), checked next day before first boundary (06:00).
+        # Only day-2's 05:00 boundary satisfies placed_ny < b <= now_ny; requires the day-walk loop.
+        placed = ny_epoch(2026, 7, 15, 23, 30)
         tm = make_tm({1: ("Gambit", placed)}, self.RULE)
-        self.assertTrue(tm._time_exit_due(1, ny_epoch(2026, 7, 16, 3, 0)))
+        self.assertTrue(tm._time_exit_due(1, ny_epoch(2026, 7, 16, 6, 0)))
 
     def test_est_winter_dates(self):
         placed = ny_epoch(2026, 1, 15, 8, 35)      # EST

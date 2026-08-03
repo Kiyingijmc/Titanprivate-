@@ -1,6 +1,42 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { EquitySparkline } from "./EquitySparkline";
+import type { EquitySeries, RangeName } from "@/lib/types";
+
+/** A minimal well-formed series. `peak === equity`, so drawdown is flat 0. */
+function makeSeries(range: RangeName = "1d"): EquitySeries {
+  return {
+    range, tier: "coarse", bucket_s: 300,
+    series: ["equity", "balance", "peak"],
+    points: [
+      { ts: 1000, equity: 1000, balance: 1000, peak: 1000 },
+      { ts: 2000, equity: 1000, balance: 1000, peak: 1000 },
+    ],
+    coverage: { first_sample_ts: 1000, n: 2, series_first_ts: {}, gaps: [] },
+  } as unknown as EquitySeries;
+}
+
+/** A series whose deepest point sits `depth` below the high-water mark.
+ *  `depth` is NEGATIVE (drawdown = equity - peak). */
+function makeSeriesWithDrawdown(depth: number, range: RangeName = "1d"): EquitySeries {
+  const peak = 1000;
+  return {
+    range, tier: "coarse", bucket_s: 300,
+    series: ["equity", "balance", "peak"],
+    points: [
+      { ts: 1000, equity: peak, balance: peak, peak },
+      { ts: 2000, equity: peak + depth, balance: peak, peak },
+      { ts: 3000, equity: peak + depth / 2, balance: peak, peak },
+    ],
+    coverage: { first_sample_ts: 1000, n: 3, series_first_ts: {}, gaps: [] },
+  } as unknown as EquitySeries;
+}
+
+// makeSeriesWithDrawdown has no caller in this task — Task 4 is its first
+// consumer. This line is temporary scaffolding so noUnusedLocals doesn't
+// fail the build while the fixture is added ahead of need, per the plan's
+// "add both fixtures once, at Task 3" instruction; delete it when Task 4 lands.
+void makeSeriesWithDrawdown;
 
 describe("EquitySparkline", () => {
   it("renders a 'No data yet' empty state when points is empty", () => {
@@ -221,5 +257,28 @@ describe("EquitySparkline sizing", () => {
   it("accepts a percentage height so it can fill a maximized panel", () => {
     render(<EquitySparkline points={points} height="100%" />);
     expect(screen.getByTestId("equity-sparkline")).toHaveStyle({ height: "100%" });
+  });
+});
+
+describe("expanded + risk props (B1 plumbing)", () => {
+  it("accepts expanded and risk without changing what it renders by default", () => {
+    const { container: plain } = render(
+      <EquitySparkline points={[]} series={makeSeries()} width={400} height={200} />,
+    );
+    const { container: withProps } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries()}
+        risk={{ day_anchor: 1000, max_daily_dd_pct: 3 }}
+        width={400}
+        height={200}
+      />,
+    );
+    // expanded defaults to false, so passing risk alone must not alter the
+    // collapsed rendering: same number of drawn series.
+    expect(withProps.querySelectorAll(".recharts-area").length).toBe(
+      plain.querySelectorAll(".recharts-area").length,
+    );
+    expect(plain.querySelectorAll(".recharts-area").length).toBeGreaterThan(0);
   });
 });

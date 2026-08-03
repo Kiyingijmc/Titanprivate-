@@ -52,12 +52,23 @@ export function EquitySparkline({
   series,
   width = "100%",
   height = 140,
+  expanded = false,
+  risk,
 }: {
   points: BufferPoint[];
   series?: EquitySeries;
   width?: number | string;
   height?: number | string;
+  /** Render the maximized two-pane layout (equity + underwater). Comes from
+   *  EquityPanelBody's `fill`, never inferred from `height`. */
+  expanded?: boolean;
+  /** Today's breaker inputs. Absent until the risk block loads. */
+  risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
+  // Consumed by Tasks 4-7; referenced here so the plumbing task type-checks.
+  void expanded;
+  void risk;
+
   if (series) {
     return <SeriesChart series={series} width={width} height={height} />;
   }

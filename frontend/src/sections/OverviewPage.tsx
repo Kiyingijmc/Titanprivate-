@@ -256,6 +256,7 @@ export default function OverviewPage() {
     loading: equity.loading,
     hasFetchedData: equity.data !== null,
     now: serverNow(),
+    risk: snapshot?.risk,
   };
 
   return (

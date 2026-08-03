@@ -3,7 +3,7 @@ import { EquitySparkline, type BufferPoint } from "@/components/EquitySparkline"
 import { RangeSelector } from "@/components/RangeSelector";
 import { cn } from "@/lib/utils";
 import type { ApiError } from "@/lib/api";
-import type { EquitySeries, RangeName } from "@/lib/types";
+import type { EquitySeries, RangeName, RiskBlock } from "@/lib/types";
 
 export interface EquityPanelBodyProps {
   points: BufferPoint[];
@@ -21,6 +21,8 @@ export interface EquityPanelBodyProps {
   now: number;
   /** Fill the parent instead of rendering the 140px strip. */
   fill?: boolean;
+  /** Today's risk block, for the breaker reference line. */
+  risk?: RiskBlock;
 }
 
 /**
@@ -42,6 +44,7 @@ export function EquityPanelBody({
   hasFetchedData,
   now,
   fill = false,
+  risk,
 }: EquityPanelBodyProps) {
   return (
     <div className={cn("flex flex-col", fill && "min-h-0 flex-1")}>
@@ -86,6 +89,8 @@ export function EquityPanelBody({
           points={points}
           series={series}
           height={fill ? "100%" : undefined}
+          expanded={fill}
+          risk={risk ? { day_anchor: risk.day_anchor, max_daily_dd_pct: risk.max_daily_dd_pct } : undefined}
         />
       </div>
     </div>

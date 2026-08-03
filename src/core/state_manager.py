@@ -267,10 +267,15 @@ class StateManager:
         except: return []
 
     def save_risk_anchor(self, trading_day_key, day_start_equity):
-        """Persist today's drawdown anchor (RISK-01).
+        """Persist today's drawdown anchor (RISK-01). Returns True on success.
 
         Called on change, not per heartbeat: once when the boot anchor is first
-        established and once at the 23:45 daily reset.
+        established and once at the daily rollover.
+
+        RS-RISK-01 MEDIUM-3: this MUST report success. It used to swallow every
+        exception into a print while the caller cached (key, equity)
+        unconditionally, so a single transient "database is locked" left the
+        anchor unpersisted for the rest of the day and never retried.
         """
         try:
             self.conn.execute("""
@@ -279,22 +284,24 @@ class StateManager:
                 VALUES (1, ?, ?, ?)
             """, (str(trading_day_key), float(day_start_equity), time.time()))
             self.conn.commit()
+            return True
         except Exception as e:
             print(f"[DB ERROR] SaveRiskAnchor: {e}")
+            return False
 
     def get_risk_anchor(self):
-        """The persisted drawdown anchor, or None if never saved / unreadable.
+        """The persisted drawdown anchor, or None when no row has been saved.
 
-        None means "no usable anchor" and the caller must fall back to the
-        existing first-heartbeat behaviour -- never to a guessed number.
+        RS-RISK-01 MEDIUM-4: read failures PROPAGATE. Unlike the other helpers
+        in this file, this one feeds a safety control, and "the table is
+        unreadable" must not be indistinguishable from "nothing saved yet" --
+        that combination left the whole fix silently disabled with zero
+        operator signal. The caller distinguishes the two and alerts.
         """
-        try:
-            r = self.conn.execute(
-                "SELECT trading_day_key, day_start_equity, updated_at "
-                "FROM risk_state WHERE id=1").fetchone()
-            return dict(r) if r else None
-        except Exception:
-            return None
+        r = self.conn.execute(
+            "SELECT trading_day_key, day_start_equity, updated_at "
+            "FROM risk_state WHERE id=1").fetchone()
+        return dict(r) if r else None
 
     def get_order_meta(self, t):
         """(strategy, time_placed) for a ticket, or None. Read-only helper for

@@ -70,12 +70,27 @@ costs one parameterisation.
 
 ### A1 · Session buckets (Rule 2) — pre-specified, reported
 
-Derive the broker→UTC offset empirically rather than trusting `NY_SHIFT = -7`:
-infer it from the weekend seam and the daily bar-count boundary, per symbol and
-per year, and assert the result lands in GMT+2/+3. **If derivation is ambiguous
-the run aborts** — it must never fall back silently to −7. Convert to
-DST-aware New York time via stdlib `zoneinfo` (no new dependency; the repo
-already guards Python ≥3.10).
+Derive the broker→NY mapping empirically rather than trusting `NY_SHIFT = -7`.
+
+**Anchor, not a UTC offset.** FBS server time follows US DST, so the broker's
+*UTC* offset moves twice a year (GMT+2 winter, GMT+3 summer) while its offset to
+New York does not. Routing through UTC therefore needs a per-date offset and is
+wrong at the DST boundaries. Anchor instead on the **weekend seam**: the FX week
+opens Sunday 17:00 New York, which pins the mapping exactly with no timezone
+database. (The daily rollover gap would be the more obvious anchor, but this
+data has none — EURUSD M5 hourly bar counts run 8577–9324 across all 24 hours.
+The weekly seam is unambiguous: 159 of 160 weekends open at the same broker
+hour. Detection uses an FX symbol; metals and indices open an hour later.)
+
+The anchor's assumption — that the broker tracks NY DST — is **verified, not
+assumed**: the shift is derived independently per year and the run aborts if it
+moves, or if the modal week-open hour covers under 80% of weeks. It must never
+fall back silently to −7.
+
+**Measured during planning:** the shift is **+17**, identical in all four years.
+Since `17 ≡ -7 (mod 24)`, this *confirms* the rig's `NY_SHIFT = -7` rather than
+correcting it — the "+/-1h DST wobble accepted" caveat proves unnecessary. The
+resulting buckets sit at broker hours 9–11 (London), 15–17 (NY AM), 20–22 (NY PM).
 
 Bucket `ATR10` trades into exactly **four** pre-declared buckets:
 
@@ -238,9 +253,12 @@ justification that left `ict_zones.py` unused after the revival gate.
 | File | Change |
 |---|---|
 | `scripts/poc_sb_stops.py` | `RR` → `resolve()` parameter |
+| `src/analysis/session_time.py` | new, pure stdlib — weekend-seam anchor + NY buckets |
 | `src/analysis/liquidity_pools.py` | new, pure stdlib |
+| `tests/unit/test_session_time.py` | new |
 | `tests/unit/test_liquidity_pools.py` | new |
-| `scripts/ict_video_reads.py` | new — A1 + A2 reads, empirical offset derivation |
+| `tests/unit/test_sb_rig_rr_param.py` | new — pins the `resolve()` RR parameterisation |
+| `scripts/ict_video_reads.py` | new — A1 + A2 reads |
 | `scripts/exp2_liquidity_target.py` | new — A3 sweep + B2 experiment |
 | `docs/research/2026-08-03-exp2-liquidity-target-preregistration.md` | pre-registration, committed **before** the B2 run |
 | `docs/research/2026-08-03-ict-video-rules-results.md` | results |

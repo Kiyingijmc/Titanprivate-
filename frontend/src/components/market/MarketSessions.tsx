@@ -32,19 +32,22 @@ function pct(min: number): string {
 }
 
 /**
- * Vivid, well-separated identity color per session (amber / rose / violet /
- * teal-green). Fixed hues — deliberately independent of the app accent so they
- * never clash with the violet↔blue toggle. Each session's timeline band AND its
- * clock card use this same color, so the card reads as "this is that band".
+ * Session identity colours, resolved from design tokens rather than hex
+ * literals — see src/design/tokens.css. Values stay full `hsl(var(--x))`
+ * strings because they are consumed from inline `style`, not Tailwind classes.
+ * Fixed hues — deliberately independent of the app accent so they never clash
+ * with the violet↔blue toggle. Each session's timeline band AND its clock
+ * card use this same color, so the card reads as "this is that band".
  */
 const SESSION_COLORS: Record<string, string> = {
-  sydney: "#F59E0B", // amber
-  tokyo: "#FB5C7D", // rose
-  london: "#8B7CF6", // violet
-  newyork: "#2DD4A7", // teal-green
+  sydney: "hsl(var(--session-sydney))",
+  tokyo: "hsl(var(--session-tokyo))",
+  london: "hsl(var(--session-london))",
+  newyork: "hsl(var(--session-newyork))",
 };
 
-const BAND_ALPHA = "B3"; // ~70% — vivid, still lets the now-marker + overlaps read
+/** Timeline band fill: ~70% — vivid, still lets the now-marker + overlaps read. */
+const sessionBand = (id: string) => `hsl(var(--session-${id}) / 0.70)`;
 
 /**
  * 24h session timeline + status chips, driven by `sessionStates()` (T9).
@@ -136,7 +139,7 @@ export function MarketSessions({
                   style={{
                     left: pct(seg[0]),
                     width: pct(seg[1] - seg[0]),
-                    backgroundColor: SESSION_COLORS[session.id] + BAND_ALPHA,
+                    backgroundColor: sessionBand(session.id),
                   }}
                   aria-hidden
                 />
@@ -179,6 +182,8 @@ export function MarketSessions({
 }
 
 function SessionChip({ session, color }: { session: SessionState; color: string }) {
+  const wash = `hsl(var(--session-${session.id}) / 0.08)`;
+  const chipBg = `hsl(var(--session-${session.id}) / 0.15)`;
   return (
     <div
       data-testid={`session-chip-${session.id}`}
@@ -186,7 +191,7 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
       style={{
         borderLeftColor: color,
         // A faint session-color wash over the card surface while the market is open.
-        ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${color}14` } : {}),
+        ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${wash}` } : {}),
       }}
     >
       <div className="flex items-center justify-between gap-2">
@@ -199,7 +204,7 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
       {session.open ? (
         <span
           className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
-          style={{ backgroundColor: `${color}26`, color }}
+          style={{ backgroundColor: chipBg, color }}
         >
           {/* Static dot. It used to pulse forever, which is the highest-
               frequency animation in the app: always on screen, always moving,

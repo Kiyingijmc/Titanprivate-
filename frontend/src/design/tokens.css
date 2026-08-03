@@ -63,6 +63,15 @@
   --dd-shallow: 358 40% 55%;
   --dd-moderate: 358 65% 60%;
   --dd-severe: 358 84% 64%;
+
+  /* Trading-session identity colours. Moved out of MarketSessions.tsx, where
+     they were the app's only raw hex literals. Values are faithful HSL
+     conversions of those hexes, so this move is visually a no-op; sub-project
+     D may retune them here. */
+  --session-sydney: 38 92% 50%;
+  --session-tokyo: 348 95% 67%;
+  --session-london: 247 87% 73%;
+  --session-newyork: 164 66% 50%;
   /* radius / elevation / motion */
   --radius-lg: 10px; --radius-md: 8px; --radius-sm: 6px;
   --shadow-1: 0 1px 2px 0 hsl(225 20% 3% / 0.5);

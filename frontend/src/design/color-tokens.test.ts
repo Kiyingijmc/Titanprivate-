@@ -177,3 +177,35 @@ describe("semantic colour vocabulary (spec §4-§6)", () => {
     expect(tokenValue("--tint-strong")).toBe("0.16");
   });
 });
+
+describe("session colours moved into tokens (spec §7)", () => {
+  // Faithful conversions of the hexes that used to live in MarketSessions.tsx.
+  // If someone retunes a session colour later they must update this table —
+  // that is the point: the value stops being invisible inside a component.
+  const EXPECTED = {
+    "--session-sydney": "38 92% 50%",
+    "--session-tokyo": "348 95% 67%",
+    "--session-london": "247 87% 73%",
+    "--session-newyork": "164 66% 50%",
+  } as const;
+
+  it("defines all four session tokens with the converted values", () => {
+    for (const [name, triple] of Object.entries(EXPECTED)) {
+      expect(tokenValue(name), name).toBe(triple);
+    }
+  });
+
+  it("binds them to utilities that emit css", async () => {
+    const css = await emittedFor(
+      '<div class="bg-session-sydney bg-session-tokyo bg-session-london bg-session-newyork"></div>'
+    );
+    for (const name of Object.keys(EXPECTED)) {
+      expect(css, `${name} emits no css`).toContain(name);
+    }
+  });
+
+  it("leaves no raw hex literals in MarketSessions", () => {
+    const src = readFileSync(resolve(root, "src/components/market/MarketSessions.tsx"), "utf8");
+    expect(src).not.toMatch(/#[0-9a-fA-F]{6}/);
+  });
+});

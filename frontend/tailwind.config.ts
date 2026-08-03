@@ -49,6 +49,10 @@ export default {
         "dd-shallow": "hsl(var(--dd-shallow))",
         "dd-moderate": "hsl(var(--dd-moderate))",
         "dd-severe": "hsl(var(--dd-severe))",
+        "session-sydney": "hsl(var(--session-sydney))",
+        "session-tokyo": "hsl(var(--session-tokyo))",
+        "session-london": "hsl(var(--session-london))",
+        "session-newyork": "hsl(var(--session-newyork))",
         destructive: { DEFAULT: "hsl(var(--loss))", foreground: "hsl(var(--on-accent))" },
         // back-compat aliases — existing components still reference these v1 names
         card: { DEFAULT: "hsl(var(--surface-1))", foreground: "hsl(var(--text-primary))" },

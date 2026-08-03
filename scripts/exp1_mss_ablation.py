@@ -139,11 +139,14 @@ def resolve_from(bars, j, entry, sl, tp, is_long):
 
 
 # ---------------------------------------------------------------- pairing
-def counterfactual(sig, tr_a, bars, m5, last_swh, last_swl):
-    """One arm-A trade -> its arm-B counterfactual under both anchorings.
+def counterfactual(sig, tr_a, bars, m5, last_swh, last_swl, variants=VARIANTS):
+    """One arm-A trade -> its arm-B counterfactual under the given anchorings.
 
-    Returns (pair_dict, None) or (None, reason). A pair is kept only when BOTH
-    variants resolve, so all four gate cells are read on an identical set.
+    Returns (pair_dict, None) or (None, reason). A pair is kept only when EVERY
+    requested variant resolves, so all gate cells are read on an identical set.
+    `variants` defaults to both, which is the registered gate; passing ("B2",)
+    is the post-hoc robustness read (B2 needs no stop-crossing test, so it
+    recovers the pairs B1 must drop).
     """
     h1_times = bars["times"]
     m5_times = m5["_t"]
@@ -170,7 +173,7 @@ def counterfactual(sig, tr_a, bars, m5, last_swh, last_swl):
 
     is_long = sig["dir"] == "BUY"
     legs = {}
-    for v in VARIANTS:
+    for v in variants:
         geom, reason = build_variant(v, sig, tr_a, entry_b)
         if geom is None:
             return None, reason
@@ -347,7 +350,7 @@ def run_golden(sym, start, end, specs, quick):
     print(f"{shown} arm-A trades in window.")
 
 
-def run_gate(syms, specs, quick, out_dir):
+def run_gate(syms, specs, quick, out_dir, variants=VARIANTS, label=None):
     pairs, skips = [], {r: 0 for r in SKIP_REASONS}
     no_mss = []          # (sym, arm-A trade) — the ITT-eligible set
     n_arm_a = 0
@@ -364,7 +367,7 @@ def run_gate(syms, specs, quick, out_dir):
             n_arm_a += 1
             sig = ctx["signals"][tr["bar_idx"]]
             pair, reason = counterfactual(sig, tr, ctx["bars"], ctx["m5"],
-                                          ctx["swh"], ctx["swl"])
+                                          ctx["swh"], ctx["swl"], variants)
             if pair is None:
                 skips[reason] += 1
                 if reason == "NO_MSS":
@@ -385,11 +388,13 @@ def run_gate(syms, specs, quick, out_dir):
     if n == 0:
         print("No pairs — nothing to report.")
         return
+    if label:
+        print(f"*** {label} ***")
 
     # ---- the four registered cells ----------------------------------------
     cells = {}
     for em in EXITS:
-        for v in VARIANTS:
+        for v in variants:
             deltas, a_net, b_net = [], [], []
             for p in pairs:
                 bars = ctxs[p["sym"]]["bars"]
@@ -409,7 +414,7 @@ def run_gate(syms, specs, quick, out_dir):
     print(f"  {'cell':<16} {'armA':>8} {'armB':>8} {'D':>9} "
           f"{'CI95':>20} {'sd(D)':>8}")
     for em in EXITS:
-        for v in VARIANTS:
+        for v in variants:
             c = cells[(em, v)]
             lo, hi = c["ci"]
             print(f"  {em + '/' + v:<16} {c['a_exp']:>8.3f} {c['b_exp']:>8.3f} "
@@ -435,7 +440,7 @@ def run_gate(syms, specs, quick, out_dir):
           f"  adverse {100.0 * sum(1 for x in fl if x > 0) / n:.1f}%")
     wa = 100.0 * sum(1 for p in pairs if p["a"]["outcome"] == "TP") / n
     print(f"  win% (fixed-TP basis)   armA {wa:.1f}%", end="")
-    for v in VARIANTS:
+    for v in variants:
         wb = 100.0 * sum(1 for p in pairs if p["b"][v]["outcome"] == "TP") / n
         print(f"   armB/{v} {wb:.1f}%", end="")
     print()
@@ -446,7 +451,7 @@ def run_gate(syms, specs, quick, out_dir):
         # A skipped trade forgoes exactly arm A's realized net on that trade.
         forgone = [-net_r(tr, sym, specs, em, ctxs[sym]["bars"])
                    for sym, tr in no_mss]
-        for v in VARIANTS:
+        for v in variants:
             c = cells[(em, v)]
             denom = n + len(no_mss)
             itt = (sum(c["deltas"]) + sum(forgone)) / denom if denom else 0.0
@@ -455,14 +460,14 @@ def run_gate(syms, specs, quick, out_dir):
     # x1.5 spread stress
     print("\n  x1.5 spread stress (D only)")
     for em in EXITS:
-        for v in VARIANTS:
+        for v in variants:
             ds = [net_r(p["b"][v], p["sym"], specs, em, ctxs[p["sym"]]["bars"], 1.5)
                   - net_r(p["a"], p["sym"], specs, em, ctxs[p["sym"]]["bars"], 1.5)
                   for p in pairs]
             print(f"    {em + '/' + v:<14} D = {np.mean(ds):+.3f}")
 
     # per-year / per-symbol on the primary cell
-    prim = cells[("RUNNER", "B2")]
+    prim = cells[("RUNNER", variants[-1])]
     print("\n  per-year D (RUNNER/B2)")
     for y in sorted({p["year"] for p in pairs}):
         d = [prim["deltas"][i] for i, p in enumerate(pairs) if p["year"] == y]
@@ -479,11 +484,11 @@ def run_gate(syms, specs, quick, out_dir):
                                  "entry_a", "entry_b", "first_leg_r")}
         row["a_outcome"] = p["a"]["outcome"]
         row["a_risk"] = p["a"]["risk"]
-        for v in VARIANTS:
+        for v in variants:
             row[f"{v}_outcome"] = p["b"][v]["outcome"]
             row[f"{v}_risk"] = p["b"][v]["risk"]
         for em in EXITS:
-            for v in VARIANTS:
+            for v in variants:
                 row[f"d_{em}_{v}"] = cells[(em, v)]["deltas"][i]
         rows.append(row)
     out = os.path.join(out_dir, "pairs.csv")
@@ -501,6 +506,11 @@ def main():
     ap.add_argument("--end", default="2026-03-31")
     ap.add_argument("--quick", action="store_true", help="tail 30k M5 bars (dev)")
     ap.add_argument("--out", default="data/results/exp1_mss_ablation")
+    ap.add_argument("--b2-full", action="store_true",
+                    help="POST-HOC robustness: B2 only, which needs no "
+                         "stop-crossing test and so recovers the pairs B1 "
+                         "drops. Not the registered gate; label results as "
+                         "post-hoc.")
     a = ap.parse_args()
 
     with open("data/specs.json") as f:
@@ -511,6 +521,11 @@ def main():
         run_golden(a.sym or "XAUUSD", a.start, a.end, specs, a.quick)
     elif a.fidelity:
         sys.exit(0 if run_fidelity(syms, specs, a.quick) else 1)
+    elif a.b2_full:
+        run_gate(syms, specs, a.quick, os.path.join(a.out, "b2_full"),
+                 variants=("B2",),
+                 label="POST-HOC ROBUSTNESS READ — B2 only, B1_STOP_CROSSED "
+                       "pairs recovered. NOT the registered gate.")
     else:
         run_gate(syms, specs, a.quick, a.out)
 

@@ -293,6 +293,124 @@ golden trades pinned as sign fixtures.
 
 ## Results
 
-*(To be completed after the run. Registered fields: rig commit, funnel counts, n_paired,
-realized sd, the four Δ cells with CIs, the reported-not-gated table, verdict against the
-bands above, and any post-hoc observation explicitly labelled as post-hoc.)*
+**Run:** 2026-08-03, rig `e9a3993`, registered parameters exactly (H1 / ATR10 / 11 symbols /
+`LK_M5=2` / bootstrap 10,000 @ seed 11). Arm-A fidelity precondition passed first (§Verification).
+**Raw:** `data/results/exp1_mss_ablation/pairs.csv` (1,786 rows).
+**One pass. No re-tuning.**
+
+### Funnel
+
+| stage | n |
+|---|---|
+| arm-A trades (ATR10, H1, 11 symbols) | 2,217 |
+| dropped `NO_MSS` (no shift inside the TTL window) | 103 |
+| dropped `B1_STOP_CROSSED` (price through arm A's stop before any MSS) | 328 |
+| **paired, both anchorings resolved** | **1,786** |
+
+n = 1,786 ≥ 500 → **confirmatory** under the registered power floor.
+
+### Primary — Δ = arm B − arm A (net 1×, per trade)
+
+| cell | arm A | arm B | **Δ** | CI95 (paired bootstrap) | sd(Δ) |
+|---|---|---|---|---|---|
+| FIXED / B1 | +0.024 | −0.454 | **−0.477** | [−0.572, −0.393] | 1.932 |
+| FIXED / B2 | +0.024 | −0.604 | **−0.628** | [−0.700, −0.554] | 1.565 |
+| RUNNER / B1 | +0.234 | −0.450 | **−0.684** | [−0.778, −0.602] | 1.895 |
+| RUNNER / B2 | +0.234 | −0.564 | **−0.798** | [−0.859, −0.737] | 1.324 |
+
+Realized sd(Δ) 1.32–1.93 against the 1.3R assumed when the power floor was set: the
+registered n-thresholds were, if anything, slightly optimistic. Irrelevant here — every CI
+excludes zero by a wide margin at n = 1,786.
+
+### Verdict: **OUTCOME A — component confirmed costly**
+
+All four cells satisfy Δ ≤ −0.05R with a bootstrap upper bound below zero; the sign holds
+under ×1.5 spreads. No cell disagrees.
+
+### Reported, not gated
+
+| | |
+|---|---|
+| MSS fire-rate | 94.5% (1,786 of 1,889 arm-A trades with a resolvable touch) |
+| bars touch → MSS | median 15, mean 18.5 |
+| signed first-leg | median **+0.473R**, mean +0.567R, **75.5% adverse** |
+| win% (fixed-TP basis) | arm A **40.8%** → arm B/B1 26.3%, arm B/B2 **19.9%** |
+| ITT secondary (n=1,889) | −0.451 / −0.593 / −0.649 / −0.757 |
+| ×1.5 spread stress | −0.488 / −0.628 / −0.695 / −0.798 |
+
+Per-year Δ (RUNNER/B2): 2023 −0.814 (n=321) · 2024 −0.873 (n=640) · 2025 −0.724 (n=590) ·
+2026 −0.757 (n=235). Per-symbol Δ: **11/11 negative**, −0.536 (BTCUSD) to −0.932 (USDCAD).
+
+---
+
+### Post-hoc robustness read — the `B1_STOP_CROSSED` exclusion
+
+*Labelled post-hoc; not part of the registered gate. Run as
+`--b2-full`, output `data/results/exp1_mss_ablation/b2_full/pairs.csv`.*
+
+The 328 `B1_STOP_CROSSED` drops are not random: they are cases where price ran through arm
+A's stop before any MSS printed, i.e. arm-A losers. The 431 dropped trades average
+**−0.727R** for arm A, so the paired set is enriched with arm-A winners — arm A reads +0.024R
+on the pairs versus −0.122R on the full 2,217. That inflates arm A's *level*; whether it
+inflated Δ needed testing. B2 requires no stop-crossing test, so it recovers those pairs.
+
+| cell | n | arm A | arm B | **Δ** | CI95 |
+|---|---|---|---|---|---|
+| FIXED / B2 | 2,114 | **−0.127** | −0.595 | **−0.468** | [−0.538, −0.399] |
+| RUNNER / B2 | 2,114 | +0.112 | −0.556 | **−0.668** | [−0.728, −0.610] |
+
+Arm A now reads −0.127R under FIXED, against −0.122R for the full stop-study population —
+the enrichment is gone. Δ shrinks by **+0.160R (FIXED)** and **+0.130R (RUNNER)**, i.e. the
+exclusion inflated the effect by roughly 16–20%. **The verdict is unchanged**: OUTCOME A on
+n=2,114, 11/11 symbols negative (−0.410 to −0.823), every year negative, ×1.5 stress
+identical. The registered figures should be read as the upper end of the effect and the
+B2-full figures as the better estimate of its size.
+
+### The mechanism is *not* the one the hypothesis led with
+
+H1 gave two channels: (a) confirmation surrenders the first leg, worsening realized RR
+against a fixed target; (b) it conditions on "price already moved", which at M5 is largely
+noise. The data separates them, and **(a) is largely falsified as the dominant channel**:
+
+- **B2 freezes RR at exactly 2.0 in both arms by construction.** Risk is re-anchored to
+  1.0×ATR(H1) from arm B's own entry and the target recomputed from it, so "worse realized RR
+  against a fixed target" cannot operate in B2 at all. B2 is nonetheless the **worse** arm
+  (−0.798 vs B1's −0.684 in the gate; −0.668 on the full set). The channel that is switched
+  off is not the channel doing the damage.
+- **On the full set the mean signed first leg is only +0.087R** (median +0.315R, 63.8%
+  adverse) — near-neutral entry displacement — yet Δ = −0.668R. The entry price arm B gets is
+  not, on average, materially worse.
+- **What collapses is the win rate: 35.9% → 20.3% at identical geometry and identical RR.**
+  Breakeven at RR 2.0 is 33.3%, so arm A sits just above it and arm B far below.
+
+The cost therefore survives freezing entry geometry, risk and RR. What remains is *timing*:
+arm B enters a median 15–18 M5 bars later, on a move that has already happened, and wins
+barely half as often at the same odds. That is channel (b) — and it is the same shape as
+Mesfin (2026) arXiv:2605.04004, where a 1-bar entry delay flipped London Signal B from
+T = +5.15 to T = −3.56. Delay at LTF resolution does not tax the edge proportionally; it
+inverts the sign.
+
+### What this establishes, and what it does not
+
+**Establishes.** M5 MSS confirmation on a retest subtracts ≈0.47–0.67R per trade (best
+estimate, full-set B2) from an entry stream that clears costs — decisively, on every symbol,
+in every year, under both exit models, both anchorings, and ×1.5 spreads. The mechanism is
+delay/conditioning, not surrendered RR.
+
+**Does not establish.** That MSS *caused* the OTE / Unicorn / CRT NO-GOs. Those remain
+separate claims about separate rule sets with different zone primitives; this experiment
+raises the posterior but is not a retro-verdict on them. Nor is arm B a tradeable variant —
+it inherits arm A's signal selection by construction (see Occupancy), so its pooled level is
+a per-trade counterfactual only.
+
+**Consequence for the arsenal.** Per the registered Outcome-A band: LTF candidates are
+screened on **entry trigger**, and the confirmation branch is closed absent a new
+mechanically-motivated design with its own pre-registration. The one-pass rule applies — "try
+a different MSS lookback" is not such a design.
+
+**Standing caveats.** Already-seen data (SilverBullet's stop model and exit variant were
+selected on it; the MSS component never was, and Δ is a paired difference in which the
+baseline's selection bias largely cancels — but this is not out-of-sample). STRAT-01: both
+arms run through the offline `replay_managed`, not the live `trade_manager`, so levels are
+upper bounds and the bias largely cancels in Δ. Arm B's market entry has unmodelled
+slippage, biasing Δ *upward* — the Outcome-A result is conservative on that axis.

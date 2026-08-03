@@ -496,3 +496,45 @@ describe("daily breaker line (spec §7)", () => {
     expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
   });
 });
+
+describe("legend wiring (spec §8)", () => {
+  const RISK = { day_anchor: 1000, max_daily_dd_pct: 3 };
+
+  it("names every drawn series in the expanded view", () => {
+    render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeriesWithDrawdown(-25, "1d")}
+        expanded
+        risk={RISK}
+        width={400}
+        height={400}
+      />,
+    );
+    for (const label of ["Equity", "Balance", "High-water mark", "Drawdown", "Daily breaker"]) {
+      expect(screen.getByText(label), label).toBeInTheDocument();
+    }
+  });
+
+  it("drops the breaker entry on ranges where the line is not drawn", () => {
+    render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeriesWithDrawdown(-25, "1w")}
+        expanded
+        risk={RISK}
+        width={400}
+        height={400}
+      />,
+    );
+    expect(screen.getByText("Equity")).toBeInTheDocument();
+    expect(screen.queryByText("Daily breaker")).toBeNull();
+  });
+
+  it("renders no legend in the collapsed card", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="equity-legend"]')).toBeNull();
+  });
+});

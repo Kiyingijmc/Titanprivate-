@@ -14,6 +14,7 @@ import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
 import { drawdownSeverity, DD_FILL, showsBreakerLine, breakerLevel } from "@/lib/equityChartPolicy";
+import { EquityLegend, type LegendEntry } from "@/components/EquityLegend";
 import type { EquitySeries, RangeName } from "@/lib/types";
 
 /**
@@ -243,6 +244,23 @@ function SeriesChart({
     ? breakerLevel(risk?.day_anchor ?? 0, risk?.max_daily_dd_pct ?? 0)
     : null;
 
+  // Legend entries mirror the exact colour + dash each series is drawn with,
+  // so a token retune moves both together. The breaker entry is gated on the
+  // SAME `breakerY !== null` that gates the line itself — reusing the
+  // condition (not recomputing it) is what keeps the legend from ever naming
+  // a reference that isn't actually drawn.
+  const equityLegend: LegendEntry[] = [
+    { key: "equity", label: "Equity", swatch: "hsl(var(--accent))" },
+    { key: "balance", label: "Balance", swatch: "hsl(var(--text-muted))" },
+    { key: "peak", label: "High-water mark", swatch: "hsl(var(--text-muted))", dashed: true },
+    ...(breakerY !== null
+      ? [{ key: "breaker", label: "Daily breaker", swatch: "hsl(var(--loss))", dashed: true }]
+      : []),
+  ];
+  const underwaterLegend: LegendEntry[] = [
+    { key: "drawdown", label: "Drawdown", swatch: ddFill },
+  ];
+
   const last = equityValues[equityValues.length - 1] ?? 0;
   const first = equityValues[0] ?? last;
   const delta = last - first;
@@ -332,6 +350,11 @@ function SeriesChart({
                 tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
               />
               {!expanded && <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />}
+              {/* No inline SVG label here: the equity legend now names this
+                  line ("Daily breaker", spec §8), and the sr-only span below
+                  gives its exact value. A third, on-chart label would repeat
+                  what the legend already says and double up for screen
+                  readers (visible SVG text + the sr-only span). */}
               {breakerY !== null && (
                 <ReferenceLine
                   yAxisId="equity"
@@ -340,12 +363,6 @@ function SeriesChart({
                   strokeDasharray="6 4"
                   strokeOpacity={0.8}
                   ifOverflow="extendDomain"
-                  label={{
-                    value: "daily breaker",
-                    position: "insideBottomLeft",
-                    fill: "hsl(var(--loss))",
-                    fontSize: 10,
-                  }}
                 />
               )}
               <Tooltip
@@ -423,6 +440,7 @@ function SeriesChart({
             </span>
           )}
         </div>
+        {expanded && <EquityLegend entries={equityLegend} />}
 
         {expanded && (
           <div
@@ -498,6 +516,7 @@ function SeriesChart({
             )}
           </div>
         )}
+        {expanded && <EquityLegend entries={underwaterLegend} />}
       </div>
     </div>
   );

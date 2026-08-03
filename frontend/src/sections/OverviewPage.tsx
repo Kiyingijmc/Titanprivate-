@@ -275,7 +275,7 @@ export default function OverviewPage() {
         )}
       </div>
 
-      <Panel status={baseStatus} title="Overview">
+      <Panel status={baseStatus} title="Overview" domain="analytics">
         {snapshot && (
           <StatTiles
             account={snapshot.account}
@@ -289,13 +289,13 @@ export default function OverviewPage() {
       </Panel>
 
       {snapshot?.risk && (
-        <Panel status={baseStatus} title="Risk">
+        <Panel status={baseStatus} title="Risk" domain="risk">
           <RiskPanel risk={snapshot.risk} />
         </Panel>
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel status={equityStatus} title="Equity" onMaximize={() => setMaximized("equity")}>
+        <Panel status={equityStatus} title="Equity" domain="analytics" onMaximize={() => setMaximized("equity")}>
           {/* Reserve the collapsed height so closing the dialog doesn't jump.
               Range row (~36px) + its mb-3 (12px) + the 140px chart = 188px
               base. When `/api/equity` is failing, EquityPanelBody also renders
@@ -308,7 +308,7 @@ export default function OverviewPage() {
             {maximized === "equity" ? null : <EquityPanelBody {...equityBodyProps} />}
           </div>
         </Panel>
-        <Panel status={baseStatus} title="Controls">
+        <Panel status={baseStatus} title="Controls" domain="execution">
           <Controls
             api={api}
             paused={snapshot?.health.paused ?? false}
@@ -321,7 +321,7 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel status={positionsStatus} title="Top Positions" emptyMessage="No open positions">
+        <Panel status={positionsStatus} title="Top Positions" domain="execution" emptyMessage="No open positions">
           <div className="flex flex-col gap-1">
             {topPositions.map((p) => (
               <TopPositionRow key={p.ticket} position={p} />
@@ -329,7 +329,7 @@ export default function OverviewPage() {
           </div>
         </Panel>
 
-        <Panel status={activityStatus} title="Recent Activity" emptyMessage="No events yet">
+        <Panel status={activityStatus} title="Recent Activity" domain="market" emptyMessage="No events yet">
           <div className="flex flex-col gap-1">
             {recentEvents.map((e, i) => (
               <RecentEventRow key={`${e.topic}-${e.ts}-${i}`} event={e} />

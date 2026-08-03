@@ -1,0 +1,164 @@
+# scripts/ict_video_reads.py
+# A1 (session buckets) + A2 (bias agreement) conditioning reads.
+# Spec: docs/superpowers/specs/2026-08-03-ict-video-rules-design.md
+#
+# Exploratory reads on FROZEN tables. Both are REPORTED, NOT GATED.
+# data/history/ is a read-only symlink into the live tree - never write there.
+import json
+import os
+import sys
+
+import pandas as pd
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from scripts.poc_sb_stops import cost_r, wilson              # noqa: E402
+from src.analysis.session_time import (                       # noqa: E402
+    infer_ny_shift, ny_bucket, KILLZONES, OUTSIDE,
+)
+
+TABLE = "data/history/sb_stops_trades_H1.csv"
+OUTDIR = "data/results/ict_video_reads"
+MODEL = "ATR10"          # NOT "LIVE" - those rows are the deprecated 0.2xATR stop
+YEARS = [2023, 2024, 2025, 2026]
+
+
+def load_atr10():
+    """ATR10 trades with per-symbol net R attached."""
+    with open("data/specs.json") as f:
+        specs = json.load(f)
+    df = pd.read_csv(TABLE)
+    df = df[df["model"] == MODEL].copy()
+    df["time"] = pd.to_datetime(df["time"])
+    rows = df.to_dict("records")
+    for t in rows:
+        t["_net_r"] = t["r"] - cost_r(t, t["sym"], specs)
+    return rows
+
+
+def _stat(rows):
+    n = len(rows)
+    if n == 0:
+        return None
+    tot = sum(t["_net_r"] for t in rows)
+    wins = sum(1 for t in rows if t["_net_r"] > 0)
+    p, lo, hi = wilson(wins, n)
+    return {"n": n, "exp": tot / n, "win": p * 100, "lo": lo * 100, "hi": hi * 100}
+
+
+def a1_session_buckets(rows, shift, out):
+    p = out.append
+    p("=" * 78)
+    p("A1 -- SESSION BUCKETS (Rule 2).  PRE-SPECIFIED, REPORTED NOT GATED.")
+    p("=" * 78)
+    p(f"broker->NY shift inferred from the weekend seam: +{shift} hours")
+    p("(the FX week opens Sunday 17:00 New York; this data has no daily")
+    p(" rollover gap to anchor on, so the weekly seam is used instead)")
+    p(f"the rig's own NY_SHIFT = -7 is congruent to +{-7 % 24}: "
+      f"{'CONFIRMED' if shift == -7 % 24 else 'MISMATCH - investigate'}")
+    p("buckets are NY-time, snapped to H1 bar opens:")
+    for name, (s, e) in KILLZONES.items():
+        p(f"    {name:12} {s:02d}:00-{e:02d}:00 NY")
+    p(f"    {OUTSIDE:12} everything else")
+    p("canonical ICT quotes 08:30-11:00 / 13:30-16:00; H1 bars cannot")
+    p("represent half-hour boundaries, so buckets snap outward.")
+    p("")
+
+    for t in rows:
+        t["_bucket"] = ny_bucket(t["time"].hour, shift)
+
+    pooled = _stat(rows)
+    p(f"  {'POOLED':12} n={pooled['n']:5d}  exp={pooled['exp']:+.3f}R  "
+      f"win={pooled['win']:4.1f}% CI[{pooled['lo']:.0f}-{pooled['hi']:.0f}]")
+    p("")
+
+    verdicts = []
+    for name in list(KILLZONES) + [OUTSIDE]:
+        sub = [t for t in rows if t["_bucket"] == name]
+        s = _stat(sub)
+        if s is None:
+            p(f"  {name:12} n=0")
+            continue
+        sep = s["exp"] - pooled["exp"]
+        per_year = []
+        for y in YEARS:
+            ys = _stat([t for t in sub if t["year"] == y])
+            per_year.append((y, ys))
+        signs = {(ys["exp"] > 0) for _, ys in per_year if ys and ys["n"] >= 30}
+        stable = len(signs) == 1
+        interesting = abs(sep) >= 0.10 and stable
+        verdicts.append((name, interesting))
+        p(f"  {name:12} n={s['n']:5d}  exp={s['exp']:+.3f}R  "
+          f"win={s['win']:4.1f}% CI[{s['lo']:.0f}-{s['hi']:.0f}]  "
+          f"sep={sep:+.3f}R  {'INTERESTING' if interesting else 'null'}")
+        for y, ys in per_year:
+            if ys is None:
+                p(f"      {y}  n=0")
+            else:
+                p(f"      {y}  n={ys['n']:4d}  exp={ys['exp']:+.3f}R"
+                  f"{'   [n<30, sign ignored]' if ys['n'] < 30 else ''}")
+        p("")
+
+    p("VERDICT RULE (declared before the run): a bucket is INTERESTING only if")
+    p("  |exp - pooled exp| >= 0.10R AND its own exp holds sign across all")
+    p("  years with n>=30. Anything weaker is recorded as null.")
+    p(f"RESULT: {[n for n, v in verdicts if v] or 'no bucket separates - null'}")
+    p("")
+
+
+ANCHOR_SYM = "EURUSD"        # FX: metals and indices open an hour later
+WEEKEND_GAP = pd.Timedelta(hours=6)
+
+
+def _week_open_hours(times):
+    """Broker-local hour of the first bar after each weekend gap."""
+    return list(times[times.diff() > WEEKEND_GAP].dt.hour)
+
+
+def infer_shift_verified():
+    """Derive the broker->NY shift, and VERIFY the anchor assumption.
+
+    Inferred from the underlying BAR series, not the trade series: trades are
+    sparse and would not show the seams cleanly. Derived separately per year;
+    if the answer moves, the broker does not track NY DST, the anchor is
+    invalid, and the run aborts rather than bucketing on a wrong mapping.
+
+    Expected: +17 in every year (measured 2023-2026 during planning).
+    """
+    bars = pd.read_csv(f"data/history/{ANCHOR_SYM}_M5.csv",
+                       usecols=["datetime"])
+    bars["datetime"] = pd.to_datetime(bars["datetime"])
+    t = bars["datetime"]
+
+    per_year = {}
+    for y in sorted(t.dt.year.unique()):
+        sub = t[t.dt.year == y]
+        hrs = _week_open_hours(sub)
+        if len(hrs) < 10:
+            continue                      # partial year, too few seams
+        per_year[int(y)] = infer_ny_shift(hrs)
+
+    if len(set(per_year.values())) != 1:
+        raise ValueError(
+            f"broker->NY shift is not stable across years: {per_year}. "
+            "The broker does not track NY DST, so the weekend anchor is "
+            "invalid. Aborting rather than bucketing on a wrong mapping."
+        )
+    return infer_ny_shift(_week_open_hours(t)), per_year
+
+
+def main():
+    os.makedirs(OUTDIR, exist_ok=True)
+    rows = load_atr10()
+    shift, per_year = infer_shift_verified()
+    print(f"broker->NY shift +{shift}h; per-year check {per_year}")
+
+    out = []
+    a1_session_buckets(rows, shift, out)
+    text = "\n".join(out)
+    print(text)
+    with open(f"{OUTDIR}/a1_session_buckets.txt", "w") as f:
+        f.write(text + "\n")
+
+
+if __name__ == "__main__":
+    main()

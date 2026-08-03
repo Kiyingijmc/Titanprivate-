@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle } from "lucide-react";
 import { Panel, type PanelStatus } from "@/components/shell/Panel";
+import { MaximizedDialog } from "@/components/shell/MaximizedDialog";
 import { StatTiles } from "@/components/StatTiles";
 import { RiskPanel } from "@/components/RiskPanel";
-import { EquitySparkline } from "@/components/EquitySparkline";
-import { RangeSelector, enabledRangeNames, lookupRangeSeconds } from "@/components/RangeSelector";
+import { EquityPanelBody } from "@/components/EquityPanelBody";
+import { enabledRangeNames, lookupRangeSeconds } from "@/components/RangeSelector";
 import { Controls } from "@/components/Controls";
 import { MarketSessions } from "@/components/market/MarketSessions";
 import { LocalityClock } from "@/components/market/LocalityClock";
@@ -186,6 +186,9 @@ export default function OverviewPage() {
   // distinct equity value) is accepted for that; see M4 in the fix report.
   const equityPoints = useEquityBuffer(snapshot?.account.equity);
   const [range, setRange] = useState<RangeName>("1d");
+  // ONE value, not a boolean per panel: this makes "only one panel maximized at
+  // a time" structural instead of a rule to enforce.
+  const [maximized, setMaximized] = useState<null | "equity" | "news">(null);
   const equity = useEquitySeries(api, range);
   const liveEquityTail = useLiveEquityTail(snapshot?.account.equity);
   const equitySeriesForChart = withLiveTail(equity.data, liveEquityTail, equity.serverOffset);
@@ -243,6 +246,21 @@ export default function OverviewPage() {
   const activityStatus: PanelStatus =
     snapshot === null ? "loading" : connectionStatus.stale ? "stale" : recentEvents.length === 0 ? "empty" : "populated";
 
+  const equityBodyProps = {
+    points: equityPoints,
+    series: equitySeriesForChart ?? undefined,
+    range,
+    // EquityPanelBodyProps.onRangeChange is typed `(range: string) => void`
+    // (component stays generic); OverviewPage's own range state is the
+    // narrower RangeName union, so the bridge casts back on the way in.
+    onRangeChange: (r: string) => setRange(r as RangeName),
+    firstSampleTs,
+    error: equity.error,
+    loading: equity.loading,
+    hasFetchedData: equity.data !== null,
+    now: serverNow(),
+  };
+
   return (
     <div className="grid gap-4">
       {/* Market Context strip (Task 12): always-on session timeline + local
@@ -274,42 +292,11 @@ export default function OverviewPage() {
       )}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel status={equityStatus} title="Equity">
-          <div className="mb-3 flex justify-end">
-            <RangeSelector
-              value={range}
-              onChange={setRange}
-              firstSampleTs={firstSampleTs}
-              loadError={equity.error !== null}
-              now={serverNow()}
-            />
-          </div>
-          {equity.error && (
-            <div
-              data-testid="equity-fetch-error"
-              role="status"
-              className="mb-2 flex items-start gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2 py-1 text-xs text-warning"
-            >
-              <AlertTriangle className="mt-px size-3 shrink-0" />
-              <span>
-                {equity.data
-                  ? "Equity history could not be refreshed — the curve below is not current."
-                  : "Equity history could not be loaded."}{" "}
-                {equity.error.detail}
-              </span>
-            </div>
-          )}
-          <div
-            className={cn(
-              "transition-opacity duration-[var(--motion-fast)]",
-              // Dim on a failed refresh too, not only while loading: the `finally`
-              // in useEquitySeries clears `loading` on the failure path, so a dim
-              // keyed on loading alone snaps back to full confidence the instant
-              // the fetch dies.
-              (equity.loading || equity.error !== null) && equity.data && "opacity-60",
-            )}
-          >
-            <EquitySparkline points={equityPoints} series={equitySeriesForChart ?? undefined} />
+        <Panel status={equityStatus} title="Equity" onMaximize={() => setMaximized("equity")}>
+          {/* Reserve the collapsed height so closing the dialog doesn't jump.
+              Range row (~36px) + its mb-3 (12px) + the 140px chart. */}
+          <div className="min-h-[188px]">
+            {maximized === "equity" ? null : <EquityPanelBody {...equityBodyProps} />}
           </div>
         </Panel>
         <Panel status={baseStatus} title="Controls">
@@ -341,6 +328,14 @@ export default function OverviewPage() {
           </div>
         </Panel>
       </div>
+
+      <MaximizedDialog
+        open={maximized === "equity"}
+        onOpenChange={(open) => setMaximized(open ? "equity" : null)}
+        title="Equity"
+      >
+        <EquityPanelBody {...equityBodyProps} fill />
+      </MaximizedDialog>
     </div>
   );
 }

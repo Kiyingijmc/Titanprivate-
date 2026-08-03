@@ -136,8 +136,13 @@ describe("OverviewPage", () => {
     await userEvent.click(pauseBtn);
 
     // wait for the async rejection -> onResult({readOnly:true}) -> setReadOnly(true) -> re-render disables all buttons
+    // Scoped to the Controls panel itself: the page also carries a "Maximize
+    // Equity" button (Panel.onMaximize) which is presentational, not a write
+    // command, and is correctly NOT gated by read-only.
     await waitFor(async () => {
-      const buttons = await screen.findAllByRole("button");
+      const controlsHeading = screen.getByRole("heading", { name: "Controls" });
+      const controlsPanel = controlsHeading.parentElement!.parentElement as HTMLElement;
+      const buttons = within(controlsPanel).getAllByRole("button");
       expect(buttons.length).toBeGreaterThan(0);
       buttons.forEach((b) => expect(b).toBeDisabled());
     });
@@ -531,5 +536,81 @@ describe("withLiveTail", () => {
     const appended = tsValues.slice(2);
     expect(appended.length).toBeGreaterThan(0);
     expect(appended[appended.length - 1] - appended[0]).toBeLessThanOrEqual(900);
+  });
+});
+
+describe("equity maximize", () => {
+  it("keeps exactly one chart and one range selector when maximized", async () => {
+    renderOverview();
+
+    await screen.findByTestId("range-selector");
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
+
+    expect(await screen.findByRole("dialog", { name: "Equity" })).toBeInTheDocument();
+    // The collapsed body must go quiet: duplicates break single-match queries
+    // used all over this file, and would announce twice to assistive tech.
+    expect(screen.getAllByTestId("equity-sparkline")).toHaveLength(1);
+    expect(screen.getAllByTestId("range-selector")).toHaveLength(1);
+  });
+
+  it("still switches range from inside the maximized view", async () => {
+    const api = fakeApi();
+    render(
+      <MemoryRouter>
+        <ReadOnlyProvider>
+          <ControllerProvider
+            value={{ snapshot: makeSnapshot(), events, connectionStatus: { status: "live", stale: false }, api }}
+          >
+            <OverviewPage />
+          </ControllerProvider>
+        </ReadOnlyProvider>
+      </MemoryRouter>
+    );
+
+    await screen.findByTestId("range-selector");
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
+
+    const selector = await screen.findByTestId("range-selector");
+    const fourHour = within(selector).getByRole("radio", { name: "4h" });
+    await waitFor(() => expect(fourHour).not.toBeDisabled());
+    await userEvent.click(fourHour);
+
+    await waitFor(() => expect(api.getEquity).toHaveBeenCalledWith("4h"));
+  });
+
+  it("surfaces a fetch failure inside the maximized view, not only in the card", async () => {
+    const api = fakeApi();
+    (api.getEquity as any).mockRejectedValue({ status: 503, kind: "error", detail: "bridge down" });
+    render(
+      <MemoryRouter>
+        <ReadOnlyProvider>
+          <ControllerProvider
+            value={{ snapshot: makeSnapshot(), events, connectionStatus: { status: "live", stale: false }, api }}
+          >
+            <OverviewPage />
+          </ControllerProvider>
+        </ReadOnlyProvider>
+      </MemoryRouter>
+    );
+
+    await screen.findByTestId("equity-fetch-error");
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Equity" });
+    expect(within(dialog).getByTestId("equity-fetch-error")).toBeInTheDocument();
+    expect(screen.getAllByTestId("equity-fetch-error")).toHaveLength(1);
+  });
+
+  it("closes on Escape and returns focus to the maximize button", async () => {
+    renderOverview();
+    await screen.findByTestId("range-selector");
+
+    const button = screen.getByRole("button", { name: "Maximize Equity" });
+    await userEvent.click(button);
+    await screen.findByRole("dialog", { name: "Equity" });
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(button).toHaveFocus());
   });
 });

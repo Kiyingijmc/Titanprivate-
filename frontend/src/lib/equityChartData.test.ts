@@ -12,7 +12,7 @@ describe("toChartRows", () => {
     const rows = toChartRows(base({
       points: [{ ts: 100, equity: 90, balance: 80, peak: 100 } as never],
     }));
-    expect(rows).toEqual([{ ts: 100, equity: 90, balance: 80, drawdown: -10 }]);
+    expect(rows).toEqual([{ ts: 100, equity: 90, balance: 80, drawdown: -10, peak: 100 }]);
   });
 
   it("turns a null point into a null-valued row at the gap midpoint, so the line BREAKS", () => {
@@ -25,7 +25,7 @@ describe("toChartRows", () => {
       coverage: { first_sample_ts: 100, n: 2, series_first_ts: {}, gaps: [[100, 900]] },
     }));
     expect(rows).toHaveLength(3);
-    expect(rows[1]).toEqual({ ts: 500, equity: null, balance: null, drawdown: null });
+    expect(rows[1]).toEqual({ ts: 500, equity: null, balance: null, drawdown: null, peak: null });
   });
 
   it("pairs the nth null with the nth reported gap", () => {
@@ -117,8 +117,8 @@ describe("toChartRows — non-finite defence", () => {
       points: [{ ts: 100, equity: 10000 } as never, { ts: 200, equity: 10050 } as never],
     }));
     expect(rows).toEqual([
-      { ts: 100, equity: 10000, balance: null, drawdown: 0 },
-      { ts: 200, equity: 10050, balance: null, drawdown: 0 },
+      { ts: 100, equity: 10000, balance: null, drawdown: 0, peak: null },
+      { ts: 200, equity: 10050, balance: null, drawdown: 0, peak: null },
     ]);
     rows.forEach((r) => expect(r.balance).not.toBeUndefined());
   });
@@ -132,5 +132,46 @@ describe("toChartRows — non-finite defence", () => {
       ],
     }));
     expect(rows.map((r) => r.ts)).toEqual([100, 300]);
+  });
+});
+
+describe("peak on ChartRow (B1 spec §5)", () => {
+  it("carries a reported peak through as a real number", () => {
+    const rows = toChartRows(base({
+      points: [{ ts: 100, equity: 90, balance: 80, peak: 120 } as never],
+    }));
+    expect(rows[0].peak).toBe(120);
+  });
+
+  it("leaves peak null when the backend omitted it, instead of echoing equity", () => {
+    // The `?? equity` fallback may keep drawdown at 0, but peak itself must stay
+    // null — otherwise the high-water line is drawn on top of the equity line
+    // and reads as a real, flat high-water mark that was never recorded.
+    const rows = toChartRows(base({
+      points: [{ ts: 100, equity: 90, balance: 80 } as never],
+    }));
+    expect(rows[0].peak).toBeNull();
+    expect(rows[0].drawdown).toBe(0);
+  });
+
+  it("leaves peak null on a declared gap row", () => {
+    const rows = toChartRows(base({
+      points: [
+        { ts: 100, equity: 90, balance: 80, peak: 120 } as never,
+        null as never,
+        { ts: 300, equity: 90, balance: 80, peak: 120 } as never,
+      ],
+      coverage: { first_sample_ts: 100, n: 2, series_first_ts: {}, gaps: [[100, 300]] as [number, number][] },
+    }));
+    const gapRow = rows.find((r) => r.equity === null);
+    expect(gapRow).toBeDefined();
+    expect(gapRow!.peak).toBeNull();
+  });
+
+  it("leaves peak null when the reported value is not finite", () => {
+    const rows = toChartRows(base({
+      points: [{ ts: 100, equity: 90, balance: 80, peak: Number.NaN } as never],
+    }));
+    expect(rows[0].peak).toBeNull();
   });
 });

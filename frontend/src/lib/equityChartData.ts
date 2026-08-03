@@ -5,6 +5,10 @@ export interface ChartRow {
   equity: number | null;
   balance: number | null;
   drawdown: number | null;
+  /** High-water mark as REPORTED. Null when the backend omitted it — never
+   *  echoes equity, or the high-water line becomes a fabricated flat staircase
+   *  sitting exactly on the equity curve. */
+  peak: number | null;
 }
 
 /**
@@ -77,16 +81,19 @@ export function toChartRows(series: EquitySeries): ChartRow[] {
         }
         ts = (lastRealTs + next) / 2;
       }
-      rows.push({ ts, equity: null, balance: null, drawdown: null });
+      rows.push({ ts, equity: null, balance: null, drawdown: null, peak: null });
       continue;
     }
     const ts = finiteOrNull(p.ts);
     if (ts === null) continue;   // an unplottable x would crater the dataMin/dataMax domain
     const equity = finiteOrNull(p.equity);
     const balance = finiteOrNull(p.balance);
-    const peak = finiteOrNull(p.peak) ?? equity;
-    const drawdown = equity !== null && peak !== null ? equity - peak : null;
-    rows.push({ ts, equity, balance, drawdown });
+    const reportedPeak = finiteOrNull(p.peak);
+    // `?? equity` keeps drawdown at 0 when peak was not reported; the reported
+    // value alone is what leaves this function as `peak`.
+    const peakForDrawdown = reportedPeak ?? equity;
+    const drawdown = equity !== null && peakForDrawdown !== null ? equity - peakForDrawdown : null;
+    rows.push({ ts, equity, balance, drawdown, peak: reportedPeak });
     lastRealTs = ts;
   }
   return rows;

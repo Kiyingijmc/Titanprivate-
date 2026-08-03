@@ -75,6 +75,11 @@ describe("colour token harness", () => {
     expect(contrastRatio("0 0% 100%", "0 0% 0%")).toBeCloseTo(21, 1);
   });
 
+  it("chromatic HSL→RGB conversions: red on white ≈ 4.0, green on white ≈ 1.37", () => {
+    expect(contrastRatio("0 100% 50%", "0 0% 100%")).toBeCloseTo(4.0, 1);
+    expect(contrastRatio("120 100% 50%", "0 0% 100%")).toBeCloseTo(1.37, 1);
+  });
+
   it("body text clears WCAG AA on every surface TODAY (baseline before any retune)", () => {
     for (const surface of ["--bg", "--surface-1", "--surface-2", "--elevated"]) {
       expect(

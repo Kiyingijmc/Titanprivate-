@@ -95,3 +95,39 @@ describe("colour token harness", () => {
     expect(css).toContain("--loss");
   });
 });
+
+describe("surface retune (spec §3)", () => {
+  const SURFACES = {
+    "--bg": "8%",
+    "--surface-1": "15%",
+    "--surface-2": "21%",
+    "--elevated": "24%",
+    "--border": "21%",
+    "--border-strong": "27%",
+  } as const;
+
+  it("holds the lightness ladder EXACTLY — this is what makes the contrast claim true", () => {
+    for (const [name, lightness] of Object.entries(SURFACES)) {
+      expect(tokenValue(name).split(/\s+/)[2], `${name} lightness`).toBe(lightness);
+    }
+  });
+
+  it("moves the neutrals onto the brand hue", () => {
+    for (const name of Object.keys(SURFACES)) {
+      expect(Number(tokenValue(name).split(/\s+/)[0]), `${name} hue`).toBe(240);
+    }
+  });
+
+  it("body text still clears WCAG AA on every retuned surface", () => {
+    for (const name of Object.keys(SURFACES)) {
+      expect(
+        contrastRatio(tokenValue("--text-primary"), tokenValue(name)),
+        `--text-primary on ${name}`
+      ).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("muted text still clears WCAG AA large-text (3:1) on the card surface", () => {
+    expect(contrastRatio(tokenValue("--text-muted"), tokenValue("--surface-1"))).toBeGreaterThanOrEqual(3);
+  });
+});

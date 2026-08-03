@@ -3,14 +3,19 @@
    Instrument Sans + JetBrains Mono, "Bracket" mark. Values are the brand hexes
    converted to HSL (hex noted per line). */
 :root {
-  /* surfaces */
-  --bg: 225 20% 8%;            /* #101218 */
-  --surface-1: 223 19% 15%;    /* #1E222C — cards/panels */
-  --surface-2: 222 16% 21%;    /* #2C313D — muted rows / inputs / table header */
-  --elevated: 220 17% 24%;     /* #333A48 — popovers / command palette / dialogs */
+  /* surfaces — hue tinted toward the brand violet so panels read as
+     intentional rather than flat slate. The LIGHTNESS ladder (8/15/21/24) is
+     deliberately unchanged from the original brand board: every contrast
+     ratio in the app is a function of lightness, and color-tokens.test.ts
+     pins both the ladder and the resulting WCAG ratios. Hex comments dropped
+     on purpose — they described the pre-retune values and would now lie. */
+  --bg: 240 18% 8%;
+  --surface-1: 240 16% 15%;    /* cards/panels */
+  --surface-2: 240 14% 21%;    /* muted rows / inputs / table header */
+  --elevated: 240 14% 24%;     /* popovers / command palette / dialogs */
   /* lines + text */
-  --border: 222 16% 21%;       /* #2C313D */
-  --border-strong: 221 16% 27%;/* #3A4150 */
+  --border: 240 14% 21%;
+  --border-strong: 240 14% 27%;
   --text-primary: 223 24% 94%; /* #EDEFF4 */
   --text-secondary: 221 13% 67%;/* #A0A7B6 */
   --text-muted: 222 10% 44%;   /* #656C7C */

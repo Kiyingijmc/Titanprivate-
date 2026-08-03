@@ -8,8 +8,8 @@ import type { EquitySeries, RangeName } from "@/lib/types";
 export interface EquityPanelBodyProps {
   points: BufferPoint[];
   series?: EquitySeries;
-  range: string;
-  onRangeChange: (range: string) => void;
+  range: RangeName;
+  onRangeChange: (range: RangeName) => void;
   firstSampleTs: number | null;
   error: ApiError | null;
   loading: boolean;
@@ -47,11 +47,7 @@ export function EquityPanelBody({
     <div className={cn("flex flex-col", fill && "min-h-0 flex-1")}>
       <div className="mb-3 flex justify-end">
         <RangeSelector
-          // `range` is deliberately typed as `string` on this component so it
-          // isn't coupled to the equity-specific RangeName union; the cast is
-          // safe because every caller (OverviewPage's `range` state) only ever
-          // hands in a real RangeName.
-          value={range as RangeName}
+          value={range}
           onChange={onRangeChange}
           firstSampleTs={firstSampleTs}
           loadError={error !== null}

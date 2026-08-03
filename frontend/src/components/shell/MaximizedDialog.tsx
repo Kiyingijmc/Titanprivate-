@@ -24,11 +24,20 @@ import { cn } from "@/lib/utils";
  * button that opens this dialog lives inside a separate `Panel`/
  * `MaximizeButton`, never wrapped in a literal `<Dialog.Trigger>` (the parent
  * owns `open` as external state), so Radix has no trigger ref to return to
- * and focus would otherwise fall back to `<body>`. `triggerRef` snapshots
- * `document.activeElement` synchronously during render the instant `open`
- * flips true — before Radix's FocusScope mounts and moves focus into the
- * dialog — so it captures the real trigger, not whatever the dialog
- * refocused. `onCloseAutoFocus` then `preventDefault()`s Radix's own
+ * and focus would otherwise fall back to `<body>`.
+ *
+ * The snapshot is taken in `onOpenAutoFocus`, NOT during render: writing to a
+ * ref during render violates React's render-purity rule (a render started
+ * then discarded before commit — e.g. under a concurrent-mode interruption —
+ * could mark the ref "seen" without ever committing, silently skipping the
+ * next real capture). `onOpenAutoFocus` is an event handler Radix's
+ * `FocusScope` fires synchronously on mount, BEFORE it moves focus into the
+ * dialog content (verified against `@radix-ui/react-focus-scope`'s source:
+ * it reads `document.activeElement` into `previouslyFocusedElement`, THEN
+ * dispatches the mount-autofocus event, and only afterward — gated on the
+ * event not being defaultPrevented — calls `focusFirst` to steal focus into
+ * the content). So `document.activeElement` inside this handler is still the
+ * real trigger. `onCloseAutoFocus` then `preventDefault()`s Radix's own
  * (trigger-less) restoration and focuses that snapshot instead.
  */
 export function MaximizedDialog({
@@ -44,12 +53,7 @@ export function MaximizedDialog({
   children: React.ReactNode;
   className?: string;
 }) {
-  const wasOpenRef = React.useRef(false);
   const triggerRef = React.useRef<HTMLElement | null>(null);
-  if (open && !wasOpenRef.current) {
-    triggerRef.current = document.activeElement as HTMLElement | null;
-  }
-  wasOpenRef.current = open;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -59,6 +63,9 @@ export function MaximizedDialog({
           "h-[85vh] w-[95vw] md:h-[75vh] md:w-[75vw]",
           className
         )}
+        onOpenAutoFocus={() => {
+          triggerRef.current = document.activeElement as HTMLElement | null;
+        }}
         onCloseAutoFocus={(event) => {
           if (triggerRef.current) {
             event.preventDefault();

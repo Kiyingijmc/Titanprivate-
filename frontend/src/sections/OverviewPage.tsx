@@ -250,10 +250,7 @@ export default function OverviewPage() {
     points: equityPoints,
     series: equitySeriesForChart ?? undefined,
     range,
-    // EquityPanelBodyProps.onRangeChange is typed `(range: string) => void`
-    // (component stays generic); OverviewPage's own range state is the
-    // narrower RangeName union, so the bridge casts back on the way in.
-    onRangeChange: (r: string) => setRange(r as RangeName),
+    onRangeChange: setRange,
     firstSampleTs,
     error: equity.error,
     loading: equity.loading,

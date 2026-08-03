@@ -57,6 +57,22 @@ describe("Panel domain tint", () => {
     expect(screen.getByText("tinted body")).toBeInTheDocument();
     expect(screen.getByText("Risk")).toBeInTheDocument();
   });
+
+  // Deliberate, narrow exception to the no-Tailwind-class-string-assertion rule
+  // (same shape as the `bg-surface-1` guard above): the failure mode here is a
+  // class being ABSENT from the header, which a presence assertion can prove
+  // (it cannot prove a colour resolves — that needs the browser pass). Mutation
+  // this guards against: removing `domain && DOMAIN_HEADER[domain]` from the
+  // `CardHeader`'s className turns this red.
+  it("washes the header background with the domain colour, and only when a domain is given", () => {
+    render(<Panel status="populated" title="Plain">body</Panel>);
+    const plainHeader = screen.getByText("Plain").parentElement as HTMLElement;
+    expect(plainHeader.className).not.toMatch(/bg-domain-/);
+
+    render(<Panel status="populated" title="Risk" domain="risk">body</Panel>);
+    const tintedHeader = screen.getByText("Risk").parentElement as HTMLElement;
+    expect(tintedHeader.className).toMatch(/bg-domain-risk\//);
+  });
 });
 
 describe("Panel status tint (spec §8)", () => {

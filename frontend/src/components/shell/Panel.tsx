@@ -32,6 +32,16 @@ const DOMAIN_BORDER: Record<string, string> = {
   analytics: "border-l-2 border-l-domain-analytics",
 };
 
+/** Weak wash behind the panel header — spec §4, at --tint-weak (0.07).
+ *  `rounded-t-lg` keeps the wash inside the Card's own `rounded-lg` corners;
+ *  without it the background paints square over the card's rounded top. */
+const DOMAIN_HEADER: Record<string, string> = {
+  risk: "rounded-t-lg bg-domain-risk/[0.07]",
+  market: "rounded-t-lg bg-domain-market/[0.07]",
+  execution: "rounded-t-lg bg-domain-execution/[0.07]",
+  analytics: "rounded-t-lg bg-domain-analytics/[0.07]",
+};
+
 // Spec §8: no NEW colours for status — `stale` reuses --warning, `error`
 // reuses --loss, both weak. The wash is painted as a `::before` overlay rather
 // than a `bg-*` utility on the Card because `cn()` is `twMerge(clsx(...))`,
@@ -97,7 +107,12 @@ export function Panel({
       data-tone={STATUS_TONE[status]?.tone}
     >
       {(title || actions || onMaximize) && (
-        <CardHeader className="flex-row items-center justify-between space-y-0">
+        <CardHeader
+          className={cn(
+            "flex-row items-center justify-between space-y-0",
+            domain && DOMAIN_HEADER[domain]
+          )}
+        >
           {title && <CardTitle className="text-foreground">{title}</CardTitle>}
           {(actions || onMaximize) && (
             <div className="flex items-center gap-2">

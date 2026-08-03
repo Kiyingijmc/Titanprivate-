@@ -180,6 +180,41 @@ class TestResolveFrom(unittest.TestCase):
         self.assertEqual(outcome, "TP")
 
 
+class TestFirstLegSign(unittest.TestCase):
+    """first_leg_r measures H1(a) -- the leg confirmation surrenders. It must be
+    SIGNED: an unsigned magnitude scores a favourable entry as a cost, which is
+    exactly backwards. Fixtures are the two hand-verified golden trades
+    (XAUUSD, 2026-03-09 and 2026-03-23).
+    """
+
+    @staticmethod
+    def _first_leg(entry_a, entry_b, risk, is_long):
+        return ((entry_b - entry_a) if is_long else (entry_a - entry_b)) / risk
+
+    def test_golden_trade_1_sell_lower_entry_is_adverse(self):
+        # Arm A sold 5135.68; MSS made arm B sell 5117.97 -- lower, so worse
+        # for a short. The leg was genuinely surrendered.
+        d = self._first_leg(5135.68, 5117.97, 37.525, False)
+        self.assertAlmostEqual(d, 0.472, places=3)
+        self.assertGreater(d, 0)
+
+    def test_golden_trade_2_sell_higher_entry_is_favourable(self):
+        # Arm A sold 4310.28; MSS made arm B sell 4353.17 -- higher, so BETTER
+        # for a short. Under abs() this scored +0.585R of "cost".
+        d = self._first_leg(4310.28, 4353.17, 73.321429, False)
+        self.assertAlmostEqual(d, -0.585, places=3)
+        self.assertLess(d, 0)
+
+    def test_buy_side_mirrors(self):
+        self.assertGreater(self._first_leg(100.0, 101.0, 2.0, True), 0)
+        self.assertLess(self._first_leg(100.0, 99.0, 2.0, True), 0)
+
+    def test_favourable_and_adverse_do_not_cancel_in_magnitude(self):
+        adverse = self._first_leg(100.0, 99.0, 2.0, False)
+        favourable = self._first_leg(100.0, 101.0, 2.0, False)
+        self.assertAlmostEqual(adverse, -favourable)
+
+
 class TestGateMechanics(unittest.TestCase):
     def _cells(self, delta, lo, hi):
         return {k: {"delta": delta, "ci": (lo, hi)}

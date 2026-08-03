@@ -187,9 +187,13 @@ def counterfactual(sig, tr_a, bars, m5, last_swh, last_swl):
         "k_touch": k_touch, "k_mss": k_mss, "k_entry": k_entry,
         "bars_to_mss": k_mss - k_touch,
         "entry_a": tr_a["entry"], "entry_b": entry_b,
-        # The mechanism in H1(a): how much of the leg confirmation surrenders,
-        # priced in arm-A R.
-        "first_leg_r": abs(entry_b - tr_a["entry"]) / tr_a["risk"],
+        # The mechanism in H1(a), SIGNED: how much of the leg confirmation
+        # surrenders, priced in arm-A R. Positive = arm B entered at a WORSE
+        # price (leg given up, the hypothesised cost); negative = confirmation
+        # bought the dip / sold the rally and got a BETTER price. An unsigned
+        # magnitude would score both as "cost" and could not measure H1(a).
+        "first_leg_r": ((entry_b - tr_a["entry"]) if is_long
+                        else (tr_a["entry"] - entry_b)) / tr_a["risk"],
         "a": tr_a, "b": legs,
     }, None
 
@@ -425,8 +429,10 @@ def run_gate(syms, specs, quick, out_dir):
           f"({n} of {fired} arm-A trades with a resolvable touch)")
     print(f"  bars touch->MSS         median {np.median([p['bars_to_mss'] for p in pairs]):.0f}"
           f"  mean {np.mean([p['bars_to_mss'] for p in pairs]):.1f}")
-    print(f"  first-leg cost          median {np.median([p['first_leg_r'] for p in pairs]):.3f}R"
-          f"  mean {np.mean([p['first_leg_r'] for p in pairs]):.3f}R")
+    fl = [p["first_leg_r"] for p in pairs]
+    print(f"  first-leg (signed, +=worse entry)  median {np.median(fl):+.3f}R"
+          f"  mean {np.mean(fl):+.3f}R"
+          f"  adverse {100.0 * sum(1 for x in fl if x > 0) / n:.1f}%")
     wa = 100.0 * sum(1 for p in pairs if p["a"]["outcome"] == "TP") / n
     print(f"  win% (fixed-TP basis)   armA {wa:.1f}%", end="")
     for v in VARIANTS:

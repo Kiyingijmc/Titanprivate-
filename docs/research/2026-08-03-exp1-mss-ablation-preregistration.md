@@ -125,11 +125,27 @@ and target geometry cannot both be held fixed. Rather than pick one and call the
 
 | Variant | Frozen | Floats | Rationale |
 |---|---|---|---|
-| **B1 — stop-anchored** | SL *price* = arm A's `stop_price(sig, "ATR10")` | entry, risk, TP (= entry ± 2.0 × risk_B) | Preserves the economically meaningful level (zone invalidation). Risk widens → cost/R **falls**, so B1 hands the treated arm a friction advantage. |
+| **B1 — stop-anchored** | SL *price* = arm A's `stop_price(sig, "ATR10")` | entry, risk, TP (= entry ± 2.0 × risk_B) | Preserves the economically meaningful level (zone invalidation). Risk floats with the entry, so cost/R floats too — see the correction below. |
 | **B2 — R-anchored** | risk distance = 1.0 × ATR(H1) from the *new* entry | SL price, TP price | Preserves cost/R and RR exactly; isolates timing from geometry. |
 
 B1 and B2 bracket the design space. A component claim that survives only one of them is
 not a component claim — see the gate.
+
+**Correction (2026-08-03, before the gate run — rig build, golden slice).** The B1 rationale
+as first committed said "risk widens → cost/R falls, so B1 hands the treated arm a friction
+advantage." That is true only when confirmation moves the entry *adversely*. The golden
+slice produced the opposite case: XAUUSD 2026-03-23, a SELL where arm A sold 4310.28 and
+the MSS made arm B sell 4353.17 — a **better** short entry, which moved the entry *away*
+from the frozen stop and **shrank** B1's risk from 73.32 to 30.43, raising cost/R. B1's
+friction effect is therefore **signed with the entry displacement, not one-directional**,
+and B1 is not a uniform handicap on the control. No threshold, rule or gate criterion
+changes; this corrects a stated rationale only. It is also the reason the first-leg metric
+below is reported signed.
+
+Consequently `first_leg_r` is **signed**: positive = arm B entered at a worse price (the
+leg surrendered, the H1(a) mechanism); negative = confirmation obtained a better price. An
+unsigned magnitude would score both as "cost" and could not measure H1(a) at all. The share
+of pairs with adverse displacement is reported alongside it.
 
 ### Occupancy — registered decision
 
@@ -200,10 +216,10 @@ Read on Δ (pooled, net 1×, paired-on-both-traded). All four cells — {FIXED, 
 | **Disagreement across cells** | any mixed sign or a band met in some cells only | **INCONCLUSIVE.** Report the disagreement verbatim and make no claim. This is the MTF-PB v2 lesson: a result that holds under one exit model and fails the other is model dependence, not a finding. |
 
 **Reported, not gated:** MSS fire-rate (share of arm-A trades with any MSS in window);
-median bars from touch to confirmation; **"first-leg cost"** — the price distance from
-zone touch to arm-B entry, expressed in arm-A R (the direct measurement of the mechanism
-in H1(a)); win rate and realized RR per arm; per-year and per-symbol Δ; the ITT reading;
-×1.5 spread stress.
+median bars from touch to confirmation; **signed first-leg displacement** — arm-A entry to
+arm-B entry in arm-A R, positive = worse entry (the direct measurement of the mechanism in
+H1(a)), plus the share of pairs that are adverse; win rate per arm; per-year and per-symbol
+Δ; the ITT reading; ×1.5 spread stress.
 
 ---
 
@@ -240,6 +256,38 @@ in H1(a)); win rate and realized RR per arm; per-year and per-symbol Δ; the ITT
    canonical golden slice.
 3. Unit tests for the new pairing/window code (touch-bar resolution, window boundary at
    H1 `i+12`, missing-MSS handling, B1/B2 arithmetic) in `tests/unit`.
+
+### Verification results (2026-08-03, rig `44fdf68`+)
+
+**1. Arm-A fidelity — PASS, precondition met.** All 11 symbols, full 3y:
+n = **2,217** (registered 2,217); FIXED **−0.122**, RATCHET **+0.087**, RATCHET+RUNNER
+**+0.109** — all four exact at three decimals. The gate run is authorised.
+
+**2. Golden slice — PASS.** XAUUSD 2026-03-01→03-31, 3 arm-A trades, all hand-checked
+against `data/history/XAUUSD_M5.csv`:
+
+- **2026-03-09 01:00 SELL** (arm A entry 5135.68, SL 5173.205, risk 37.525, filled H1
+  07:00 → SL). Touch = M5 07:45 (L 5119.44 / H 5140.28, the first M5 bar of that H1 hour
+  spanning 5135.68 — the four preceding bars top out at 5121.19). MSS = M5 08:35,
+  close 5117.92 breaking the confirmed swing low at 08:00 (low 5119.08; verified as a
+  strict `lk=2` swing against 5126.05/5119.44/5122.64/5126.43, confirmed at 08:10 < 08:35,
+  and still the latest confirmed low — 08:05…08:20 are all disqualified). Entry = M5 08:40
+  open **5117.97**. B1: SL frozen 5173.205, risk 55.235, TP 5007.50. B2: risk 37.525,
+  SL 5155.495, TP 5042.92. Every figure matches the rig exactly.
+- **2026-03-23 08:00 SELL** (arm A entry 4310.28, risk 73.321429, filled H1 13:00 → SL).
+  Touch = M5 13:05 (13:00 tops at 4295.40, so it is the first spanning bar). MSS = M5 14:10,
+  close 4352.80 breaking the confirmed swing low at 13:20 (4355.04; strict against
+  4395.45/4379.18/4372.31/4395.37, and 13:45/13:55 both fail the swing test). Entry = M5
+  14:15 open **4353.17**. B1: risk 30.431429, TP 4292.307143. B2: SL 4426.491429,
+  TP 4206.527143. Exact.
+- **2026-03-23 14:00 BUY** — correctly dropped `NO_MSS` (arm A won +2R; arm B has no
+  counterfactual). This is the asymmetry the paired-only primary is designed to avoid
+  scoring as zero.
+
+The second trade is what produced the B1 correction above and the signed first-leg metric.
+
+**3. Unit tests — 31 green** (`tests/unit/test_exp1_mss_ablation.py`), including the two
+golden trades pinned as sign fixtures.
 
 ---
 

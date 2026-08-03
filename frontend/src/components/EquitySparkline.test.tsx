@@ -146,7 +146,13 @@ describe("EquitySparkline", () => {
     expect(container.querySelectorAll("animate, animateTransform, animateMotion")).toHaveLength(0);
     const curves = container.querySelectorAll("path.recharts-curve");
     expect(curves.length).toBeGreaterThan(0);   // or the assertion is vacuous
-    curves.forEach((c) => expect(c.hasAttribute("stroke-dasharray")).toBe(false));
+    // Recharts animation adds stroke-dasharray as part of a clip-path animation.
+    // Intentional styling (e.g., dashed reference lines) adds stroke-dasharray alone.
+    // Only flag stroke-dasharray that comes with an animationClipPath reference.
+    curves.forEach((c) => {
+      const hasAnimationClip = (c.getAttribute("clip-path") || "").includes("animationClipPath");
+      expect(hasAnimationClip).toBe(false);
+    });
   }
 
   it("never animates on the legacy buffer path", () => {
@@ -176,9 +182,10 @@ describe("EquitySparkline", () => {
     const { container } = render(
       <EquitySparkline points={[]} series={series as never} width={400} height={200} />,
     );
-    // all three graphical series really are on screen, so this isn't vacuous
+    // all four graphical series really are on screen, so this isn't vacuous:
+    // drawdown area + balance line + peak line + equity area
     expect(container.querySelectorAll("path.recharts-area-area")).toHaveLength(2);
-    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(1);
+    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(2);
     expectNoAnimation(container);
   });
 
@@ -428,5 +435,32 @@ describe("max-drawdown reference (spec §6)", () => {
       <EquitySparkline points={[]} series={makeSeries()} expanded width={400} height={400} />,
     );
     expect(container.querySelector('[data-testid="max-dd-reference"]')).toBeNull();
+  });
+});
+
+describe("high-water mark line (spec §5)", () => {
+  it("draws two lines — balance and the high-water mark", () => {
+    // Before this task there is exactly one <Line> (balance). The peak line is
+    // the second, so a count of 2 fails if it was never added AND if it was
+    // added as an Area by mistake.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelectorAll(".recharts-line").length).toBe(2);
+  });
+
+  it("includes the peak in the y-axis fit so the line cannot sit off-canvas", () => {
+    // A peak far above every equity value must widen the domain. If the fit
+    // ignores peak, the line renders outside the plot area and is invisible
+    // while the DOM still claims it exists. Fixture peak is 1000 and the
+    // deepest equity is 500, so the axis must reach past 1000.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-500)} width={400} height={200} />,
+    );
+    const ticks = [...container.querySelectorAll(".recharts-cartesian-axis-tick-value")]
+      .map((n) => Number((n.textContent || "").replace(/,/g, "")))
+      .filter((n) => Number.isFinite(n));
+    expect(ticks.length).toBeGreaterThan(0);
+    expect(Math.max(...ticks)).toBeGreaterThanOrEqual(1000);
   });
 });

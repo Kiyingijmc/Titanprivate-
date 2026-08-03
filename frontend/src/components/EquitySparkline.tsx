@@ -194,7 +194,8 @@ function SeriesChart({
   const isFinite_ = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   const equityValues = rows.map((r) => r.equity).filter(isFinite_);
   const balanceValues = rows.map((r) => r.balance).filter(isFinite_);
-  const allValues = [...equityValues, ...balanceValues];
+  const peakValues = rows.map((r) => r.peak).filter(isFinite_);
+  const allValues = [...equityValues, ...balanceValues, ...peakValues];
 
   if (allValues.length === 0) {
     const everRecorded = series.coverage.first_sample_ts !== null;
@@ -337,7 +338,10 @@ function SeriesChart({
                 labelFormatter={(v: number) => formatTick(v, series.range)}
                 formatter={(v: number, name: string) => [
                   money(v),
-                  name === "equity" ? "Equity" : name === "balance" ? "Balance" : "Drawdown",
+                  name === "equity" ? "Equity"
+                    : name === "balance" ? "Balance"
+                    : name === "peak" ? "High-water mark"
+                    : "Drawdown",
                 ] as [string, string]}
               />
               {!expanded && (
@@ -362,6 +366,19 @@ function SeriesChart({
                 dot={false}
                 isAnimationActive={false}
                 activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
+              />
+              <Line
+                yAxisId="equity"
+                type="stepAfter"
+                dataKey="peak"
+                name="peak"
+                stroke="hsl(var(--text-muted))"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                dot={false}
+                isAnimationActive={false}
+                activeDot={false}
+                connectNulls
               />
               <Area
                 yAxisId="equity"

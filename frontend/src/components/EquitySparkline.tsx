@@ -379,6 +379,7 @@ function SeriesChart({
                 isAnimationActive={false}
                 activeDot={false}
                 connectNulls
+                data-testid="hwm-line"
               />
               <Area
                 yAxisId="equity"

@@ -144,15 +144,11 @@ describe("EquitySparkline", () => {
     expect(container.querySelectorAll('[id^="animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll('[clip-path^="url(#animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll("animate, animateTransform, animateMotion")).toHaveLength(0);
-    const curves = container.querySelectorAll("path.recharts-curve");
+    // <Area> animates via clip-path (checked above). <Line> animates via stroke-dasharray.
+    // Exclude the high-water mark curve (data-testid="hwm-line") which has intentional dashed styling.
+    const curves = container.querySelectorAll("path.recharts-curve:not([data-testid='hwm-line'])");
     expect(curves.length).toBeGreaterThan(0);   // or the assertion is vacuous
-    // Recharts animation adds stroke-dasharray as part of a clip-path animation.
-    // Intentional styling (e.g., dashed reference lines) adds stroke-dasharray alone.
-    // Only flag stroke-dasharray that comes with an animationClipPath reference.
-    curves.forEach((c) => {
-      const hasAnimationClip = (c.getAttribute("clip-path") || "").includes("animationClipPath");
-      expect(hasAnimationClip).toBe(false);
-    });
+    curves.forEach((c) => expect(c.hasAttribute("stroke-dasharray")).toBe(false));
   }
 
   it("never animates on the legacy buffer path", () => {

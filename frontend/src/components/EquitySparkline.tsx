@@ -1,7 +1,19 @@
-import { Area, AreaChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
+import { drawdownSeverity, DD_FILL } from "@/lib/equityChartPolicy";
 import type { EquitySeries } from "@/lib/types";
 
 /**
@@ -65,11 +77,8 @@ export function EquitySparkline({
   /** Today's breaker inputs. Absent until the risk block loads. */
   risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
-  // Consumed by Tasks 5-7; referenced here so the plumbing task type-checks.
-  void risk;
-
   if (series) {
-    return <SeriesChart series={series} width={width} height={height} expanded={expanded} />;
+    return <SeriesChart series={series} width={width} height={height} expanded={expanded} risk={risk} />;
   }
 
   if (points.length === 0) {
@@ -166,11 +175,14 @@ function SeriesChart({
   width,
   height,
   expanded,
+  risk,
 }: {
   series: EquitySeries;
   width: number | string;
   height: number | string;
   expanded: boolean;
+  /** Today's breaker inputs. Absent until the risk block loads. */
+  risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
   const rows = toChartRows(series);
 
@@ -213,6 +225,16 @@ function SeriesChart({
   const minDrawdown = drawdownValues.length > 0 ? Math.min(...drawdownValues) : 0;
   const ddFloor = minDrawdown < 0 ? minDrawdown * 1.18 : -1;
 
+  // One fill for the whole area, keyed to the DEEPEST drawdown in the window —
+  // "how bad did it get here". A per-point gradient would need a value-keyed
+  // linearGradient and buys nothing at these sizes.
+  const ddSeverity = drawdownSeverity(
+    minDrawdown,
+    risk?.day_anchor ?? 0,
+    risk?.max_daily_dd_pct ?? 0,
+  );
+  const ddFill = DD_FILL[ddSeverity];
+
   const last = equityValues[equityValues.length - 1] ?? 0;
   const first = equityValues[0] ?? last;
   const delta = last - first;
@@ -248,6 +270,7 @@ function SeriesChart({
   return (
     <div
       data-testid="equity-sparkline"
+      data-dd-severity={ddSeverity}
       className="relative"
       style={{ width: "100%", height }}
       role="img"
@@ -323,7 +346,7 @@ function SeriesChart({
                   type="monotone"
                   dataKey="drawdown"
                   stroke="none"
-                  fill="hsl(var(--loss))"
+                  fill={ddFill}
                   fillOpacity={0.18}
                   dot={false}
                   isAnimationActive={false}
@@ -381,6 +404,21 @@ function SeriesChart({
                   width={52}
                   tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
                 />
+                {minDrawdown < 0 && (
+                  <ReferenceLine
+                    yAxisId="dd"
+                    y={minDrawdown}
+                    stroke={ddFill}
+                    strokeDasharray="3 3"
+                    strokeOpacity={0.9}
+                    label={{
+                      value: `max ${money(minDrawdown)}`,
+                      position: "insideTopRight",
+                      fill: "hsl(var(--text-muted))",
+                      fontSize: 10,
+                    }}
+                  />
+                )}
                 <Tooltip
                   cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
                   contentStyle={{
@@ -399,14 +437,19 @@ function SeriesChart({
                   type="monotone"
                   dataKey="drawdown"
                   stroke="none"
-                  fill="hsl(var(--loss))"
-                  fillOpacity={0.18}
+                  fill={ddFill}
+                  fillOpacity={0.55}
                   dot={false}
                   isAnimationActive={false}
                   activeDot={false}
                 />
               </ComposedChart>
             </ResponsiveContainer>
+            {minDrawdown < 0 && (
+              <span data-testid="max-dd-reference" className="sr-only">
+                Deepest drawdown in this window: {money(minDrawdown)}
+              </span>
+            )}
           </div>
         )}
       </div>

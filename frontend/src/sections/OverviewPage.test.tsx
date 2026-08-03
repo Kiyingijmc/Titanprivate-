@@ -433,6 +433,64 @@ describe("OverviewPage domain wiring (fix 3)", () => {
   });
 });
 
+describe("OverviewPage risk-block forwarding to the equity chart (Task 5 integration)", () => {
+  // Task 3 plumbed `risk` from OverviewPage -> EquityPanelBody -> EquitySparkline,
+  // but nothing tested that chain end-to-end: deleting either forwarding line
+  // turned no test red. `data-dd-severity` is real rendered state the chain
+  // produces, so asserting on it here proves `snapshot.risk` actually reaches
+  // the chart rather than being silently dropped somewhere in the middle.
+  function severeEquitySeries(range: string): EquitySeries {
+    const nowS = Math.floor(Date.now() / 1000);
+    const peak = 1000;
+    return {
+      range,
+      tier: "coarse",
+      bucket_s: 300,
+      series: ["equity", "balance", "peak"],
+      points: [
+        { ts: nowS - 120, equity: peak, balance: peak, peak },
+        { ts: nowS - 60, equity: peak - 25, balance: peak, peak },
+      ],
+      coverage: { first_sample_ts: nowS - 10 * 86400, n: 2, series_first_ts: {}, gaps: [] },
+    };
+  }
+
+  it("stamps data-dd-severity='severe' when the snapshot's risk block and a deep drawdown arrive together", async () => {
+    const api = fakeApi();
+    (api.getEquity as any).mockImplementation((range: string) => Promise.resolve(severeEquitySeries(range)));
+
+    render(
+      <MemoryRouter>
+        <ReadOnlyProvider>
+          <ControllerProvider
+            value={{
+              snapshot: makeSnapshot({
+                risk: {
+                  // 1000 anchor at 3% => a 30-unit daily budget; a -25 drawdown
+                  // consumes 83% of it — past the two-thirds "severe" line.
+                  day_anchor: 1000, day_pnl: -25, day_pnl_pct: -2.5,
+                  max_daily_dd_pct: 3, can_trade: true,
+                  book_risk: 12.4, book_risk_pct: 2.71, max_book_risk_pct: 5, blocker: null,
+                },
+              }),
+              events,
+              connectionStatus: { status: "live", stale: false },
+              api,
+            }}
+          >
+            <OverviewPage />
+          </ControllerProvider>
+        </ReadOnlyProvider>
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(api.getEquity).toHaveBeenCalledWith("1d"));
+    const chart = await screen.findByTestId("equity-sparkline");
+    // NOT "moderate" — that's the fallback stamped when no risk block arrives.
+    await waitFor(() => expect(chart).toHaveAttribute("data-dd-severity", "severe"));
+  });
+});
+
 function fineSeries(overrides: Partial<EquitySeries> = {}): EquitySeries {
   return {
     range: "4h",

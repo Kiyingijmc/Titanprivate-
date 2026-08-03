@@ -367,3 +367,66 @@ describe("expanded + risk props (B1 plumbing)", () => {
     expect(plain.querySelectorAll(".recharts-area").length).toBeGreaterThan(0);
   });
 });
+
+describe("drawdown severity ramp (spec §6)", () => {
+  // 1000 anchor at 3% => a 30-unit daily budget. -25 is 83% consumed (severe);
+  // -5 is 17% (shallow).
+  const RISK = { day_anchor: 1000, max_daily_dd_pct: 3 };
+  const severityOf = (container: HTMLElement) =>
+    container.querySelector('[data-testid="equity-sparkline"]')?.getAttribute("data-dd-severity");
+
+  it("stamps severe for a drawdown past two thirds of the daily budget", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} risk={RISK} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("severe");
+  });
+
+  it("stamps shallow for a small drawdown", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-5)} risk={RISK} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("shallow");
+  });
+
+  it("falls back to moderate when no risk block has loaded", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("moderate");
+  });
+
+  it("stamps the same severity in the expanded view", () => {
+    // The ramp applies in BOTH views (spec §6) — placement differs, colour does not.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} risk={RISK} expanded width={400} height={400} />,
+    );
+    expect(severityOf(container)).toBe("severe");
+  });
+});
+
+describe("max-drawdown reference (spec §6)", () => {
+  it("marks the deepest point in the expanded underwater pane", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).not.toBeNull();
+  });
+
+  it("omits it in the collapsed card", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).toBeNull();
+  });
+
+  it("omits it when the window never went underwater", () => {
+    // makeSeries has peak === equity throughout, so minDrawdown is 0 and a
+    // "deepest point" reference would be a line at zero claiming a drawdown
+    // that never happened.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries()} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).toBeNull();
+  });
+});

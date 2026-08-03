@@ -195,6 +195,9 @@ function SeriesChart({
   const equityValues = rows.map((r) => r.equity).filter(isFinite_);
   const balanceValues = rows.map((r) => r.balance).filter(isFinite_);
   const peakValues = rows.map((r) => r.peak).filter(isFinite_);
+  // Include peak in allValues so that padding is proportional to the full plotted
+  // range (equity, balance, peak), not just equity/balance. The YAxis' default
+  // allowDataOverflow={false} ensures the peak Line stays on-canvas regardless.
   const allValues = [...equityValues, ...balanceValues, ...peakValues];
 
   if (allValues.length === 0) {
@@ -212,8 +215,7 @@ function SeriesChart({
 
   const min = Math.min(...allValues);
   const max = Math.max(...allValues);
-  // Same auto-fit padding rule as the legacy path, but fit over equity AND
-  // balance together — otherwise the balance line can sit outside the band.
+  // Auto-fit padding is computed from max - min, so it scales with the full data range.
   const pad = max - min > 0 ? (max - min) * 0.18 : Math.max(1, Math.abs(max) * 0.0015);
 
   // Drawdown gets its OWN y-axis (id "dd"), never the equity/balance one: on a

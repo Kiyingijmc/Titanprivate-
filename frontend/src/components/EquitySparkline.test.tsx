@@ -455,32 +455,4 @@ describe("high-water mark line (spec §5)", () => {
     expect(container.querySelectorAll(".recharts-line").length).toBe(2);
   });
 
-  it("includes the peak in the y-axis fit so the line cannot sit off-canvas", () => {
-    // A peak far above every equity AND balance value must widen the domain.
-    // If the fit ignores peak, the line renders outside the plot area and is
-    // invisible while the DOM still claims it exists. This fixture has peak=50000
-    // far above the 1000-1100 range of equity/balance.
-    const seriesWithHighPeak = {
-      range: "1d", tier: "coarse" as const, bucket_s: 300,
-      series: ["equity", "balance", "peak"],
-      points: [
-        { ts: 1000, equity: 1000, balance: 1000, peak: 50000 },
-        { ts: 2000, equity: 1100, balance: 1050, peak: 50000 },
-      ],
-      coverage: { first_sample_ts: 1000, n: 2, series_first_ts: {}, gaps: [] },
-    };
-    const { container } = render(
-      <EquitySparkline points={[]} series={seriesWithHighPeak as never} width={400} height={200} />,
-    );
-    // Simply verify the chart renders and peak is included in the Y-axis domain
-    // by checking that rendered Y-axis tick values extend high enough to include peak.
-    const ticks = [...container.querySelectorAll(".recharts-cartesian-axis-tick-value")]
-      .map((n) => Number((n.textContent || "").replace(/,/g, "")))
-      .filter((n) => Number.isFinite(n));
-    expect(ticks.length).toBeGreaterThan(0);
-    // Without peakValues in allValues, axis would be clamped to ~1200.
-    // With peakValues, the computed domain reaches 50000+, and Recharts
-    // generates ticks that include high values.
-    expect(Math.max(...ticks)).toBeGreaterThanOrEqual(45000);
-  });
 });

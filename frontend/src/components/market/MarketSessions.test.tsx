@@ -65,4 +65,32 @@ describe("MarketSessions", () => {
     render(<MarketSessions now={sunday} />);
     expect(screen.queryByText(/overlap/i)).not.toBeInTheDocument();
   });
+
+  // Guard for the session-colour token migration. SESSION_COLORS values are
+  // full `hsl(var(--session-<id>))` strings consumed from inline `style`, not
+  // Tailwind classes — so this component is the one place where a broken
+  // migration (e.g. still appending a hex-alpha suffix like "B3"/"14"/"26"
+  // onto an hsl(var(...)) string) produces INVALID CSS that a browser drops,
+  // rendering the session bands/chips fully transparent. No unit test on
+  // text/test-ids can see that. jsdom, unlike a real browser, does NOT
+  // validate `var()` colours — it stores whatever string was assigned to
+  // `style.backgroundColor`/`style.boxShadow` verbatim, broken or not — so the
+  // broken form IS visible here via the DOM, with no production change needed.
+  it("never emits a broken hex-alpha suffix on a session token colour", () => {
+    const now = new Date("2026-07-15T14:00:00Z"); // London×NY overlap: everything renders
+    const { container } = render(<MarketSessions now={now} />);
+
+    // Every session band and chip inline style references a `--session-*`
+    // custom property. If this matched nothing, assertion (b) below would
+    // pass vacuously and prove nothing — so first prove the selector actually
+    // found the elements under test.
+    const styledNodes = container.querySelectorAll('[style*="--session-"]');
+    expect(styledNodes.length).toBeGreaterThanOrEqual(4);
+
+    const brokenConcatenation = /hsl\(var\(--session-[a-z]+\)\)[0-9A-Fa-f]{2}/;
+    for (const node of styledNodes) {
+      const style = node.getAttribute("style") ?? "";
+      expect(style).not.toMatch(brokenConcatenation);
+    }
+  });
 });

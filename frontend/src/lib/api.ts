@@ -1,4 +1,4 @@
-import type { Snapshot, FeedEvent, SettingRow, RegistryRow, CommandResult, SettingsPatchResult, HistoryRow } from "./types";
+import type { Snapshot, FeedEvent, SettingRow, RegistryRow, CommandResult, SettingsPatchResult, HistoryRow, EquitySeries } from "./types";
 
 export interface ApiError { status: number; kind: "unauthorized" | "throttled" | "readOnly" | "validation" | "error"; detail: string; }
 function kindFor(status: number): ApiError["kind"] {
@@ -28,6 +28,7 @@ export function createApi(getToken: () => string, opts: Opts = {}) {
     getState: () => req<Snapshot>("/api/state"),
     getEvents: (limit = 200) => req<{ events: FeedEvent[] }>(`/api/events?limit=${limit}`).then(r => r.events),
     getHistory: (limit = 50) => req<{ history: HistoryRow[] }>(`/api/history?limit=${limit}`).then(r => r.history),
+    getEquity: (range: string) => req<EquitySeries>(`/api/equity?range=${encodeURIComponent(range)}`),
     getSettings: () => req<{ settings: SettingRow[] }>("/api/settings").then(r => r.settings),
     getRegistry: () => req<{ registry: RegistryRow[] }>("/api/registry").then(r => r.registry),
     postCommand: (body: Record<string, unknown>) => req<CommandResult>("/api/command", { method: "POST", body: JSON.stringify(body) }),

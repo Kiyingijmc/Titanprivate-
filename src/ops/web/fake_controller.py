@@ -49,6 +49,86 @@ _MARKET_PRICES = {
 }
 
 
+class _FakeRecorder:
+    """Stand-in for EquityRecorder with the same read surface the GUI uses.
+
+    Carries db_path/cfg/enabled/conn/buffer/last_flush_ts so BOTH the /api/equity
+    read path (which opens its own connection by path) and the /api/state health
+    block are drivable offline, not just the counters.
+    """
+
+    def __init__(self, db_path, conn):
+        from src.ops.equity_recorder import _DEFAULTS
+        self.db_path = db_path
+        self.conn = conn
+        self.enabled = True
+        self.cfg = dict(_DEFAULTS)
+        self.buffer = []
+        self.last_flush_ts = None
+        self.counters = {"dropped_stale": 0, "dropped_invalid": 0,
+                         "dropped_overflow": 0, "flush_errors": 0}
+
+
+def _fake_equity_recorder():
+    """Both tiers seeded, each with a deliberate outage.
+
+    Coarse: 3 days of 300s buckets (drives every range > 12h).
+    Fine:   48h of 10s rows (drives 15m/30m/1h/4h/12h — five of the eleven
+            ranges returned ZERO points offline before this, which made the
+            phase-2 range selector undrivable with MT5 down).
+
+    File-backed (not :memory:) so the route's short-lived read-only connection,
+    which reopens the DB by path, behaves offline exactly as it does live.
+    """
+    import math as _math
+    import os as _os
+    import sqlite3
+    import tempfile as _tempfile
+    import time as _time
+
+    from src.ops.equity_recorder import (COARSE_BUCKET_S, FINE_CADENCE_S,
+                                         ensure_schema)
+
+    db_path = _os.path.join(_tempfile.mkdtemp(prefix="titan-fake-equity-"), "titan_core.db")
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    ensure_schema(conn)
+    now = int(_time.time())
+
+    coarse = []
+    equity, peak = 10_000.0, 10_000.0
+    n_coarse = 3 * 86_400 // COARSE_BUCKET_S          # 3 days
+    for i in range(n_coarse):
+        ts = now - (n_coarse - i) * COARSE_BUCKET_S
+        if 300 < i < 400:                 # a ~8h outage, so gap rendering is drivable
+            continue
+        equity += _math.sin(i / 18.0) * 12.0
+        peak = max(peak, equity)
+        coarse.append((ts, equity, equity - 40.0, peak, equity - 6.0, equity + 6.0))
+    conn.executemany(
+        "INSERT INTO equity_coarse "
+        "(bucket_ts, equity, balance, peak, equity_min, equity_max) VALUES (?,?,?,?,?,?)",
+        coarse)
+
+    fine = []
+    equity, peak = 10_000.0, 10_000.0
+    n_fine = 48 * 3_600 // FINE_CADENCE_S             # 48h of 10s samples
+    for i in range(n_fine):
+        ts = now - (n_fine - i) * FINE_CADENCE_S
+        # Two holes, sized/placed so a gap is visible at BOTH ends of the fine
+        # range set: ~53min at ~6h ago (seen by 12h/4h), ~7.5min at ~6min ago
+        # (seen by 15m/30m/1h).
+        if 14_800 <= i < 15_120 or n_fine - 80 <= i < n_fine - 35:
+            continue
+        equity += _math.sin(i / 240.0) * 1.5
+        peak = max(peak, equity)
+        fine.append((float(ts), equity, equity - 40.0, peak))
+    conn.executemany(
+        "INSERT INTO equity_fine (ts, equity, balance, peak) VALUES (?,?,?,?)", fine)
+
+    conn.commit()
+    return _FakeRecorder(db_path, conn)
+
+
 class FakeController:
     """In-memory stand-in for SystemController, for offline GUI dev/demo."""
 
@@ -65,6 +145,7 @@ class FakeController:
         self.market_prices = {k: dict(v) for k, v in _MARKET_PRICES.items()}
         self.applied = []
         self.published = []
+        self.equity_recorder = _fake_equity_recorder()
 
     # --- read-side used by state_view.build_snapshot ---
     def _publish(self, event) -> None:

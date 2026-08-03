@@ -114,6 +114,39 @@ class NewsManager:
         return True, self.policy.reason_for(event, now)
 
     # --- presentation (consumed by Session 2) ------------------------------
+    def digest(self, now=None) -> dict:
+        """Today's red-folder events as plain data, for Telegram and the GUI.
+        Never raises -- a rendering aid must not be able to break a caller."""
+        try:
+            now = now or datetime.now(timezone.utc)
+            if now.tzinfo is None:
+                # Treat a naive value as UTC, consistent with CalendarEvent.from_dict and
+                # CalendarStore._as_utc. Do NOT use .astimezone() on a naive datetime -- it
+                # would assume LOCAL time and shift by the host offset.
+                now = now.replace(tzinfo=timezone.utc)
+            now = now.astimezone(timezone.utc)
+            day = now.date()
+            symbols = self.policy.mapped_symbols()
+            events = []
+            for event in self.store.events():
+                if event.importance != "HIGH" or event.when_utc.date() != day:
+                    continue
+                events.append({
+                    "when_utc": event.when_utc.isoformat(),
+                    "currency": event.currency,
+                    "title": event.title,
+                    "forecast": event.forecast,
+                    "previous": event.previous,
+                    "url": event.url,
+                    "affects": [s for s in symbols
+                                if event.currency in self.policy.currencies_for(s)],
+                })
+            return {"date": day.isoformat(), "count": len(events), "events": events}
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Digest failed: {exc}")
+            return {"date": datetime.now(timezone.utc).date().isoformat(), "count": 0, "events": [],
+                    "status": "unavailable"}
+
     def snapshot(self, now=None) -> dict:
         try:
             now = now or datetime.now(timezone.utc)
@@ -126,6 +159,12 @@ class NewsManager:
             # entry (once for the test, once for the value) doubles the work and
             # can disagree with itself if `now` is not pinned.
             gates = {s: self.check_symbol(s, now) for s in symbols}
+            # Reuse digest()'s own UTC-day/HIGH-importance filter for the
+            # "today" strip (spec §5) rather than re-implementing it here.
+            # digest() never raises (it degrades internally), so this stays
+            # inside snapshot()'s own try/except purely as a safety net for
+            # this call site, not because digest() is expected to throw.
+            today = self.digest(now)["events"]
             return {
                 "status": "stale" if self.policy.is_stale(age)
                           else ("degraded" if self.feed_degraded else "ok"),
@@ -136,13 +175,14 @@ class NewsManager:
                     "in_min": int((nxt.when_utc - now).total_seconds() // 60),
                     "title": nxt.title, "currency": nxt.currency,
                     "importance": nxt.importance, "forecast": nxt.forecast,
-                    "previous": nxt.previous,
+                    "previous": nxt.previous, "url": nxt.url,
                     "affects": [s for s in symbols
                                 if nxt.currency in self.policy.currencies_for(s)],
                 },
                 "blocked_symbols": {
                     s: reason for s, (blocked, reason) in gates.items() if blocked
                 },
+                "today": today,
             }
         except Exception as exc:  # the GUI payload must never break on news
             self.logger.log_event("WARN", "NEWS", f"Snapshot failed: {exc}")

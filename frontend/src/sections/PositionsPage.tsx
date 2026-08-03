@@ -138,6 +138,7 @@ export default function PositionsPage() {
             positions={filtered}
             onClose={(ticket) => setPendingClose(ticket)}
             readOnly={readOnly}
+            blockedSymbols={snapshot?.news?.blocked_symbols}
           />
         </div>
       </Panel>

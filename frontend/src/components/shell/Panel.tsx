@@ -4,6 +4,7 @@ import { AlertTriangle, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { MaximizeButton } from "./MaximizeButton";
 
 export type PanelStatus = "loading" | "empty" | "error" | "populated" | "stale";
 
@@ -16,7 +17,58 @@ export interface PanelProps {
   errorMessage?: React.ReactNode;
   children?: React.ReactNode;
   className?: string;
+  /** When provided, the header shows a maximize control that calls this. */
+  onMaximize?: () => void;
+  /** Subject area. Adds a left border + weak header wash in the domain colour. */
+  domain?: "risk" | "market" | "execution" | "analytics";
 }
+
+// A literal lookup, because Tailwind cannot see dynamically-built class names
+// (e.g. `border-l-domain-${domain}` would not be picked up by the scanner).
+const DOMAIN_BORDER: Record<string, string> = {
+  risk: "border-l-2 border-l-domain-risk",
+  market: "border-l-2 border-l-domain-market",
+  execution: "border-l-2 border-l-domain-execution",
+  analytics: "border-l-2 border-l-domain-analytics",
+};
+
+/** Weak wash behind the panel header — spec §4, at --tint-weak (0.07).
+ *  `rounded-t-lg` keeps the wash inside the Card's own `rounded-lg` corners;
+ *  without it the background paints square over the card's rounded top. */
+const DOMAIN_HEADER: Record<string, string> = {
+  risk: "rounded-t-lg bg-domain-risk/[0.07]",
+  market: "rounded-t-lg bg-domain-market/[0.07]",
+  execution: "rounded-t-lg bg-domain-execution/[0.07]",
+  analytics: "rounded-t-lg bg-domain-analytics/[0.07]",
+};
+
+// Spec §8: no NEW colours for status — `stale` reuses --warning, `error`
+// reuses --loss, both weak. The wash is painted as a `::before` overlay rather
+// than a `bg-*` utility on the Card because `cn()` is `twMerge(clsx(...))`,
+// and tailwind-merge treats any `bg-*` class as competing with the Card's own
+// `bg-surface-1`, dropping whichever comes first in the merge — that would
+// leave a stale/error panel with no surface at all, reading as a wash over
+// the page background instead of a card. `/[0.07]` mirrors --tint-weak.
+//
+// LAYERING (documented, not fixed): `before:absolute` gets the default
+// `z-index: auto`, so by normal CSS painting order this `::before` composites
+// ABOVE the in-flow, non-positioned `CardHeader`/`CardContent` — it glazes the
+// title, the Retry button and the stale/error copy, not only the card
+// surface. At 7% alpha this is subtle and accepted; `before:pointer-events-none`
+// is what keeps the Retry button (and any other control under the wash)
+// clickable despite sitting under it. Do NOT "fix" this with `before:-z-10`
+// alone: `Card` has `position:relative` but `z-index:auto`, so it forms no
+// stacking context, and a negative-z pseudo-element would then paint behind
+// the Card's OWN background too, making the wash invisible. A true
+// behind-content wash would need `isolate` on `Card` as well — more risk than
+// this is worth.
+const TONE_WASH =
+  "relative before:pointer-events-none before:absolute before:inset-0 before:rounded-lg before:content-['']";
+
+const STATUS_TONE: Partial<Record<PanelStatus, { tone: string; cls: string }>> = {
+  stale: { tone: "stale", cls: `${TONE_WASH} before:bg-warning/[0.07]` },
+  error: { tone: "error", cls: `${TONE_WASH} before:bg-loss/[0.07]` },
+};
 
 function PanelSkeleton() {
   return (
@@ -53,13 +105,41 @@ export function Panel({
   errorMessage = "Something went wrong.",
   children,
   className,
+  onMaximize,
+  domain,
 }: PanelProps) {
   return (
-    <Card className={cn("bg-surface-1 shadow-1", className)}>
-      {(title || actions) && (
-        <CardHeader className="flex-row items-center justify-between space-y-0">
+    <Card
+      className={cn(
+        "bg-surface-1 shadow-1",
+        domain && DOMAIN_BORDER[domain],
+        STATUS_TONE[status]?.cls,
+        className
+      )}
+      data-domain={domain}
+      data-tone={STATUS_TONE[status]?.tone}
+    >
+      {(title || actions || onMaximize) && (
+        <CardHeader
+          className={cn(
+            "flex-row items-center justify-between space-y-0",
+            domain && DOMAIN_HEADER[domain]
+          )}
+        >
           {title && <CardTitle className="text-foreground">{title}</CardTitle>}
-          {actions && <div className="flex items-center gap-2">{actions}</div>}
+          {(actions || onMaximize) && (
+            <div className="flex items-center gap-2">
+              {actions}
+              {onMaximize && (
+                // `title` is a ReactNode; only a string can name the control for
+                // assistive tech, so fall back when a caller passes an element.
+                <MaximizeButton
+                  title={typeof title === "string" ? title : "panel"}
+                  onClick={onMaximize}
+                />
+              )}
+            </div>
+          )}
         </CardHeader>
       )}
       <CardContent>

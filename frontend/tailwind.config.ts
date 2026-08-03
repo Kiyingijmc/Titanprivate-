@@ -35,6 +35,24 @@ export default {
         warning: "hsl(var(--warning))",
         info: "hsl(var(--info))",
         blocked: "hsl(var(--blocked))",
+        // Semantic vocabulary — see src/design/tokens.css. Bound here in the
+        // SAME change as the token definitions: a token bound to nothing is
+        // valid CSS referenced by no utility, which is how the motion tokens
+        // silently shipped dead.
+        "domain-risk": "hsl(var(--domain-risk))",
+        "domain-market": "hsl(var(--domain-market))",
+        "domain-execution": "hsl(var(--domain-execution))",
+        "domain-analytics": "hsl(var(--domain-analytics))",
+        "impact-high": "hsl(var(--impact-high))",
+        "impact-medium": "hsl(var(--impact-medium))",
+        "impact-low": "hsl(var(--impact-low))",
+        "dd-shallow": "hsl(var(--dd-shallow))",
+        "dd-moderate": "hsl(var(--dd-moderate))",
+        "dd-severe": "hsl(var(--dd-severe))",
+        "session-sydney": "hsl(var(--session-sydney))",
+        "session-tokyo": "hsl(var(--session-tokyo))",
+        "session-london": "hsl(var(--session-london))",
+        "session-newyork": "hsl(var(--session-newyork))",
         destructive: { DEFAULT: "hsl(var(--loss))", foreground: "hsl(var(--on-accent))" },
         // back-compat aliases — existing components still reference these v1 names
         card: { DEFAULT: "hsl(var(--surface-1))", foreground: "hsl(var(--text-primary))" },

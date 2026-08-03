@@ -41,3 +41,4 @@ config/overrides.yaml
 graphify-out/
 .mig/state/
 .mig/worktrees/
+.gstack/

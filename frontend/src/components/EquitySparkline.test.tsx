@@ -138,17 +138,27 @@ describe("EquitySparkline", () => {
    * `isAnimationActive={true}` makes this fail):
    *   - an animated <Area> emits `<clipPath id="animationClipPath-…">` and
    *     wraps its curve in `clip-path="url(#animationClipPath-…)"`,
-   *   - an animated <Line> gets a `stroke-dasharray` on its curve path.
+   *   - an animated <Line> gets a `stroke-dasharray` on its curve path (rewritten
+   *     to computed lengths, never the static "4 3" value).
    */
   function expectNoAnimation(container: HTMLElement) {
     expect(container.querySelectorAll('[id^="animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll('[clip-path^="url(#animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll("animate, animateTransform, animateMotion")).toHaveLength(0);
     // <Area> animates via clip-path (checked above). <Line> animates via stroke-dasharray.
-    // Exclude the high-water mark curve (data-testid="hwm-line") which has intentional dashed styling.
-    const curves = container.querySelectorAll("path.recharts-curve:not([data-testid='hwm-line'])");
+    // The high-water mark curve (data-testid="hwm-line") has intentional dashed styling "4 3".
+    // Recharts' Line animation rewrites stroke-dasharray to computed path lengths,
+    // so asserting the EXACT value "4 3" catches animation while allowing intentional styling.
+    const curves = container.querySelectorAll("path.recharts-curve");
     expect(curves.length).toBeGreaterThan(0);   // or the assertion is vacuous
-    curves.forEach((c) => expect(c.hasAttribute("stroke-dasharray")).toBe(false));
+    curves.forEach((c) => {
+      const dash = c.getAttribute("stroke-dasharray");
+      if (c.getAttribute("data-testid") === "hwm-line") {
+        expect(dash).toBe("4 3");
+      } else {
+        expect(dash).toBeNull();
+      }
+    });
   }
 
   it("never animates on the legacy buffer path", () => {
@@ -163,8 +173,8 @@ describe("EquitySparkline", () => {
   });
 
   it("never animates any of the series-path series", () => {
-    // Covers all three (drawdown Area, balance Line, equity Area) — the ones the
-    // old source-string check could not see at all.
+    // Covers all four (drawdown Area, balance Line, peak Line, equity Area) — the
+    // ones the old source-string check could not see at all.
     const series = {
       range: "1d", tier: "coarse" as const, bucket_s: 300,
       series: ["equity", "balance", "peak"],
@@ -446,17 +456,31 @@ describe("high-water mark line (spec §5)", () => {
   });
 
   it("includes the peak in the y-axis fit so the line cannot sit off-canvas", () => {
-    // A peak far above every equity value must widen the domain. If the fit
-    // ignores peak, the line renders outside the plot area and is invisible
-    // while the DOM still claims it exists. Fixture peak is 1000 and the
-    // deepest equity is 500, so the axis must reach past 1000.
+    // A peak far above every equity AND balance value must widen the domain.
+    // If the fit ignores peak, the line renders outside the plot area and is
+    // invisible while the DOM still claims it exists. This fixture has peak=50000
+    // far above the 1000-1100 range of equity/balance.
+    const seriesWithHighPeak = {
+      range: "1d", tier: "coarse" as const, bucket_s: 300,
+      series: ["equity", "balance", "peak"],
+      points: [
+        { ts: 1000, equity: 1000, balance: 1000, peak: 50000 },
+        { ts: 2000, equity: 1100, balance: 1050, peak: 50000 },
+      ],
+      coverage: { first_sample_ts: 1000, n: 2, series_first_ts: {}, gaps: [] },
+    };
     const { container } = render(
-      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-500)} width={400} height={200} />,
+      <EquitySparkline points={[]} series={seriesWithHighPeak as never} width={400} height={200} />,
     );
+    // Simply verify the chart renders and peak is included in the Y-axis domain
+    // by checking that rendered Y-axis tick values extend high enough to include peak.
     const ticks = [...container.querySelectorAll(".recharts-cartesian-axis-tick-value")]
       .map((n) => Number((n.textContent || "").replace(/,/g, "")))
       .filter((n) => Number.isFinite(n));
     expect(ticks.length).toBeGreaterThan(0);
-    expect(Math.max(...ticks)).toBeGreaterThanOrEqual(1000);
+    // Without peakValues in allValues, axis would be clamped to ~1200.
+    // With peakValues, the computed domain reaches 50000+, and Recharts
+    // generates ticks that include high values.
+    expect(Math.max(...ticks)).toBeGreaterThanOrEqual(45000);
   });
 });

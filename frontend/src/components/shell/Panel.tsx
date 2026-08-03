@@ -49,6 +49,19 @@ const DOMAIN_HEADER: Record<string, string> = {
 // `bg-surface-1`, dropping whichever comes first in the merge — that would
 // leave a stale/error panel with no surface at all, reading as a wash over
 // the page background instead of a card. `/[0.07]` mirrors --tint-weak.
+//
+// LAYERING (documented, not fixed): `before:absolute` gets the default
+// `z-index: auto`, so by normal CSS painting order this `::before` composites
+// ABOVE the in-flow, non-positioned `CardHeader`/`CardContent` — it glazes the
+// title, the Retry button and the stale/error copy, not only the card
+// surface. At 7% alpha this is subtle and accepted; `before:pointer-events-none`
+// is what keeps the Retry button (and any other control under the wash)
+// clickable despite sitting under it. Do NOT "fix" this with `before:-z-10`
+// alone: `Card` has `position:relative` but `z-index:auto`, so it forms no
+// stacking context, and a negative-z pseudo-element would then paint behind
+// the Card's OWN background too, making the wash invisible. A true
+// behind-content wash would need `isolate` on `Card` as well — more risk than
+// this is worth.
 const TONE_WASH =
   "relative before:pointer-events-none before:absolute before:inset-0 before:rounded-lg before:content-['']";
 

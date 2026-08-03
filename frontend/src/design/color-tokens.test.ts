@@ -118,6 +118,24 @@ describe("surface retune (spec §3)", () => {
     }
   });
 
+  // Fix 1: nothing previously pinned SATURATION — a mutation changing --bg
+  // from `240 18% 8%` to `240 30% 8%` turned zero tests red (hue and
+  // lightness are asserted above, but the middle HSL component never was).
+  const SATURATIONS = {
+    "--bg": "18%",
+    "--surface-1": "16%",
+    "--surface-2": "14%",
+    "--elevated": "14%",
+    "--border": "14%",
+    "--border-strong": "14%",
+  } as const;
+
+  it("holds the saturation ladder EXACTLY — closes the gap the lightness/hue tests left open", () => {
+    for (const [name, saturation] of Object.entries(SATURATIONS)) {
+      expect(tokenValue(name).split(/\s+/)[1], `${name} saturation`).toBe(saturation);
+    }
+  });
+
   it("body text still clears WCAG AA on every retuned surface", () => {
     for (const name of Object.keys(SURFACES)) {
       expect(
@@ -175,6 +193,30 @@ describe("semantic colour vocabulary (spec §4-§6)", () => {
   it("exposes the tint alphas as tokens so tint strength is one decision", () => {
     expect(tokenValue("--tint-weak")).toBe("0.07");
     expect(tokenValue("--tint-strong")).toBe("0.16");
+  });
+});
+
+/**
+ * Fix 2: `--domain-execution` is hardcoded to the violet accent value in
+ * `:root`, so the `:root[data-accent="blue"]` theme override (which re-skins
+ * --accent/--accent-hover/--accent-active/--accent-subtle/--focus-ring/--blocked)
+ * left it behind — toggling the blue theme put two competing brand colours on
+ * screen (violet Controls/Top Positions tint vs. a blue-skinned everything
+ * else). `tokenValue()` returns the FIRST match in the file, which is the
+ * `:root` (violet) declaration, so it cannot see the blue block at all; this
+ * local helper extracts that block's body specifically.
+ */
+function blueThemeTokenValue(name: string): string {
+  const block = tokensCss.match(/:root\[data-accent="blue"\]\s*\{([^}]*)\}/);
+  if (!block) throw new Error('block :root[data-accent="blue"] not found in tokens.css');
+  const m = block[1].match(new RegExp(`${name}\\s*:\\s*([^;]+);`));
+  if (!m) throw new Error(`token ${name} is not defined in the :root[data-accent="blue"] block`);
+  return m[1].trim();
+}
+
+describe("--domain-execution tracks --accent under the blue theme (fix 2)", () => {
+  it("matches --accent inside :root[data-accent=\"blue\"] — mutation: delete the blue-block --domain-execution line", () => {
+    expect(blueThemeTokenValue("--domain-execution")).toBe(blueThemeTokenValue("--accent"));
   });
 });
 

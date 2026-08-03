@@ -386,6 +386,44 @@ describe("OverviewPage", () => {
   });
 });
 
+describe("OverviewPage domain wiring (fix 3)", () => {
+  // Panel in isolation and OverviewPage's own tests never assert WHICH domain
+  // is wired to WHICH panel — swapping domain="execution" and domain="market"
+  // between "Controls" and "Recent Activity" would pass every existing test.
+  // Each assertion is scoped to its own panel via `heading.closest("[data-domain]")`
+  // (the Card carrying `data-domain` is the nearest such ancestor of its own
+  // CardTitle) so a swap between two panels sharing a domain value (Overview/
+  // Equity both "analytics", Controls/Top Positions both "execution") is still
+  // caught — a bare `[data-domain="analytics"]` count would not catch that.
+  // `getByRole` alone is not enough here: the KPI row (StatTiles, a plain
+  // `Card`, not a `Panel`) has its own tile labelled "Equity", colliding with
+  // the "Equity" Panel's CardTitle. Only `Panel`'s own Card ever carries
+  // `data-domain`, so filtering on that ancestor picks the right heading
+  // without hardcoding the collision.
+  function domainOf(headingName: string): string | null {
+    const headings = screen.getAllByRole("heading", { name: headingName });
+    const panelHeading = headings.find((h) => h.closest("[data-domain]") !== null);
+    return panelHeading?.closest("[data-domain]")?.getAttribute("data-domain") ?? null;
+  }
+
+  it("wires each Overview panel to its intended domain", async () => {
+    renderOverview({ snapshot: makeSnapshot({ risk: {
+      day_anchor: 458.9, day_pnl: -1.65, day_pnl_pct: -0.36,
+      max_daily_dd_pct: 3, can_trade: true,
+      book_risk: 12.4, book_risk_pct: 2.71, max_book_risk_pct: 5, blocker: null,
+    } }) });
+
+    await screen.findByTestId("range-selector");
+
+    expect(domainOf("Overview")).toBe("analytics");
+    expect(domainOf("Risk")).toBe("risk");
+    expect(domainOf("Equity")).toBe("analytics");
+    expect(domainOf("Controls")).toBe("execution");
+    expect(domainOf("Top Positions")).toBe("execution");
+    expect(domainOf("Recent Activity")).toBe("market");
+  });
+});
+
 function fineSeries(overrides: Partial<EquitySeries> = {}): EquitySeries {
   return {
     range: "4h",

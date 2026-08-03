@@ -1,7 +1,9 @@
 /* Titan design tokens — ROLE-based, filled from the Titan brand board
    (docs/branding/brand-board, Claude Design handoff 2026-07-15): violet accent,
-   Instrument Sans + JetBrains Mono, "Bracket" mark. Values are the brand hexes
-   converted to HSL (hex noted per line). */
+   Instrument Sans + JetBrains Mono, "Bracket" mark. Most brand-board tokens
+   below carry a hex comment (the value they were converted from); the six
+   retuned surface neutrals and the newer semantic/session tokens do not —
+   see their own section comments for why. */
 :root {
   /* surfaces — hue tinted toward the brand violet so panels read as
      intentional rather than flat slate. The LIGHTNESS ladder (8/15/21/24) is
@@ -112,4 +114,5 @@
   --accent-subtle: 213 60% 12%;  /* deep-blue wash */
   --focus-ring: 210 100% 56%;
   --blocked: 205 100% 66%;       /* keep blocked chips distinct under the blue theme */
+  --domain-execution: 210 100% 56%;  /* track --accent under the blue theme */
 }

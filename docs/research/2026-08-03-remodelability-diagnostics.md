@@ -128,52 +128,90 @@ exit-bounded version (18.9pp vs 16.9pp). The median test still fails both models
 (0.45 and 0.94 of required) — the median is the wrong statistic regardless of how MFE is
 bounded.
 
-**Caveat on the OTE figure — it is understated.** OTE's holding period has median 62 M5 bars
-but p90 = 331, so a 144-bar horizon covers only **72.5%** of its trades; winners needing
-longer never register. A horizon sweep is queued to replace this row with a
-truncation-free number. The direction of the bias is known (OTE's true reach is higher than
-22.4%), so the FAIL margin is an upper bound on OTE's deficit, not a lower one.
+**⚠️ The table above does not survive the horizon sweep. See the correction below — the
+apparent discrimination is an artifact of the horizon choice, and the row should not be
+cited.**
 
 **Derived quantity worth keeping: `reach% − win%` = stop-out drag** — trades that reached the
 target in favourable excursion but did not capture it, because the stop fired first. For
 SilverBullet the 12-bar horizon gives 46.0% reach against a 35.9% realized win rate, ≈10pp of
 drag. This is the one number in the screen that a backtest does not already report.
 
-### The two diagnostics are not independent
+### CORRECTION (same day, horizon sweep) — the screen does not discriminate
 
-For a **fixed-RR target over an adequate horizon**, "share reaching RR" *is* the win rate, so
-`P(MFE ≥ RR) ≥ 1/(1+RR)` is algebraically the Diagnostic-1 breakeven test. Diagnostic 2
-collapses into Diagnostic 1. The data shows it directly: OTE's fixed-exit win rate is 27.0% at
-RR 2.5 against 28.6% breakeven — the same ~1.6pp deficit Diagnostic 1 reports from a different
-direction.
+An earlier revision of this document claimed that (a) reach collapses into the win rate for a
+fixed-RR target, and (b) the 12-bar screen separated OTE from SilverBullet. **The horizon
+sweep (`scripts/reach_sweep.py`) refutes both.** Both claims were merged to main in `5ac5a20`
+and are corrected here rather than deleted.
 
-This does not retire the screen; it relocates its value. Diagnostic 2 carries **independent**
-information in exactly three cases:
+| horizon | OTE reach (BE 28.6%) | | horizon | SilverBullet reach (BE 33.3%) |
+|---|---|---|---|---|
+| 144 M5 (covers 72.5% of trades) | 22.4% **FAIL** | | 12 H1 | 46.0% PASS |
+| 288 M5 (87.4%) | 35.9% **PASS** | | 24 H1 | 60.2% PASS |
+| 576 M5 (95.7%) | 49.7% **PASS** | | 48 H1 | 70.5% PASS |
+| unbounded | **94.0%** PASS | | unbounded | **97.4%** PASS |
 
-1. **A time cap binds** — the horizon is shorter than the natural holding period, so reach and
-   win rate diverge (this is the time-stop question, and the sweep measures it).
-2. **The target is variable** — CRT, where there is no single RR to test breakeven against.
-3. **The candidate has no trade logic yet** — no entry, no exit, therefore no win rate exists
-   to compute. This is the original framing ("no entry logic, no exits, one pass") and the
-   case where the screen genuinely earns its keep: it is the only one of the two that can be
-   run *before* a model is built.
+**OTE's verdict flips from FAIL to PASS between 144 and 288 bars.** The apparent
+discrimination in the previous revision was an artifact: 144 M5 bars truncated 27.5% of OTE's
+trades while 12 H1 bars truncated far less of SilverBullet's. Equal nominal wall-clock was not
+equal effective coverage.
 
-Practical consequence: on an already-gated model, run Diagnostic 1 — it is arithmetic on an
-existing trade table and costs nothing. Reserve Diagnostic 2 for pre-design screening of
-candidates, for variable-target models, and for measuring stop-out drag.
+**Why (a) was wrong.** Reach measured without a stop is *not* the win rate, because a win
+requires reaching the target **before** the stop fires. MFE-without-stop ignores path
+entirely. The gap is enormous, not marginal: unbounded reach 94.0% against a 27.0% realized
+win rate for OTE (**+67.0pp**), and 97.4% against 36.1% for SilverBullet (**+61.3pp**). Far
+from collapsing into Diagnostic 1, the two measure different things — and the "stop-out drag"
+quantity defined above is the whole difference, which makes it the dominant term, not a
+footnote.
+
+**Why unbounded reach is vacuous.** Median unbounded MFE is 34.1R (OTE) and 47.9R
+(SilverBullet). Over unlimited time and with no stop, price wanders arbitrarily far in both
+directions; the screen degenerates into "does this instrument move at all", and everything
+passes. Any reach number is therefore a statement about its horizon, never about the model
+alone.
+
+### What the screen is actually for
+
+The screen has a domain, and OTE/Unicorn/CRT are outside it. All three are **stop-and-target
+models with no time limit** — the trade runs until SL or TP, so the "intended horizon" is
+unbounded and the binding constraint is *stop survival*, i.e. path, which reach cannot see.
+For that family, Diagnostic 1 is the correct tool and Diagnostic 2 adds nothing trustworthy.
+
+Diagnostic 2's domain is **time-bounded exits**, where a real horizon exists and can be
+plugged in non-arbitrarily. That is exactly the family it was drawn from — SpookyQuant's
+intraday model, Mesfin's two positive controls (fixed bar-count exits, 12–15 bar holds), and
+Gyroscope v2b's time stop. It is also usable, with the same caveat, on a candidate that has no
+trade logic yet, provided the horizon is set by the intended holding period rather than
+convenience.
+
+**Rules of use, revised:**
+
+1. Never quote a reach number without its horizon, and never use an unbounded one.
+2. Set the horizon from the intended holding period. If the model has no time limit, the reach
+   screen does not apply — use Diagnostic 1.
+3. Match effective *coverage*, not nominal wall-clock, when comparing two models.
+4. Reach is at best **necessary, never sufficient**: failing at the intended horizon kills a
+   structure, but passing says nothing about whether the stop lets you collect.
 
 ---
 
 ## How the two diagnostics combine
 
-They can disagree, and the disagreement is informative:
+**Only when Diagnostic 2 is in its domain** (a time-bounded exit, horizon set by the intended
+holding period). For a stop-and-target model with no time limit, read Diagnostic 1 alone — the
+reach column below is not computable in a way that means anything.
 
-| Diagnostic 1 | Diagnostic 2 | Reading |
+| Diagnostic 1 | Diagnostic 2 @ intended horizon | Reading |
 |---|---|---|
 | gross ≈ 0 | reach fails | **Harvest, don't remodel.** No information and no room. |
 | gross ≈ 0 | reach passes | Information problem: the move exists, the detector doesn't find it. |
 | gross < 0 meaningfully | reach fails | **Geometry remodel** — variable target at an MFE quantile, or a time stop at the MFE horizon. |
-| gross < 0 meaningfully | reach passes | Legitimate remodel; convert trigger to state. |
+| gross < 0 meaningfully | reach passes | Candidate remodel — but confirm stop survival first; reach is blind to path. |
+
+For the three retired ICT models specifically, this table does **not** apply: all are
+stop-and-target with no time limit, so the decision rests on Diagnostic 1, which puts OTE and
+Unicorn in **harvest** (gross ≈ 0, not invertible) and leaves CRT open pending its per-trade
+realized RR.
 
 **Time-based exits keep appearing on the winning side.** Gyroscope v2b uses time-stop exits
 (`2026-08-01-gyroscope2b-gate-results.md:25,48`); Mesfin (2026, arXiv:2605.04004) reports both

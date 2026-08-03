@@ -284,6 +284,48 @@ describe("underwater pane (spec §4, §6)", () => {
     const total = container.querySelectorAll(".recharts-area").length;
     expect(total).toBe(2);
   });
+
+  it("never lets a pane's numeric height go negative, even at a pathologically small total", () => {
+    // Mutation this pins: if the `underwaterHeight` clamp in EquitySparkline.tsx
+    // were relaxed from `Math.min(numericTotal, Math.max(UNDERWATER_MIN_PX, ...))`
+    // back to a bare `Math.max(UNDERWATER_MIN_PX, ...)` (no upper clamp to the
+    // total), then at height=50 underwaterHeight would compute to 70 (the
+    // floor), and mainHeight = 50 - 70 = -20 — a negative height handed
+    // straight to Recharts, which does not hard-fail on it (only warns), so it
+    // would ship as a silently blank equity pane rather than a visible crash.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={50} />,
+    );
+    const panes = container.querySelectorAll(".recharts-responsive-container");
+    // Both panes still mount structurally (degrade predictably), not vacuous.
+    expect(panes.length).toBe(2);
+    panes.forEach((pane) => {
+      const h = parseFloat((pane as HTMLElement).style.height);
+      expect(Number.isFinite(h)).toBe(true);
+      expect(h).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  it("lines up the two panes' plot areas at the same x offset", () => {
+    // The whole point of the split: <YAxis width={52} /> parity on both panes
+    // plus a matching XAxis (dataKey/type/domain/scale) makes the equity and
+    // underwater plot areas start at the same left edge. Assert on RENDERED
+    // geometry (the grid line's x1), not on the YAxis width prop itself — a
+    // prop-level assertion would not catch two panes whose axes drift apart
+    // in a way that still individually "looks right".
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    const surfaces = container.querySelectorAll("svg.recharts-surface");
+    expect(surfaces.length).toBe(2); // one per pane — equity, then underwater
+    const [equityX1, underwaterX1] = Array.from(surfaces).map((surface) => {
+      const gridLine = surface.querySelector(".recharts-cartesian-grid-horizontal line");
+      expect(gridLine).not.toBeNull();
+      return gridLine!.getAttribute("x1");
+    });
+    expect(equityX1).not.toBeNull();
+    expect(underwaterX1).toBe(equityX1);
+  });
 });
 
 describe("EquitySparkline sizing", () => {

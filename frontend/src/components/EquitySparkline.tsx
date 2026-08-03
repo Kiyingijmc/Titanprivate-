@@ -228,8 +228,21 @@ function SeriesChart({
   // numbers. When `height` is itself a CSS percentage (the maximized-dialog
   // case in production), fall back to a flex/percentage split, which resolves
   // fine under actual browser layout.
+  //
+  // Both panes are derived from ONE guarded computation so they cannot
+  // disagree: `underwaterHeight` is clamped to `numericTotal` itself (not
+  // just floored at UNDERWATER_MIN_PX), which guarantees
+  // `mainHeight = numericTotal - underwaterHeight` can never go negative even
+  // at a pathologically small total height. Recharts does not hard-fail on a
+  // zero/negative numeric height — it only warns and proceeds — so an
+  // unclamped remainder would ship as a silently blank equity pane rather
+  // than a crash.
+  const UNDERWATER_MIN_PX = 70;
   const numericTotal = expanded && typeof height === "number" ? height : undefined;
-  const underwaterHeight = numericTotal !== undefined ? Math.max(70, Math.round(numericTotal * 0.26)) : "100%";
+  const underwaterHeight =
+    numericTotal !== undefined
+      ? Math.min(numericTotal, Math.max(UNDERWATER_MIN_PX, Math.round(numericTotal * 0.26)))
+      : "100%";
   const mainHeight = numericTotal !== undefined ? numericTotal - (underwaterHeight as number) : "100%";
 
   return (

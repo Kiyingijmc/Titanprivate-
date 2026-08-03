@@ -206,3 +206,20 @@ describe("EquitySparkline", () => {
     expect(screen.getByTestId("equity-delta-basis")).toHaveTextContent("4h");
   });
 });
+
+describe("EquitySparkline sizing", () => {
+  const points = [
+    { t: 0, equity: 10000 },
+    { t: 1, equity: 10050 },
+  ];
+
+  it("defaults to the compact 140px strip", () => {
+    render(<EquitySparkline points={points} />);
+    expect(screen.getByTestId("equity-sparkline")).toHaveStyle({ height: "140px" });
+  });
+
+  it("accepts a percentage height so it can fill a maximized panel", () => {
+    render(<EquitySparkline points={points} height="100%" />);
+    expect(screen.getByTestId("equity-sparkline")).toHaveStyle({ height: "100%" });
+  });
+});

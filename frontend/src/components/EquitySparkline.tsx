@@ -56,7 +56,7 @@ export function EquitySparkline({
   points: BufferPoint[];
   series?: EquitySeries;
   width?: number | string;
-  height?: number;
+  height?: number | string;
 }) {
   if (series) {
     return <SeriesChart series={series} width={width} height={height} />;
@@ -158,7 +158,7 @@ function SeriesChart({
 }: {
   series: EquitySeries;
   width: number | string;
-  height: number;
+  height: number | string;
 }) {
   const rows = toChartRows(series);
 

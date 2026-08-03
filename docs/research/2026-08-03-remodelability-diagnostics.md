@@ -28,46 +28,123 @@ significantly negative *gross* edge is invertible.
 Computed from `data/history/ote_canonical_trades.csv` (the surviving raw table), cost-screened
 to the 10 symbols the gate included:
 
-| OTE canonical (n=1,776) | |
-|---|---|
-| gross (managed) | **−0.046R** |
-| mean cost | 0.113R |
-| net (managed) | **−0.158R** — reproduces `2026-07-11-ote-canonical-results.md` exactly |
+| OTE canonical (n=1,776) | managed exits | fixed exits |
+|---|---|---|
+| gross | −0.046R | **−0.056R** |
+| mean cost | 0.113R | 0.113R |
+| net | **−0.158R** — reproduces `2026-07-11-ote-canonical-results.md` exactly | −0.169R |
+| cost share of loss | 71% | 67% |
 
-**Cost drag is 71% of the loss.** The geometry check closes on itself independently: win 27.1%
-against 28.57% breakeven at RR 2.5 is a 1.47pp deficit; at 3.5 R-units per win that predicts
-0.051R of gross deficit, against a measured gross-fixed of −0.052R. Agreement to the third
-decimal.
+The **fixed** column is the one the breakeven test uses (see the exit-model warning below);
+the managed column is quoted because it is what the gate doc reports.
 
-**Unicorn** is the sharpest case: 28.5% realized against 28.57% breakeven (`RR_UNICORN = 2.5`,
-`scripts/poc_ict_revival.py:43`) — a **0.07pp** deficit, ≈0.002R of gross. A zero-information
-detector to two decimal places.
+**The geometry check closes on itself independently.** Fixed-exit win 27.0% against 28.6%
+breakeven at RR 2.5 is a 1.6pp deficit; at 3.5 R-units per win that predicts 0.056R of gross
+deficit, against a measured fixed gross of −0.056R. Agreement to the third decimal — the
+arithmetic of Diagnostic 1 is exact, and this is the cleanest demonstration of it in the set.
 
-**Consequence:** neither OTE nor Unicorn is invertible. Flipping OTE's −0.046R gross yields
-+0.046R against 0.113R of costs. Dead in both directions.
+**Unicorn** initially looked like the sharpest case — 28.5% against 28.57% breakeven — but
+that used the published *managed* win rate against a *fixed*-exit breakeven. Measured
+correctly it is the family's outlier, not its purest member: see the exit-model warning and
+the corrected table below.
 
-### Correction — CRT cannot be screened this way
+**Consequence for OTE:** not invertible. Flipping its −0.056R gross yields +0.056R against
+0.113R of costs. Dead in both directions.
+
+### CRT needs the variable-target treatment — and it is the purest case of the three
 
 The proposal instantiated CRT as "breakeven 25% at 3R vs 25.3% realized". **Canonical CRT has
 no 3R target.** It targets the opposite range extreme — variable RR, floored at
 `CRT_MIN_RR = 1.0` (`poc_ict_revival.py:44,349,421`). The fixed 3R belongs to the *deviant*
 CRT deleted 2026-07-12, so that check imports a retired implementation's geometry onto the
-canonical model's win rate.
+canonical model's win rate. Screening CRT requires the **per-trade realized RR**.
 
-It errs in CRT's favour: `2026-08-01-ict-revival-gate-results.md:29` states the variable RR
-"averages far below what that win rate needs", i.e. breakeven is **above** 25.3%. CRT is
-genuinely below its geometric breakeven, not sitting on it — so of the three it is the
-candidate most likely to carry real negative gross. Screening it requires the per-trade
-realized RR, not a nominal target.
+**Measured** (regenerated table, `data/results/reach_screen/crt_canonical_trades.csv`, n=1,882
+after the XBRUSD cost screen — matching the gate record exactly):
 
-### Reproducibility gap (open)
+Realized RR is wide and right-skewed — p25 2.23, **median 3.54**, p75 5.44, p90 7.95 — so no
+nominal figure represents it. Mean RR **on winners** is 3.12, giving breakeven
+1/(1+3.12) = **24.3%** against a realized fixed-exit win rate of **24.1%**: a **0.2pp**
+deficit.
 
-`unicorn_canonical_trades.csv` and `crt_canonical_trades.csv` **no longer exist**. The revival
+| CRT (n=1,882) | |
+|---|---|
+| gross (fixed) | **−0.006R** |
+| mean cost | 0.106R |
+| net | −0.112R |
+| **cost share of the loss** | **94%** |
+
+**Both prior readings of CRT were wrong, in opposite directions.** The proposal put it below
+breakeven via the 3R substitution. An earlier revision of this document inferred from
+`2026-08-01-ict-revival-gate-results.md:29` ("variable RR that averages far below what that
+win rate needs") that breakeven must be *above* 25.3%, and concluded CRT was the member of the
+family most likely to carry real negative gross. Measured breakeven is 24.3% — *below* the
+realized win rate. That sentence in the gate doc describes a wide right-skewed RR
+distribution, not a win-rate shortfall. **CRT carries the least negative gross of the three,
+not the most.**
+
+### ⚠️ The published win rates are MANAGED-exit — the breakeven test needs FIXED
+
+The breakeven identity `1/(1+RR)` assumes **every win pays exactly RR**. That is only true
+under a fixed-R exit. The managed (ratchet/runner) model banks partials, changing both the win
+rate *and* the payoff per win, so a managed win rate compared against `1/(1+RR)` is a category
+error. The gate docs report managed figures:
+
+| model | managed win (published) | **fixed win (correct input)** |
+|---|---|---|
+| ICT_OTE | 29.9% | **27.0%** |
+| Unicorn | 28.5% | **25.4%** |
+
+Both earlier readings of this family tripped on it. The proposal screened CRT with a nominal
+3R against a managed 25.3%; an earlier revision of this document screened Unicorn with the
+published managed 28.5% against a fixed-exit breakeven of 28.57% and concluded a 0.07pp
+deficit ≈ 0.002R of gross. **Measured on the fixed-exit basis, Unicorn's gross is −0.109R —
+fifty times larger, and the largest of the three.** Always take the win rate from the same
+exit model the RR refers to.
+
+### Diagnostic 1, complete family (fixed-exit basis throughout)
+
+Regenerated tables, cost-screened, n matching each gate record exactly:
+
+| model | n | breakeven | fixed win | deficit | **gross** | cost | net | cost share of loss |
+|---|---|---|---|---|---|---|---|---|
+| **CRT** | 1,882 | 24.3% (variable) | 24.1% | −0.2pp | **−0.006R** | 0.106R | −0.112R | **94%** |
+| ICT_OTE | 1,776 | 28.6% (RR 2.5) | 27.0% | −1.6pp | **−0.056R** | 0.113R | −0.169R | 67% |
+| **Unicorn** | 562 | 28.6% (RR 2.5) | 25.4% | −3.1pp | **−0.109R** | 0.125R | −0.234R | **53%** |
+
+They are **not** a homogeneous set, which is what the corrected numbers change:
+
+- **CRT is the pure case.** Gross −0.006R is indistinguishable from a coin flip at its own
+  geometry; 94% of its loss is transaction costs. It is not a bad detector, it is *not a
+  detector*. → **harvest**.
+- **OTE is close to it** — small negative information, two-thirds cost drag. → **harvest**.
+- **Unicorn is different.** −0.109R of gross with only 53% cost drag is a real negative edge,
+  not a zero. It is the one member of the family that carries genuine anti-information.
+
+**On invertibility — the naive arithmetic does not apply.** "Flip a −0.109R gross stream to
+get +0.109R" is wrong for a stop-and-target model, because inverting swaps the stop and the
+target: RR 2.5 becomes RR 0.4, the win rate becomes its complement, *and* cost-in-R falls by
+2.5× because the risk distance is now the old target distance. Whether Unicorn inverts to
+anything viable is an empirical question requiring its own pre-registered run, not a sign
+flip. Recorded as the one open remodel question in the family; the standing prior remains
+poor, and the one-pass rule means it needs a fresh mechanically-motivated design.
+
+### Reproducibility gap — closed for Unicorn and CRT
+
+`unicorn_canonical_trades.csv` and `crt_canonical_trades.csv` had been lost: the revival
 worktree was removed and `data/history/` is gitignored, so
-`2026-08-01-ict-revival-gate-results.md` cites raw artifacts that are gone. Only OTE's
-survived. Verifying Unicorn/CRT gross requires re-running `scripts/poc_ict_revival.py`.
-Future gate runs should copy their trade tables to `data/results/<study>/` — which is equally
-gitignored but is at least the convention EXP-0/EXP-1 follow, and survives worktree removal.
+`2026-08-01-ict-revival-gate-results.md` cited raw artifacts that no longer existed. Only
+OTE's survived.
+
+Both have been regenerated from `scripts/poc_ict_revival.py` (one pass, frozen rule sets, no
+tuning — this recovers artifacts, it does **not** re-gate; the NO-GO verdicts stand) and
+written to **`data/results/reach_screen/`** rather than `data/history/`. Fidelity was
+confirmed before use: CRT reproduces n=1,882 post-screen and the per-symbol cost table
+exactly.
+
+**Convention for future gate runs:** write trade tables to `data/results/<study>/`. It is
+equally gitignored, but it is the location EXP-0/EXP-1 already use and it survives worktree
+removal — which is what destroyed these two.
 
 ---
 
@@ -209,9 +286,10 @@ reach column below is not computable in a way that means anything.
 | gross < 0 meaningfully | reach passes | Candidate remodel — but confirm stop survival first; reach is blind to path. |
 
 For the three retired ICT models specifically, this table does **not** apply: all are
-stop-and-target with no time limit, so the decision rests on Diagnostic 1, which puts OTE and
-Unicorn in **harvest** (gross ≈ 0, not invertible) and leaves CRT open pending its per-trade
-realized RR.
+stop-and-target with no time limit, so the decision rests on Diagnostic 1 — which splits
+them: **CRT and OTE** land in the top row, **harvest** (gross −0.006R / −0.056R, 94% / 67%
+cost drag, nothing to invert). **Unicorn** lands in the third row, real negative gross
+(−0.109R, 53% cost drag) — the only remodel question the family leaves open.
 
 **Time-based exits keep appearing on the winning side.** Gyroscope v2b uses time-stop exits
 (`2026-08-01-gyroscope2b-gate-results.md:25,48`); Mesfin (2026, arXiv:2605.04004) reports both
@@ -224,9 +302,19 @@ missing GBPCAD/XBRUSD. LTF reach screens must run off `data/history/*_M5.csv`.
 ## Standing consequence for EXP-1
 
 Diagnostic 1 constrains how far `2026-08-03-exp1-mss-ablation-preregistration.md` can be read.
-EXP-1 measured M5 MSS confirmation costing ≈0.47–0.67R on a *working* entry. OTE and Unicorn
-do not have 0.5R of damage to explain — their gross deficits are 0.046R and ~0.002R. So MSS
-confirmation **cannot be the mechanism** behind those two NO-GOs; the arithmetic has no room
-for it. EXP-1 already declined to claim causation; this makes the refusal quantitative rather
-than cautionary. CRT remains open, being the one of the three plausibly carrying real negative
-gross.
+EXP-1 measured M5 MSS confirmation costing ≈0.47–0.67R on a *working* entry. The three models'
+gross deficits are **−0.006R (CRT), −0.056R (OTE), −0.109R (Unicorn)** — between 4× and 100×
+too small for a 0.5R mechanism to be what sank them.
+
+So MSS confirmation **cannot be the mechanism** behind any of the three NO-GOs; the arithmetic
+leaves no room. EXP-1's finding is real about SilverBullet and says nothing causal about the
+retired family.
+
+This is worth stating plainly because it cuts against the hypothesis EXP-1 was built to test.
+The component-isolation result stands on its own — confirmation costs ~0.5R on an entry that
+works — but the shared-component story that motivated it ("one component falsified three
+times") is **not** supported. Two of the three (CRT, OTE) failed by never having had an edge
+to lose. Unicorn is the only one with real anti-information, and at −0.109R it is still 4×
+short of the effect EXP-1 measured — and it is also the model whose zone primitive
+(breaker∩FVG overlap, 96% of legs filtered) differs most from the others, which points at zone
+definition rather than a shared trigger.

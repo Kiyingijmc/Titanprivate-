@@ -4,6 +4,7 @@ import { AlertTriangle, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { MaximizeButton } from "./MaximizeButton";
 
 export type PanelStatus = "loading" | "empty" | "error" | "populated" | "stale";
 
@@ -16,6 +17,8 @@ export interface PanelProps {
   errorMessage?: React.ReactNode;
   children?: React.ReactNode;
   className?: string;
+  /** When provided, the header shows a maximize control that calls this. */
+  onMaximize?: () => void;
 }
 
 function PanelSkeleton() {
@@ -53,13 +56,26 @@ export function Panel({
   errorMessage = "Something went wrong.",
   children,
   className,
+  onMaximize,
 }: PanelProps) {
   return (
     <Card className={cn("bg-surface-1 shadow-1", className)}>
-      {(title || actions) && (
+      {(title || actions || onMaximize) && (
         <CardHeader className="flex-row items-center justify-between space-y-0">
           {title && <CardTitle className="text-foreground">{title}</CardTitle>}
-          {actions && <div className="flex items-center gap-2">{actions}</div>}
+          {(actions || onMaximize) && (
+            <div className="flex items-center gap-2">
+              {actions}
+              {onMaximize && (
+                // `title` is a ReactNode; only a string can name the control for
+                // assistive tech, so fall back when a caller passes an element.
+                <MaximizeButton
+                  title={typeof title === "string" ? title : "panel"}
+                  onClick={onMaximize}
+                />
+              )}
+            </div>
+          )}
         </CardHeader>
       )}
       <CardContent>

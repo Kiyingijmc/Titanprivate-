@@ -20,3 +20,21 @@ describe("Panel", () => {
     expect(screen.getByTestId("stale-marker")).toBeInTheDocument();
   });
 });
+
+describe("Panel maximize affordance", () => {
+  it("renders no maximize control unless onMaximize is provided", () => {
+    render(<Panel status="populated" title="Equity">body</Panel>);
+    expect(screen.queryByRole("button", { name: /maximize/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a maximize control named for the panel and calls back", async () => {
+    const onMaximize = vi.fn();
+    render(
+      <Panel status="populated" title="Equity" onMaximize={onMaximize}>
+        body
+      </Panel>
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
+    expect(onMaximize).toHaveBeenCalledTimes(1);
+  });
+});

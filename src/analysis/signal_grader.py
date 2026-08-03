@@ -28,6 +28,14 @@ class SignalGrader:
         self.min_grade = str(cfg.get('min_grade', 'B'))
         if self.min_grade not in self.GRADE_RANK:
             self.min_grade = 'B'
+        # Per-strategy floors (minimal P8 carve-out): strategy NAME -> grade.
+        # Lets a non-SMC canary (Almanac) run at its own floor while the SMC
+        # factors keep under-scoring it. Invalid grades are dropped so a typo
+        # falls back to the global floor rather than silently passing.
+        raw = cfg.get('per_strategy_min_grade') or {}
+        self.per_strategy_min_grade = {
+            str(k): str(v) for k, v in raw.items() if str(v) in self.GRADE_RANK
+        }
 
     def grade(self, decision, context, candle=None):
         """
@@ -117,8 +125,12 @@ class SignalGrader:
                 return g
         return "C"
 
-    def passes(self, grade):
-        """Gate check against the configured quality floor."""
+    def passes(self, grade, strategy=None):
+        """Gate check against the configured quality floor. A strategy with a
+        per_strategy_min_grade entry is judged against its own floor."""
         if not self.enabled:
             return True
-        return self.GRADE_RANK.get(grade, 0) >= self.GRADE_RANK[self.min_grade]
+        floor = self.min_grade
+        if strategy is not None:
+            floor = self.per_strategy_min_grade.get(str(strategy), self.min_grade)
+        return self.GRADE_RANK.get(grade, 0) >= self.GRADE_RANK[floor]

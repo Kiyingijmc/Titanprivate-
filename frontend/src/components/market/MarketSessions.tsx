@@ -32,32 +32,49 @@ function pct(min: number): string {
 }
 
 /**
- * Vivid, well-separated identity color per session (amber / rose / violet /
- * teal-green). Fixed hues — deliberately independent of the app accent so they
- * never clash with the violet↔blue toggle. Each session's timeline band AND its
- * clock card use this same color, so the card reads as "this is that band".
+ * Session identity colours, resolved from design tokens rather than hex
+ * literals — see src/design/tokens.css. Values stay full `hsl(var(--x))`
+ * strings because they are consumed from inline `style`, not Tailwind classes.
+ * Fixed hues — deliberately independent of the app accent so they never clash
+ * with the violet↔blue toggle. Each session's timeline band AND its clock
+ * card use this same color, so the card reads as "this is that band".
  */
 const SESSION_COLORS: Record<string, string> = {
-  sydney: "#F59E0B", // amber
-  tokyo: "#FB5C7D", // rose
-  london: "#8B7CF6", // violet
-  newyork: "#2DD4A7", // teal-green
+  sydney: "hsl(var(--session-sydney))",
+  tokyo: "hsl(var(--session-tokyo))",
+  london: "hsl(var(--session-london))",
+  newyork: "hsl(var(--session-newyork))",
 };
 
-const BAND_ALPHA = "B3"; // ~70% — vivid, still lets the now-marker + overlaps read
+/** Timeline band fill: ~70% — vivid, still lets the now-marker + overlaps read. */
+const sessionBand = (id: string) => `hsl(var(--session-${id}) / 0.70)`;
 
 /**
  * 24h session timeline + status chips, driven by `sessionStates()` (T9).
  * Pass `now` for deterministic rendering (tests); defaults to a live tick.
  */
-export function MarketSessions({ now, className }: { now?: Date; className?: string }) {
+export function MarketSessions({
+  now,
+  hasCrypto = false,
+  className,
+}: {
+  now?: Date;
+  /** From the snapshot's market block — a 24/7 instrument in the book means a
+   *  weekend is not a closure, so the timeline keeps rendering. */
+  hasCrypto?: boolean;
+  className?: string;
+}) {
   const ticking = useNow();
   const at = now ?? ticking;
-  const { sessions, overlaps, weekendClosed } = sessionStates(at);
+  const { sessions, overlaps, fxClosed, allClosed } = sessionStates(at, { hasCrypto });
   const nowMin = at.getUTCHours() * 60 + at.getUTCMinutes();
   const byId = new Map(sessions.map((s) => [s.id, s]));
 
-  const activeOverlaps = overlaps.filter((o) => o.active);
+  // Suppress the overlap badge whenever the FX cash market is shut. It used to
+  // be computed outside the closed branch, so the card could show a live
+  // "Tokyo × London overlap" chip sitting directly on top of its own
+  // "Markets closed" banner.
+  const activeOverlaps = fxClosed ? [] : overlaps.filter((o) => o.active);
   const overlapBands = activeOverlaps.flatMap((o) => {
     const a = byId.get(o.ids[0]);
     const b = byId.get(o.ids[1]);
@@ -91,15 +108,25 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
         )}
       </div>
 
-      {weekendClosed ? (
+      {allClosed ? (
         <div
           data-testid="weekend-closed-banner"
           className="flex items-center justify-center rounded-md border border-border bg-surface-2 py-6 text-sm text-muted-foreground"
         >
-          Markets closed — opens Sunday
+          {/* Was "opens Sunday", which read as wrong when you looked at it on a
+              Sunday. Name the actual reopen instant instead. */}
+          Markets closed — FX reopens Sunday 22:00 UTC
         </div>
       ) : (
         <>
+          {fxClosed && (
+            <div
+              data-testid="crypto-only-note"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-muted-foreground"
+            >
+              FX closed — crypto trades through the weekend, so the engine is still live.
+            </div>
+          )}
           <div
             data-testid="session-timeline"
             className="relative h-8 w-full overflow-hidden rounded-md bg-surface-2"
@@ -112,7 +139,7 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
                   style={{
                     left: pct(seg[0]),
                     width: pct(seg[1] - seg[0]),
-                    backgroundColor: SESSION_COLORS[session.id] + BAND_ALPHA,
+                    backgroundColor: sessionBand(session.id),
                   }}
                   aria-hidden
                 />
@@ -155,6 +182,8 @@ export function MarketSessions({ now, className }: { now?: Date; className?: str
 }
 
 function SessionChip({ session, color }: { session: SessionState; color: string }) {
+  const wash = `hsl(var(--session-${session.id}) / 0.08)`;
+  const chipBg = `hsl(var(--session-${session.id}) / 0.15)`;
   return (
     <div
       data-testid={`session-chip-${session.id}`}
@@ -162,7 +191,7 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
       style={{
         borderLeftColor: color,
         // A faint session-color wash over the card surface while the market is open.
-        ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${color}14` } : {}),
+        ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${wash}` } : {}),
       }}
     >
       <div className="flex items-center justify-between gap-2">
@@ -175,10 +204,15 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
       {session.open ? (
         <span
           className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
-          style={{ backgroundColor: `${color}26`, color }}
+          style={{ backgroundColor: chipBg, color }}
         >
+          {/* Static dot. It used to pulse forever, which is the highest-
+              frequency animation in the app: always on screen, always moving,
+              on a surface the operator watches for hours. The chip already
+              says "Open" in the session colour, so the motion carried no
+              information it was not already showing. */}
           <span
-            className="size-1.5 animate-pulse rounded-full"
+            className="size-1.5 rounded-full"
             style={{ backgroundColor: color }}
             aria-hidden
           />

@@ -20,6 +20,8 @@ import yaml
 from src.core.system_controller import SystemController
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
+from src.strategies.models.almanac import Almanac
+from src.strategies.models.gyroscope import GyroscopeStrategy
 from src.strategies.models.silver_bullet import SilverBullet
 
 
@@ -39,28 +41,46 @@ def make_controller():
 
 
 class TestControllerRegistryInit(unittest.TestCase):
-    def test_init_strategies_activates_silver_bullet(self):
+    def test_init_strategies_activates_baseline_set(self):
+        # Repo baseline since 2026-08-01 (later): SilverBullet (live) +
+        # Gyroscope v2 (demo canary, GO 7/7) + Almanac (demo-soak canary),
+        # ordered by manifest priority (50, 60, 80).
         c = make_controller()
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 3)
         st = c.strategies[0]
         self.assertIsInstance(st, SilverBullet)
         self.assertEqual(st.name, "SilverBullet")
         self.assertEqual(getattr(st, "timeframe", "M5"), "H1")
         self.assertEqual(c.strategy_ttls["SilverBullet"], 12 * 3600)
+        gy = c.strategies[1]
+        self.assertIsInstance(gy, GyroscopeStrategy)
+        self.assertEqual(gy.name, "Gyroscope")
+        self.assertEqual(gy.timeframe, "H1")
+        # v2b-locked config reached the strategy (pre-registered values)
+        self.assertEqual(gy.sprt_on, "innovation")
+        self.assertEqual(gy.z_confirm, 1.0)
+        self.assertEqual(gy.nis_persist, 10)
+        self.assertEqual(gy.reentry_lockout, 12)
+        alm = c.strategies[2]
+        self.assertIsInstance(alm, Almanac)
+        self.assertEqual(alm.name, "Almanac")
+        self.assertEqual(alm.timeframe, "H1")
+        self.assertEqual(c.strategy_ttls["Almanac"], 12 * 3600)
 
 
 class TestControllerRegistryEnableDisable(unittest.TestCase):
     def test_disable_then_enable_round_trips(self):
         c = make_controller()
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 3)
 
         msg = c.disable_strategy("silver_bullet")
         self.assertIn("disabled", msg.lower())
-        self.assertEqual(c.strategies, [])
+        self.assertEqual([type(s) for s in c.strategies],
+                         [GyroscopeStrategy, Almanac])
 
         msg = c.enable_strategy("silver_bullet")
         self.assertIn("enabled", msg.lower())
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 3)
         self.assertIsInstance(c.strategies[0], SilverBullet)
         self.assertEqual(c.strategy_ttls["SilverBullet"], 12 * 3600)
 
@@ -77,7 +97,7 @@ class TestControllerRegistryEnableDisable(unittest.TestCase):
         msg = c.enable_strategy("does_not_exist")
         self.assertIn("Unknown strategy", msg)
         # untouched
-        self.assertEqual(len(c.strategies), 1)
+        self.assertEqual(len(c.strategies), 3)
 
 
 if __name__ == "__main__":

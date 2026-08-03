@@ -9,7 +9,7 @@
 # ==============================================================================
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 
 class CandleMaker:
@@ -109,10 +109,14 @@ class CandleMaker:
         raw_time = tick_data['t']
         
         # --- RESTORED v14.1 CRASH FIX: HANDLE MILLISECONDS ---
+        # Stamp as naive UTC (matches DataStore.ingest_history's
+        # pd.to_datetime(..., unit='s')) so live and history bars share one
+        # clock; datetime.fromtimestamp() alone would use local time and
+        # split the buffer's epoch by the host's UTC offset.
         if raw_time > 32503680000: # Year 3000 in seconds
-            ts = datetime.fromtimestamp(raw_time / 1000.0) 
+            ts = datetime.fromtimestamp(raw_time / 1000.0, tz=timezone.utc).replace(tzinfo=None)
         else:
-            ts = datetime.fromtimestamp(raw_time) 
+            ts = datetime.fromtimestamp(raw_time, tz=timezone.utc).replace(tzinfo=None)
         
         # Determine Minute Bucket (v14.1 Logic)
         minute_floored = (ts.minute // self.tf_min) * self.tf_min

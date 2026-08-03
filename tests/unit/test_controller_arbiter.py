@@ -73,7 +73,7 @@ class FakeGrader:
     def grade(self, decision, context, candle=None):
         return {"score": 100, "grade": self.default_grade, "factors": []}
 
-    def passes(self, grade):
+    def passes(self, grade, strategy=None):
         return True
 
 

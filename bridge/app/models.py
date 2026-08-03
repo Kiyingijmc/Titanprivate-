@@ -88,6 +88,13 @@ class SymbolInfo(BaseModel):
     trade_mode: int
     tick_value: float
     tick_size: float
+    # swap survey (defaults keep old clients/bridges mutually compatible)
+    swap_mode: int = 0
+    swap_long: float = 0.0
+    swap_short: float = 0.0
+    swap_rollover3days: int = 3
+    currency_base: str = ""
+    currency_profit: str = ""
 
 
 class Candle(BaseModel):

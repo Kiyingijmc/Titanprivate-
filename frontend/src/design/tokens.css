@@ -1,16 +1,23 @@
 /* Titan design tokens — ROLE-based, filled from the Titan brand board
    (docs/branding/brand-board, Claude Design handoff 2026-07-15): violet accent,
-   Instrument Sans + JetBrains Mono, "Bracket" mark. Values are the brand hexes
-   converted to HSL (hex noted per line). */
+   Instrument Sans + JetBrains Mono, "Bracket" mark. Most brand-board tokens
+   below carry a hex comment (the value they were converted from); the six
+   retuned surface neutrals and the newer semantic/session tokens do not —
+   see their own section comments for why. */
 :root {
-  /* surfaces */
-  --bg: 225 20% 8%;            /* #101218 */
-  --surface-1: 223 19% 15%;    /* #1E222C — cards/panels */
-  --surface-2: 222 16% 21%;    /* #2C313D — muted rows / inputs / table header */
-  --elevated: 220 17% 24%;     /* #333A48 — popovers / command palette / dialogs */
+  /* surfaces — hue tinted toward the brand violet so panels read as
+     intentional rather than flat slate. The LIGHTNESS ladder (8/15/21/24) is
+     deliberately unchanged from the original brand board: every contrast
+     ratio in the app is a function of lightness, and color-tokens.test.ts
+     pins both the ladder and the resulting WCAG ratios. Hex comments dropped
+     on purpose — they described the pre-retune values and would now lie. */
+  --bg: 240 18% 8%;
+  --surface-1: 240 16% 15%;    /* cards/panels */
+  --surface-2: 240 14% 21%;    /* muted rows / inputs / table header */
+  --elevated: 240 14% 24%;     /* popovers / command palette / dialogs */
   /* lines + text */
-  --border: 222 16% 21%;       /* #2C313D */
-  --border-strong: 221 16% 27%;/* #3A4150 */
+  --border: 240 14% 21%;
+  --border-strong: 240 14% 27%;
   --text-primary: 223 24% 94%; /* #EDEFF4 */
   --text-secondary: 221 13% 67%;/* #A0A7B6 */
   --text-muted: 222 10% 44%;   /* #656C7C */
@@ -27,11 +34,73 @@
   --warning: 36 79% 57%;       /* #E8A33D */
   --info: 212 77% 60%;         /* #4A93E8 */
   --blocked: 251 100% 76%;     /* #9C86FF — distinct from accent via brightness; Plan 2 may refine */
+
+  /* --- Semantic vocabulary (spec 2026-08-03 visual-language-foundation) ---
+     Defined here so sub-projects B (equity chart), C (news) and D (market
+     strip) share ONE vocabulary instead of inventing three. Some of these
+     have no consumer yet; that is intended, not dead code. */
+
+  /* Domain tints: identify a panel's subject at a glance. Used at --tint-weak
+     on a header wash and full strength on a 2px left border. */
+  --domain-risk: 20 70% 55%;
+  --domain-market: 200 70% 55%;
+  --domain-execution: 252 83% 65%;   /* the brand accent — execution IS the product */
+  --domain-analytics: 160 60% 50%;
+  --tint-weak: 0.07;
+  --tint-strong: 0.16;
+
+  /* News impact (red/orange/yellow folder convention).
+     WARNING: --impact-high (hue 10) sits ~12 deg from --loss (hue 358), and
+     that is deliberate — both are red by convention. Colour therefore must
+     NEVER be the only channel: every impact indicator also carries its text
+     label (High/Med/Low), so a red-green colour-blind operator cannot confuse
+     "high-impact release" with "losing money". */
+  --impact-high: 10 85% 56%;
+  --impact-medium: 32 90% 55%;
+  --impact-low: 48 75% 55%;
+
+  /* Drawdown severity, keyed by B to distance from the daily breaker
+     (risk.account.max_daily_dd_pct). Converges on --loss at the severe end so
+     a deep drawdown and a losing P&L read as the same red. */
+  --dd-shallow: 358 40% 55%;
+  --dd-moderate: 358 65% 60%;
+  --dd-severe: 358 84% 64%;
+
+  /* Trading-session identity colours. Moved out of MarketSessions.tsx, where
+     they were the app's only raw hex literals. Values are faithful HSL
+     conversions of those hexes, so this move is visually a no-op; sub-project
+     D may retune them here. */
+  --session-sydney: 38 92% 50%;
+  --session-tokyo: 348 95% 67%;
+  --session-london: 247 87% 73%;
+  --session-newyork: 164 66% 50%;
   /* radius / elevation / motion */
   --radius-lg: 10px; --radius-md: 8px; --radius-sm: 6px;
   --shadow-1: 0 1px 2px 0 hsl(225 20% 3% / 0.5);
   --shadow-2: 0 10px 30px -8px hsl(225 20% 2% / 0.6);
-  --motion-fast: 150ms; --motion-base: 220ms; --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* Motion. Bound into Tailwind in tailwind.config.ts, so `transition-*`,
+     `duration-*` and `ease-*` resolve to these rather than Tailwind's defaults;
+     a curve change here re-times the whole app.
+
+     Durations: --motion-fast for press feedback and for EXITS (the operator has
+     already decided — get out of the way), --motion-base for enters and
+     on-screen movement. Nothing in this UI exceeds 300ms.
+
+     Easings: CSS's built-in curves are too weak to read as intentional, so the
+     two that carry motion are strong custom curves.
+       --ease-out     entering, exiting, pressing. Never ease-in — it delays the
+                      first frame, the exact moment the operator is watching.
+       --ease-in-out  only for elements moving across the screen.
+       --ease         hover and colour changes only. Deliberately plain CSS
+                      `ease`: this is a dense dashboard an operator scans
+                      constantly, and a dramatic curve on hover reads as noise.
+     The previous single `--ease: cubic-bezier(0.2, 0, 0, 1)` was referenced
+     nowhere, so replacing it split no existing behaviour. */
+  --motion-fast: 150ms;
+  --motion-base: 220ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 /* Alternate signature accent — ELECTRIC BLUE (operator toggle via <AccentToggle>;
@@ -45,4 +114,5 @@
   --accent-subtle: 213 60% 12%;  /* deep-blue wash */
   --focus-ring: 210 100% 56%;
   --blocked: 205 100% 66%;       /* keep blocked chips distinct under the blue theme */
+  --domain-execution: 210 100% 56%;  /* track --accent under the blue theme */
 }

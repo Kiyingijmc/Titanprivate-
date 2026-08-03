@@ -37,4 +37,26 @@ describe("PositionsTable", () => {
     await userEvent.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalledWith(123);
   });
+
+  it("badges a symbol that news is holding", () => {
+    render(
+      <PositionsTable
+        positions={pos}
+        onClose={vi.fn()}
+        readOnly
+        blockedSymbols={{ [pos[0].symbol]: "USD CPI in 20m" }}
+      />
+    );
+    expect(screen.getByTestId("news-blocked-badge")).toBeInTheDocument();
+  });
+
+  it("shows no badge when the symbol is not blocked", () => {
+    render(<PositionsTable positions={pos} onClose={vi.fn()} readOnly blockedSymbols={{}} />);
+    expect(screen.queryByTestId("news-blocked-badge")).toBeNull();
+  });
+
+  it("shows no badge when blockedSymbols is omitted", () => {
+    render(<PositionsTable positions={pos} onClose={vi.fn()} readOnly />);
+    expect(screen.queryByTestId("news-blocked-badge")).toBeNull();
+  });
 });

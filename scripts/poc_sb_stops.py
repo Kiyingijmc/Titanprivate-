@@ -116,7 +116,7 @@ def collect_signals(sym, quick=False, tf="M5"):
             "year": int(pd.Timestamp(t).year),
         })
     disp15 = _disp15_by_bar(df_m5, times, tf)
-    bars = {"high": highs, "low": lows,
+    bars = {"high": highs, "low": lows, "atr": atr, "times": times,
             "disp_bull": disp15["bull"], "disp_bear": disp15["bear"]}
     return signals, bars
 

@@ -62,12 +62,18 @@ describe("App", () => {
     expect(sidebar().getByRole("link", { name: "Overview" })).toBeInTheDocument();
     expect(sidebar().getByRole("link", { name: "Positions" })).toBeInTheDocument();
 
-    // Status bar shows the Live connection pill.
-    expect(screen.getByText(/live/i)).toBeInTheDocument();
+    // Status bar shows the Live connection pill. Scoped to the status-bar's
+    // "System status" landmark: with NewsPanel now mounted on Overview (Task 6),
+    // its unavailable-state copy ("...calendar source is live.") also matches
+    // an unscoped /live/i, so an unscoped getByText is ambiguous.
+    expect(
+      within(screen.getByRole("status", { name: /system status/i })).getByText(/live/i)
+    ).toBeInTheDocument();
 
     // Default route (/overview) renders the real Overview page (Plan 2 Task 2): KPI tiles + top-positions panel.
     expect(await screen.findByText("Top Positions")).toBeInTheDocument();
-    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1");
+    // "open / pending" — the fixture has one position and no resting orders.
+    expect(await screen.findByTestId("tile-open-positions")).toHaveTextContent("1 / 0");
   });
 
   it("navigates to the real Positions page when the Positions nav link is clicked", async () => {

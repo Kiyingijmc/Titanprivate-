@@ -34,6 +34,9 @@ class RiskManager:
         self.starting_balance = 0.0
         self.current_equity = 0.0
         self.day_start_equity = 0.0  # daily DD anchor; re-set by reset_daily_metrics
+        # True only between restore_daily_anchor() and the first heartbeat
+        # that can corroborate it (RS-RISK-01 MEDIUM-2).
+        self._anchor_needs_corroboration = False
         self.symbol_specs = {}
         # Set by aggregate_open_risk when it returns None: the row that made
         # the book un-computable, so the operator halt alert can name it
@@ -44,36 +47,166 @@ class RiskManager:
         self.equity_max = 0.0
         self.equity_min = float('inf')
 
+    # RS-RISK-01 MEDIUM-2. A restored anchor comes off DISK, so it is an
+    # externally-sourced number controlling a safety limit -- the same class of
+    # input as the broker specs above, which are bounded rather than trusted.
+    # A tiny positive anchor (0.01) makes pnl_pct enormously positive, so
+    # check_can_trade() returns True forever and throttle_factor() returns 1.0:
+    # the 3% breaker and the throttle are BOTH off for the whole day, and the
+    # value survives restarts. `> 0` alone does not catch that.
+    #
+    # A real trading day cannot move equity by this factor -- the breaker halts
+    # at 3% long before -- so a breach means corruption, not a bad day. Wide
+    # enough that a genuine catastrophic day is never mistaken for corruption.
+    MAX_ANCHOR_EQUITY_RATIO = 20.0
+
     def update_account_info(self, balance, equity):
         """Standard oper.txt logic: Permanent lock of starting balance on init"""
         if self.starting_balance == 0 and balance > 0:
             self.starting_balance = balance
         if self.day_start_equity == 0 and equity > 0:
             self.day_start_equity = equity
+        elif self._anchor_needs_corroboration and equity > 0:
+            # First heartbeat after a restore: this is the earliest moment a
+            # persisted anchor can be checked against reality, because at boot
+            # there is no equity to compare it with.
+            self._anchor_needs_corroboration = False
+            anchor = self.day_start_equity
+            if anchor > 0:
+                ratio = max(anchor / equity, equity / anchor)
+                if ratio > self.MAX_ANCHOR_EQUITY_RATIO:
+                    # Fail CLOSED: fall back to anchoring from live equity (the
+                    # pre-RISK-01 behaviour) rather than keeping a value that
+                    # would switch the breaker off entirely.
+                    self.day_start_equity = equity
+                    if self.logger:
+                        self.logger.log_event(
+                            "RISK", "ANCHOR",
+                            f"Rejected restored DD anchor {anchor!r}: {ratio:.4g}x "
+                            f"from live equity {equity} (max {self.MAX_ANCHOR_EQUITY_RATIO}x). "
+                            f"Re-anchored to {equity} -- the breaker would otherwise "
+                            f"have been disabled for the whole day.",
+                            {"rejected": anchor, "equity": equity, "ratio": ratio})
 
         self.current_equity = equity
         self.track_equity(equity)
+
+    def restore_daily_anchor(self, equity):
+        """Prime today's DD anchor from persisted state, before any heartbeat.
+
+        RISK-01: day_start_equity was in-memory only, so every restart re-set it
+        to whatever equity the first post-boot heartbeat reported -- discarding
+        the day's realised drawdown and granting a fresh allowance. The caller
+        (SystemController, at boot) supplies the anchor persisted earlier today.
+
+        Once restored the anchor is non-zero, so update_account_info's existing
+        `if self.day_start_equity == 0` guard declines to re-anchor. The fix is
+        to prime that guard before the first heartbeat, not to add a second one.
+
+        No I/O here on purpose: RiskManager stays a pure class that ~10 test
+        modules construct from a bare config dict. Storage is StateManager's job.
+
+        A non-positive or unusable value is a NO-OP, not a coercion: a corrupt
+        persisted row must leave the existing first-heartbeat path intact rather
+        than anchor the breaker to nonsense.
+        """
+        try:
+            value = float(equity)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value) and value > 0:
+            self.day_start_equity = value
+            self._anchor_needs_corroboration = True
 
     def track_equity(self, equity):
         """V14 Feature: Tracks intraday range for the Ugandan Report"""
         if equity > self.equity_max: self.equity_max = equity
         if equity < self.equity_min: self.equity_min = equity
 
+    # SEC-05 / OPS-07: broker-plausible envelopes for the two spec fields the
+    # sizing math divides by. They are deliberately wide -- they do not encode
+    # any symbol's true values, they only bracket what a real MT5 quote can be
+    # (1e-6 covers 5-digit forex ticks, 100 covers whole-unit index ticks).
+    # 'vm'/'vs' have no upper bound; a broker may legitimately require large
+    # lots. They only have to be positive so the volume math cannot divide by 0.
+    SPEC_BOUNDS = {'val': (1e-4, 1e4), 'ts': (1e-6, 100.0)}
+
+    # A real symbol regrade (4-digit -> 5-digit forex) moves a field by exactly
+    # 10x. More than that is a corrupt or hostile frame, not a spec change.
+    MAX_SPEC_JUMP = 10.0
+
     def update_symbol_specs(self, symbol, val, size, v_min, v_step):
         """
         Receives precise contract details from MQL5.
-        AUDIT FIX: Sanitizes inputs to prevent mathematical crashes.
+
+        SEC-05: these arrive on an UNAUTHENTICATED socket, and every trade is
+        sized off them. A single bad HISTORY frame -- hostile, or a broker
+        misquoting tick_value after a symbol-spec change -- drives
+        ticks_at_risk towards 0, blows every subsequent trade out to
+        hard_max_lots against an intended 1% risk, and has risk_to_stop
+        validate it as safe off the same poisoned numbers. So an update is
+        sanity-bounded, and a rejected one is a NO-OP: previously accepted
+        specs stay put, and a symbol that never had accepted specs stays
+        spec-less so calculate_lot_size keeps failing safe to 0. Never coerce
+        a bad value into the store -- half-good specs size real trades.
         """
-        try:
-            self.symbol_specs[symbol] = {
-                'val': float(val) if val is not None else 0.0,    # Tick Value
-                'ts': float(size) if size is not None else 0.0,   # Tick Size
-                'vm': float(v_min) if v_min is not None else 0.01,# Volume Min
-                'vs': float(v_step) if v_step is not None else 0.01 # Volume Step
-            }
-        except ValueError:
-            # If ZMQ sends garbage, ignore update to keep existing/default state
-            pass
+        incoming = {'val': val, 'ts': size, 'vm': v_min, 'vs': v_step}
+        clean = {}
+
+        for field, raw in incoming.items():
+            try:
+                num = float(raw)
+            except (TypeError, ValueError):
+                return self._reject_specs(symbol, field, raw, "not a number")
+            if not math.isfinite(num):
+                return self._reject_specs(symbol, field, raw, "not finite")
+
+            bounds = self.SPEC_BOUNDS.get(field)
+            if bounds is None:
+                if num <= 0:
+                    return self._reject_specs(symbol, field, raw, "must be > 0")
+            elif not (bounds[0] <= num <= bounds[1]):
+                return self._reject_specs(
+                    symbol, field, raw, f"outside [{bounds[0]}, {bounds[1]}]")
+
+            clean[field] = num
+
+        # Jump guard, measured against the last ACCEPTED specs only -- a
+        # rejected frame must never become the baseline, or two bad messages
+        # in a row can walk the specs anywhere they like.
+        prior = self.symbol_specs.get(symbol)
+        if prior:
+            for field, num in clean.items():
+                was = prior.get(field, 0.0)
+                if was <= 0:
+                    continue
+                ratio = max(num / was, was / num)
+                # +epsilon so an exactly-10x regrade survives float rounding.
+                if ratio > self.MAX_SPEC_JUMP * (1 + 1e-9):
+                    # incoming[field], NOT `raw`: `raw` is the loop variable
+                    # from the validation pass above and by now holds the LAST
+                    # field's value, so it would name the jumping field beside
+                    # an unrelated (healthy) number.
+                    return self._reject_specs(
+                        symbol, field, incoming[field],
+                        f"{ratio:.4g}x jump from last accepted {was}")
+
+        self.symbol_specs[symbol] = clean
+
+    def _reject_specs(self, symbol, field, value, reason):
+        """Drop a spec update and tell the operator which field poisoned it.
+
+        A silent reject is indistinguishable from a symbol that simply never
+        got specs -- and the visible symptom of both is 'that pair stopped
+        trading', so the message has to name symbol + field + value.
+        """
+        if self.logger:
+            self.logger.log_event(
+                "RISK", "SPECS",
+                f"Rejected {symbol} spec update: {field}={value!r} ({reason}). "
+                f"Keeping previously accepted specs.",
+                {"symbol": symbol, "field": field, "value": repr(value), "reason": reason},
+            )
 
     def normalize_price(self, price, symbol):
         """
@@ -360,6 +493,26 @@ class RiskManager:
             total += risk
 
         return total
+
+    def roll_daily_anchor(self):
+        """New trading day: re-anchor the DD breaker, or INVALIDATE it.
+
+        RS-RISK-01 MAJOR-1. Sets day_start_equity to live equity when known.
+        When equity is NOT yet known -- restarted across the day boundary with
+        no heartbeat in yet -- it zeroes the anchor instead of leaving
+        yesterday's in place, so update_account_info's `== 0` guard anchors
+        fresh on the first heartbeat. Keeping the stale value is precisely what
+        let a previous day's anchor be written under the NEW day's key and then
+        restored on every restart for the rest of that day, handing back a
+        larger loss allowance than intended -- the failure class RISK-01 exists
+        to kill.
+
+        Deliberately does NOT touch equity_max/equity_min. Those are the daily
+        report's range trackers and reset_daily_metrics owns them; the rollover
+        fires just before the 23:45 report in the same loop iteration, so
+        clearing them here would make the report describe an empty day.
+        """
+        self.day_start_equity = self.current_equity if self.current_equity > 0 else 0.0
 
     def reset_daily_metrics(self):
         """New trading day: reset range trackers and re-anchor the daily DD."""

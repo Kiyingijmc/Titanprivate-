@@ -53,7 +53,8 @@ function fmtCountdown(min: number): string {
  */
 function CondensedMarketContext({ snapshot }: { snapshot: Snapshot | null }) {
   const now = useNow();
-  const { sessions, weekendClosed } = sessionStates(now);
+  const hasCrypto = snapshot?.market?.has_crypto ?? false;
+  const { sessions, fxClosed, allClosed } = sessionStates(now, { hasCrypto });
   const open = sessions.filter((s) => s.open);
   const nextOpen = sessions
     .filter((s) => !s.open)
@@ -71,8 +72,12 @@ function CondensedMarketContext({ snapshot }: { snapshot: Snapshot | null }) {
         className="inline-flex items-center gap-1.5 text-sm text-muted-foreground"
       >
         <Clock className="size-4" aria-hidden />
-        {weekendClosed ? (
+        {allClosed ? (
           <span>Markets closed</span>
+        ) : fxClosed ? (
+          // FX shut but the book holds a 24/7 instrument: say so rather than
+          // claiming a closure the engine does not observe.
+          <span className="font-medium text-secondary-foreground">Crypto only</span>
         ) : open.length > 0 ? (
           <span>
             <span className="font-medium text-secondary-foreground">

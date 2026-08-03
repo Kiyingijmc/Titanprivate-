@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Ban } from "lucide-react";
 import { Panel, type PanelStatus } from "@/components/shell/Panel";
 import { PositionsTable } from "@/components/PositionsTable";
+import { PendingOrdersTable } from "@/components/PendingOrdersTable";
 import { PositionsFilters, type PositionsFilterState } from "@/components/PositionsFilters";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,10 +51,12 @@ export default function PositionsPage() {
 
   const [filters, setFilters] = useState<PositionsFilterState>(DEFAULT_FILTERS);
   const [pendingClose, setPendingClose] = useState<number | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<number | null>(null);
   const [closeAllPending, setCloseAllPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const positions = snapshot?.positions ?? [];
+  const orders = snapshot?.orders ?? [];
   const filtered = useMemo(() => applyFilters(positions, filters), [positions, filters]);
 
   const status: PanelStatus =
@@ -64,6 +67,27 @@ export default function PositionsPage() {
         : positions.length === 0
           ? "empty"
           : "populated";
+
+  const ordersStatus: PanelStatus =
+    snapshot === null
+      ? "loading"
+      : connectionStatus.stale
+        ? "stale"
+        : orders.length === 0
+          ? "empty"
+          : "populated";
+  const untracked = orders.filter((o) => !o.tracked).length;
+
+  async function confirmCancel() {
+    const ticket = pendingCancel;
+    setPendingCancel(null);
+    if (ticket === null) return;
+    setError(null);
+    const result = await run(() => api.postCommand({ command: "cancel", ticket }));
+    if (!result.ok && result.error !== "read-only") {
+      setError(`cancel ${ticket}: ${result.error}`);
+    }
+  }
 
   async function confirmClose() {
     const ticket = pendingClose;
@@ -114,9 +138,54 @@ export default function PositionsPage() {
             positions={filtered}
             onClose={(ticket) => setPendingClose(ticket)}
             readOnly={readOnly}
+            blockedSymbols={snapshot?.news?.blocked_symbols}
           />
         </div>
       </Panel>
+
+      <Panel
+        status={ordersStatus}
+        title="Pending Orders"
+        emptyMessage="No resting orders"
+        actions={
+          untracked > 0 ? (
+            <span
+              data-testid="untracked-orders-warning"
+              className="text-xs font-medium text-blocked"
+            >
+              {untracked} untracked — not counted by the risk cap
+            </span>
+          ) : undefined
+        }
+      >
+        <PendingOrdersTable
+          orders={orders}
+          onCancel={(ticket) => setPendingCancel(ticket)}
+          readOnly={readOnly}
+        />
+      </Panel>
+
+      <AlertDialog open={pendingCancel !== null} onOpenChange={(open) => !open && setPendingCancel(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Cancel order {pendingCancel}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {/* CANCEL is fire-and-forget on the PUSH socket and the EA's reject
+                  (e.g. retcode 10018, market closed) never reaches Python — so a
+                  request that succeeded and one the broker refused look identical
+                  here. The row itself is the receipt: it is fed by the heartbeat
+                  and disappears only on a real cancellation. Say so rather than
+                  reporting a success we cannot observe. */}
+              Sends a cancel request to the broker. It is only confirmed once the order
+              disappears from this table — a closed market will silently refuse it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmCancel}>Confirm</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={pendingClose !== null} onOpenChange={(open) => !open && setPendingClose(null)}>
         <AlertDialogContent>

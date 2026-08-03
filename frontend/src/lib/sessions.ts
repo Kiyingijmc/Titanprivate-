@@ -97,11 +97,23 @@ function localClockString(zone: string, at: Date): string {
   }).format(at);
 }
 
-export function sessionStates(nowUtc: Date): {
+export function sessionStates(
+  nowUtc: Date,
+  opts: { hasCrypto?: boolean } = {}
+): {
   sessions: SessionState[];
   overlaps: Array<{ ids: [string, string]; active: boolean }>;
   activeIds: string[];
-  weekendClosed: boolean;
+  /** FX cash market is shut (Fri 22:00 UTC → Sun 22:00 UTC). Symbol-agnostic. */
+  fxClosed: boolean;
+  /**
+   * Nothing in the traded universe is trading. FX being shut is NOT enough:
+   * with a 24/7 instrument in the book the engine keeps running the weekend
+   * (SystemController: `should_monitor = not is_weekend or has_crypto`), and on
+   * 2026-08-02 SilverBullet placed an ETHUSD limit while the GUI was drawing a
+   * "Markets closed" banner. Pass `hasCrypto` from the snapshot's market block.
+   */
+  allClosed: boolean;
 } {
   const nowMin = nowUtc.getUTCHours() * 60 + nowUtc.getUTCMinutes();
 
@@ -143,8 +155,8 @@ export function sessionStates(nowUtc: Date): {
 
   const day = nowUtc.getUTCDay();
   const hour = nowUtc.getUTCHours();
-  const weekendClosed =
+  const fxClosed =
     day === 6 || (day === 0 && hour < 22) || (day === 5 && hour >= 22);
 
-  return { sessions, overlaps, activeIds, weekendClosed };
+  return { sessions, overlaps, activeIds, fxClosed, allClosed: fxClosed && !opts.hasCrypto };
 }

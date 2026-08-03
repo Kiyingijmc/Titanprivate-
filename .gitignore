@@ -4,7 +4,8 @@
 # --- Python ---
 __pycache__/
 *.py[cod]
-.venv/
+# no trailing slash: worktrees carry .venv as a symlink, which `.venv/` misses
+.venv
 venv/
 
 # --- Runtime state (databases) ---
@@ -33,8 +34,11 @@ data/lake/**
 # --- Research run-cards (reproducible via scripts/research_run.py) ---
 data/results/**
 
+data/news/
+
 # --- Control GUI overrides (machine state, not source) ---
 config/overrides.yaml
 graphify-out/
 .mig/state/
 .mig/worktrees/
+.gstack/

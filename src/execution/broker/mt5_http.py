@@ -152,7 +152,13 @@ class MT5HttpBroker:
                           spread_points=int(d["spread"]), contract_size=float(d["contract_size"]),
                           volume_min=float(d["volume_min"]), volume_max=float(d["volume_max"]),
                           volume_step=float(d["volume_step"]), tick_value=float(d["tick_value"]),
-                          tick_size=float(d["tick_size"]))
+                          tick_size=float(d["tick_size"]),
+                          swap_mode=int(d.get("swap_mode", 0)),
+                          swap_long=float(d.get("swap_long", 0.0)),
+                          swap_short=float(d.get("swap_short", 0.0)),
+                          swap_rollover3days=int(d.get("swap_rollover3days", 3)),
+                          currency_base=str(d.get("currency_base", "")),
+                          currency_profit=str(d.get("currency_profit", "")))
 
     def _candle(self, d: dict) -> Candle:
         return Candle(time=_parse_utc(d["time"]), open=float(d["open"]), high=float(d["high"]),

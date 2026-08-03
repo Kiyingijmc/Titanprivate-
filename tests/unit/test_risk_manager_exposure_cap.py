@@ -230,6 +230,15 @@ class FakeTelemetry:
         self.messages.append(text)
 
 
+class NonBlockingNews:
+    """Default news gate stub: never blocks. These tests exercise the
+    aggregate-risk cap, not the news gate, so `_execute_signal`'s news check
+    must be a no-op unless a test overrides `c.news_manager` itself."""
+
+    def check_symbol(self, symbol, now=None):
+        return False, None
+
+
 class FakeStateManager:
     """Only the surface _execute_signal / the HEARTBEAT branch touch."""
 
@@ -249,6 +258,16 @@ class FakeStateManager:
         pass
 
 
+class FakeEquityRecorder:
+    """Only the surface the HEARTBEAT branch touches."""
+
+    def __init__(self):
+        self.recorded = []
+
+    def record(self, balance, equity):
+        self.recorded.append((balance, equity))
+
+
 def _controller(open_positions, cap=5.0, equity=10000.0, resting=None):
     c = object.__new__(SystemController)
     c.config = _config(cap)
@@ -258,12 +277,14 @@ def _controller(open_positions, cap=5.0, equity=10000.0, resting=None):
     c.risk_manager = _risk_manager(equity)
     c.exposure_manager = ExposureManager(c.config, {})
     c.state_manager = FakeStateManager(resting)
+    c.equity_recorder = FakeEquityRecorder()
     c.current_open_positions = open_positions
     c.current_pending_orders = []
     c.live_prices = {}
     c.pending_signal_meta = {}
     c._reserved_risk = {}
     c._uncomputable_alert_at = None
+    c.news_manager = NonBlockingNews()
     return c
 
 

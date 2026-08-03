@@ -28,6 +28,12 @@ class BaseStrategy(ABC):
         # Timeframe whose candle close triggers this strategy (M5/M15/H1).
         # The controller routes closed candles to matching strategies only.
         self.timeframe = str(self.config.get('timeframe', 'M5'))
+        # Symbols this strategy may trade. active_symbols is the UNION of all
+        # strategies' pairs, so without this the controller would run every
+        # strategy on every symbol (found 2026-08-01: Almanac would have
+        # bought EURUSD at turn-of-month). None/empty = unscoped (fixtures,
+        # backtester, single-strategy configs).
+        self.pairs = self.config.get('pairs') or None
         # Required columns for most SMC strategies
         self._smc_columns = ['is_swing_high', 'is_swing_low', 'is_fvg_bull', 'is_fvg_bear', 'ATR']
 

@@ -1,0 +1,416 @@
+# EXP-1 "MSS Ablation" — pre-registration
+
+**Date:** 2026-08-03 · **Status:** PRE-REGISTERED (committed before any run; one pass;
+every outcome below is a valid, recordable result)
+**Provenance:** external critique (2026-08-03) proposing that M5 MSS confirmation is a
+single falsified *component* shared by all three canonically-gated ICT failures, with
+SilverBullet as the accidental control; plus the in-session audit of that critique against
+this tree.
+**Rig:** `scripts/exp1_mss_ablation.py` (to be written), built on `scripts/poc_sb_stops.py`
+machinery (`collect_signals` → `stop_price` → `resolve` → `replay_managed` → `cost_r`) and
+`src/analysis/ict_structure.py` (`precompute_last_swings`, `mss_confirm`). No change to
+either module; the new script imports both.
+
+---
+
+## Hypothesis under test
+
+Three canonically-implemented ICT models were gated NO-GO on this rig, all three sharing
+one component — **zone → retest → M5 MSS → market entry**:
+
+| Model | Pooled MANAGED net 1× | n | Verdict |
+|---|---|---|---|
+| ICT_OTE (2026-07-11) | −0.158R | 1,776 | NO-GO, 6/6 classes |
+| Canonical Unicorn (2026-08-01) | −0.209R | 562 | NO-GO, 0/5 classes |
+| Canonical CRT (2026-08-01) | −0.150R | 1,882 | NO-GO, 0/5 classes |
+
+The one survivor, SilverBullet, does not use that component: it rests a LIMIT at the FVG
+edge of a displacement candle with no post-retest confirmation step
+(`src/strategies/models/silver_bullet.py`).
+
+**H1 (directional):** M5 MSS confirmation on a retest *subtracts* net expectancy from an
+entry stream that is otherwise positive, by (a) surrendering the first leg of the move —
+worse realized RR against a fixed target — and (b) conditioning on "price already moved",
+which at M5 resolution is largely noise autocorrelation.
+
+**H0:** MSS confirmation is expectancy-neutral or positive on a working zone. The three
+failures above were then driven by their *zone/entry primitive* (structural interpretation:
+swing legs, breaker∩FVG overlap, prior-day range) rather than by their trigger.
+
+### What this experiment does and does not establish
+
+- **It measures** the incremental effect of the confirmation component on a baseline whose
+  entry is known to carry a gross edge.
+- **It does not prove** MSS caused the three NO-GOs. Those are separate claims about
+  separate rule sets. A confirmed H1 raises the posterior; it is not a retro-verdict.
+- **It is not a portfolio simulation.** See "Occupancy" below — the treated arm is a
+  per-trade counterfactual, not a tradeable variant. A GO-shaped result requires its own
+  portfolio-level gate with a fresh pre-registration.
+
+---
+
+## Priors, stated honestly
+
+- **The component-level claim already exists in this repo's prose.**
+  `docs/research/2026-08-01-ict-revival-gate-results.md:39-43` records that
+  "MSS-confirmed retest entries did not produce a positive raw edge in any of the three
+  models," and names SilverBullet as the survivor in the following sentence. What has
+  never been done is treating SilverBullet as a **control** and measuring the component
+  directly. That gap is what EXP-1 closes.
+- **SilverBullet is not a "widen the stop and it works" baseline, and this correction is
+  load-bearing.** `2026-07-11-silverbullet-h1-stop-study.md:48-52`: at H1/ATR10 the fixed-2R
+  exit is **−0.122R**. Positivity arrives only with the ratchet (+0.087R) and
+  ratchet+runner (+0.109R). The control arm is therefore *negative under one of the two
+  registered exit models*, which is why the gate below reads Δ (the paired difference) and
+  never the level.
+- **Costs were not the failure mode for the three models.** OTE median round-trip cost per
+  symbol ran 0.026R–0.187R with only XBRUSD screened out and risk floored at 0.500×ATR(H1)
+  by construction; the Unicorn results doc states it outright ("costs are NOT the failure
+  mode here — the signal is"). EXP-1 therefore tests signal geometry, not friction.
+- **EXP-0 bounds what the exit engine can do here.** Random entries through the full engine
+  are −0.249R over 20/20 reps; the engine amplifies (+0.231R on real entries) rather than
+  subsidises (+0.075R on random). A Δ measured through the same replay in both arms is a
+  component measurement, not an exit-engine artifact.
+- **A null is the modal outcome and is fully acceptable.** The correspondent's own causal
+  claim was assessed at 30–40% confidence by the models that reviewed it, on n=3
+  under-identified observations. Outcome B below closes the question just as usefully as
+  Outcome A.
+
+---
+
+## Control arm (A) — frozen, unchanged
+
+The adopted v14.4.2 configuration, reproduced by the existing rig with no modification:
+
+- SilverBullet signal: displacement candle, `body ≥ 0.8 × ATR`, FVG present; entry = the
+  near FVG edge (`fvg_top` for BUY, `fvg_bottom` for SELL).
+- Timeframe **H1**, stop model **ATR10** (`entry ± 1.0 × ATR(H1)`), **RR 2.0**,
+  **TTL 12** H1 bars, one open trade per symbol.
+- Fill: the LIMIT fills when an H1 bar's range touches `entry` on bars `i+1 … i+12`.
+- Costs: indicative FBS spread table + $7/lot commission, `cost_R = (spread + comm)/risk`,
+  at 1× (primary) and 1.5× (stress).
+
+**Rig fidelity check, registered as a pass/fail precondition:** arm A must reproduce
+n=2,217, FIXED −0.122R, RATCHET +0.087R, RATCHET+RUNNER +0.109R to the third decimal on
+the 11-symbol universe, exactly as EXP-0 did. If it does not, the run is void and no
+verdict is issued.
+
+---
+
+## Treated arm (B) — the only thing that changes
+
+For each arm-A trade, the counterfactual: **wait for an M5 MSS after the zone touch, then
+enter MARKET at the next M5 open.**
+
+1. **Touch bar.** Resolve arm A's H1 fill bar down to M5: the first M5 bar within the H1
+   fill bar whose range contains `entry`.
+2. **Confirmation window.** From the touch bar (inclusive) to the close of H1 bar `i+12`
+   (arm A's TTL horizon), whichever is earlier. No MSS in window → **no arm-B trade for
+   this pair** (handled below; it is an absent observation, not R=0).
+3. **MSS.** `mss_confirm(m5_high, m5_low, m5_close, k, bias, last_swh, last_swl)` with
+   `precompute_last_swings(..., LK_M5)` and **`LK_M5 = 2`** — the identical definition and
+   lookback used by the OTE, Unicorn and CRT gates (`scripts/poc_ict_revival.py:47`).
+   `bias` is the arm-A signal direction. Unchanged code, unchanged constant.
+4. **Entry.** MARKET at the **next M5 bar's open** after the confirming bar — the same
+   execution convention hand-verified in the OTE golden slice.
+5. **Resolution.** Same H1 bar path, same pessimistic same-bar-SL-first rule, same
+   `replay_managed` ratchet/runner, same cost function.
+
+### The anchoring problem, and why two variants are registered
+
+Adding a confirmation step **moves the entry price**, which moves risk distance, which
+moves the R denominator, which moves realized RR against a fixed target. Entry mechanics
+and target geometry cannot both be held fixed. Rather than pick one and call the design
+"identical", both are registered and both are reported:
+
+| Variant | Frozen | Floats | Rationale |
+|---|---|---|---|
+| **B1 — stop-anchored** | SL *price* = arm A's `stop_price(sig, "ATR10")` | entry, risk, TP (= entry ± 2.0 × risk_B) | Preserves the economically meaningful level (zone invalidation). Risk floats with the entry, so cost/R floats too — see the correction below. |
+| **B2 — R-anchored** | risk distance = 1.0 × ATR(H1) from the *new* entry | SL price, TP price | Preserves cost/R and RR exactly; isolates timing from geometry. |
+
+B1 and B2 bracket the design space. A component claim that survives only one of them is
+not a component claim — see the gate.
+
+**Correction (2026-08-03, before the gate run — rig build, golden slice).** The B1 rationale
+as first committed said "risk widens → cost/R falls, so B1 hands the treated arm a friction
+advantage." That is true only when confirmation moves the entry *adversely*. The golden
+slice produced the opposite case: XAUUSD 2026-03-23, a SELL where arm A sold 4310.28 and
+the MSS made arm B sell 4353.17 — a **better** short entry, which moved the entry *away*
+from the frozen stop and **shrank** B1's risk from 73.32 to 30.43, raising cost/R. B1's
+friction effect is therefore **signed with the entry displacement, not one-directional**,
+and B1 is not a uniform handicap on the control. No threshold, rule or gate criterion
+changes; this corrects a stated rationale only. It is also the reason the first-leg metric
+below is reported signed.
+
+Consequently `first_leg_r` is **signed**: positive = arm B entered at a worse price (the
+leg surrendered, the H1(a) mechanism); negative = confirmation obtained a better price. An
+unsigned magnitude would score both as "cost" and could not measure H1(a) at all. The share
+of pairs with adverse displacement is reported alongside it.
+
+### Occupancy — registered decision
+
+Arm B **inherits arm A's signal selection verbatim**. The `busy_until` one-open-per-symbol
+state machine is *not* re-run on arm B's later entries. This is deliberate: re-running it
+would change which signals are taken, destroying the pairing and turning a component
+measurement into a portfolio comparison with two moving parts. Registered consequence:
+arm B is a per-trade counterfactual and its pooled expectancy is **not** a tradeable
+result.
+
+### Missing-observation handling — both readings registered
+
+- **Primary — paired-on-both-traded.** Drop pairs where no MSS fires in the window. This
+  answers the hypothesis as stated: *does the component subtract value from a trade?*
+- **Secondary — intent-to-treat.** A no-MSS pair contributes R = 0, cost 0 to arm B (the
+  variant would simply not have traded). Reported, not gated: a costless option to skip
+  flatters arm B, so it cannot carry the verdict.
+
+---
+
+## Registered parameters
+
+| Parameter | Value |
+|---|---|
+| Timeframe / stop model | H1 / ATR10 |
+| Universe | the study's 11 symbols (`poc_sb_stops.SYMS`); US100/ETHUSD/XTIUSD excluded pending STRAT-04 cost coverage |
+| Data | `data/history/{SYM}_M5.csv`, 3y (2023-06 → 2026-06), unchanged |
+| MSS lookback | `LK_M5 = 2` |
+| Exit models | FIXED 2R **and** RATCHET+RUNNER (dual-exit gate, falsification principle #3) |
+| Anchoring variants | B1 stop-anchored, B2 R-anchored |
+| Costs | 1× primary, 1.5× stress |
+| Primary metric | Δ = mean(R_B − R_A) over paired trades, net 1× |
+| Uncertainty | 10,000-resample **paired** bootstrap CI on Δ |
+| Determinism | bootstrap seed 11; no other stochastic element |
+
+---
+
+## Power floor — registered before looking
+
+Arm B's n is unknown a priori and is **not** 1,837–2,217: only pairs where an MSS actually
+prints in the window are analysable. (Precedent for aggressive attrition: canonical
+Unicorn's overlap+MSS funnel removed 96% of legs.)
+
+Assuming sd of the paired difference ≈ 1.3R, 80% power at α = 0.05 two-sided needs
+≈ 590 pairs to detect Δ = 0.15R, ≈ 330 for Δ = 0.20R.
+
+| n_paired | Standing |
+|---|---|
+| ≥ 500 | Confirmatory. Verdict bands below apply. |
+| 300 – 499 | Directional only. Report Δ and CI; **no permanent verdict**, no graveyard entry, no arsenal-doctrine change. |
+| < 300 | **INCONCLUSIVE.** Report the funnel and stop. Do not re-tune the window to manufacture n — that is the one-pass rule. |
+
+Realized sd of the paired difference is a **required** reported figure; if it lands far
+from 1.3R the power statement is restated in the results doc rather than the bands moved.
+
+---
+
+## Registered gate
+
+Read on Δ (pooled, net 1×, paired-on-both-traded). All four cells — {FIXED, RATCHET+RUNNER}
+× {B1, B2} — must agree for any permanent verdict.
+
+| Band | Requirement | Verdict |
+|---|---|---|
+| **Outcome A — component confirmed costly** | Δ ≤ −0.05R **and** bootstrap upper bound < 0, in **all four cells**; sign holds at ×1.5 spread | MSS confirmation subtracts value from a working displacement-limit entry. The arsenal screens LTF candidates on **entry trigger**; the confirmation branch is closed absent a new mechanically-motivated design with its own pre-registration. |
+| **Outcome B — component neutral** | \|Δ\| < 0.05R, **or** the CI spans zero in any cell | **H1 is dead.** MSS is not the toxin; the three NO-GOs were about zone quality / entry primitive. The arsenal screens on **entry primitive** (zone information source), not trigger. |
+| **Outcome C — component adds value** | Δ ≥ +0.05R **and** bootstrap lower bound > 0, in **all four cells** | Hypothesis inverted. Confirmation is additive on a good zone; the three failures were entirely zone-driven. Justifies a separate portfolio-level gate on an SB+MSS variant — new pre-registration, not an extension of this one. |
+| **Disagreement across cells** | any mixed sign or a band met in some cells only | **INCONCLUSIVE.** Report the disagreement verbatim and make no claim. This is the MTF-PB v2 lesson: a result that holds under one exit model and fails the other is model dependence, not a finding. |
+
+**Reported, not gated:** MSS fire-rate (share of arm-A trades with any MSS in window);
+median bars from touch to confirmation; **signed first-leg displacement** — arm-A entry to
+arm-B entry in arm-A R, positive = worse entry (the direct measurement of the mechanism in
+H1(a)), plus the share of pairs that are adverse; win rate per arm; per-year and per-symbol
+Δ; the ITT reading; ×1.5 spread stress.
+
+---
+
+## Known limitations (registered up front)
+
+1. **Already-seen data.** SilverBullet's stop model and exit variant were selected on this
+   exact dataset (the stop study's own integrity caveat). The MSS component has never been
+   tuned on it, and Δ is a paired difference in which the baseline's selection bias largely
+   cancels — but this is not out-of-sample, and the results doc must say so in these words.
+2. **STRAT-01.** The validated exit engine is the offline `poc_sb_stops.replay_managed`,
+   not the live `trade_manager.sync_positions`. Every level here is an upper bound. Because
+   both arms run through the *same* replay, the bias largely cancels in Δ — which is a
+   positive argument for this design over any absolute comparison, and the reason no live
+   change can follow from this run.
+3. **Not a tradeable variant.** See "Occupancy". Arm B's pooled expectancy must never be
+   quoted as a strategy result.
+4. **Replay conventions** (pessimistic same-bar SL-first; partials filled at the fib level;
+   no slippage, no swap) are inherited and symmetric across arms.
+5. **Execution asymmetry is real and unmodelled.** Arm A pays the spread on a resting limit
+   with no maker rebate — this is already how `cost_r` charges it, so no correction is
+   owed. Arm B's market entry additionally suffers slippage that the rig does not model,
+   biasing Δ *upward* (in arm B's favour). An Outcome-A result is therefore conservative;
+   an Outcome-C result is not.
+6. **One instrument family, one broker.** FBS CFDs, 11 symbols, 3 years.
+
+---
+
+## Verification tier (before the gate run)
+
+1. Arm-A fidelity check must pass to the third decimal (above).
+2. **Golden slice:** one symbol / one month in verbose mode; hand-verify on raw M5 data for
+   at least two pairs — the touch bar, the confirmed swing that MSS breaks, the confirming
+   close, arm-B's fill open, and both anchorings' SL/TP arithmetic. Precedent: the OTE
+   canonical golden slice.
+3. Unit tests for the new pairing/window code (touch-bar resolution, window boundary at
+   H1 `i+12`, missing-MSS handling, B1/B2 arithmetic) in `tests/unit`.
+
+### Verification results (2026-08-03, rig `44fdf68`+)
+
+**1. Arm-A fidelity — PASS, precondition met.** All 11 symbols, full 3y:
+n = **2,217** (registered 2,217); FIXED **−0.122**, RATCHET **+0.087**, RATCHET+RUNNER
+**+0.109** — all four exact at three decimals. The gate run is authorised.
+
+**2. Golden slice — PASS.** XAUUSD 2026-03-01→03-31, 3 arm-A trades, all hand-checked
+against `data/history/XAUUSD_M5.csv`:
+
+- **2026-03-09 01:00 SELL** (arm A entry 5135.68, SL 5173.205, risk 37.525, filled H1
+  07:00 → SL). Touch = M5 07:45 (L 5119.44 / H 5140.28, the first M5 bar of that H1 hour
+  spanning 5135.68 — the four preceding bars top out at 5121.19). MSS = M5 08:35,
+  close 5117.92 breaking the confirmed swing low at 08:00 (low 5119.08; verified as a
+  strict `lk=2` swing against 5126.05/5119.44/5122.64/5126.43, confirmed at 08:10 < 08:35,
+  and still the latest confirmed low — 08:05…08:20 are all disqualified). Entry = M5 08:40
+  open **5117.97**. B1: SL frozen 5173.205, risk 55.235, TP 5007.50. B2: risk 37.525,
+  SL 5155.495, TP 5042.92. Every figure matches the rig exactly.
+- **2026-03-23 08:00 SELL** (arm A entry 4310.28, risk 73.321429, filled H1 13:00 → SL).
+  Touch = M5 13:05 (13:00 tops at 4295.40, so it is the first spanning bar). MSS = M5 14:10,
+  close 4352.80 breaking the confirmed swing low at 13:20 (4355.04; strict against
+  4395.45/4379.18/4372.31/4395.37, and 13:45/13:55 both fail the swing test). Entry = M5
+  14:15 open **4353.17**. B1: risk 30.431429, TP 4292.307143. B2: SL 4426.491429,
+  TP 4206.527143. Exact.
+- **2026-03-23 14:00 BUY** — correctly dropped `NO_MSS` (arm A won +2R; arm B has no
+  counterfactual). This is the asymmetry the paired-only primary is designed to avoid
+  scoring as zero.
+
+The second trade is what produced the B1 correction above and the signed first-leg metric.
+
+**3. Unit tests — 31 green** (`tests/unit/test_exp1_mss_ablation.py`), including the two
+golden trades pinned as sign fixtures.
+
+---
+
+## Results
+
+**Run:** 2026-08-03, rig `e9a3993`, registered parameters exactly (H1 / ATR10 / 11 symbols /
+`LK_M5=2` / bootstrap 10,000 @ seed 11). Arm-A fidelity precondition passed first (§Verification).
+**Raw:** `data/results/exp1_mss_ablation/pairs.csv` (1,786 rows).
+**One pass. No re-tuning.**
+
+### Funnel
+
+| stage | n |
+|---|---|
+| arm-A trades (ATR10, H1, 11 symbols) | 2,217 |
+| dropped `NO_MSS` (no shift inside the TTL window) | 103 |
+| dropped `B1_STOP_CROSSED` (price through arm A's stop before any MSS) | 328 |
+| **paired, both anchorings resolved** | **1,786** |
+
+n = 1,786 ≥ 500 → **confirmatory** under the registered power floor.
+
+### Primary — Δ = arm B − arm A (net 1×, per trade)
+
+| cell | arm A | arm B | **Δ** | CI95 (paired bootstrap) | sd(Δ) |
+|---|---|---|---|---|---|
+| FIXED / B1 | +0.024 | −0.454 | **−0.477** | [−0.572, −0.393] | 1.932 |
+| FIXED / B2 | +0.024 | −0.604 | **−0.628** | [−0.700, −0.554] | 1.565 |
+| RUNNER / B1 | +0.234 | −0.450 | **−0.684** | [−0.778, −0.602] | 1.895 |
+| RUNNER / B2 | +0.234 | −0.564 | **−0.798** | [−0.859, −0.737] | 1.324 |
+
+Realized sd(Δ) 1.32–1.93 against the 1.3R assumed when the power floor was set: the
+registered n-thresholds were, if anything, slightly optimistic. Irrelevant here — every CI
+excludes zero by a wide margin at n = 1,786.
+
+### Verdict: **OUTCOME A — component confirmed costly**
+
+All four cells satisfy Δ ≤ −0.05R with a bootstrap upper bound below zero; the sign holds
+under ×1.5 spreads. No cell disagrees.
+
+### Reported, not gated
+
+| | |
+|---|---|
+| MSS fire-rate | 94.5% (1,786 of 1,889 arm-A trades with a resolvable touch) |
+| bars touch → MSS | median 15, mean 18.5 |
+| signed first-leg | median **+0.473R**, mean +0.567R, **75.5% adverse** |
+| win% (fixed-TP basis) | arm A **40.8%** → arm B/B1 26.3%, arm B/B2 **19.9%** |
+| ITT secondary (n=1,889) | −0.451 / −0.593 / −0.649 / −0.757 |
+| ×1.5 spread stress | −0.488 / −0.628 / −0.695 / −0.798 |
+
+Per-year Δ (RUNNER/B2): 2023 −0.814 (n=321) · 2024 −0.873 (n=640) · 2025 −0.724 (n=590) ·
+2026 −0.757 (n=235). Per-symbol Δ: **11/11 negative**, −0.536 (BTCUSD) to −0.932 (USDCAD).
+
+---
+
+### Post-hoc robustness read — the `B1_STOP_CROSSED` exclusion
+
+*Labelled post-hoc; not part of the registered gate. Run as
+`--b2-full`, output `data/results/exp1_mss_ablation/b2_full/pairs.csv`.*
+
+The 328 `B1_STOP_CROSSED` drops are not random: they are cases where price ran through arm
+A's stop before any MSS printed, i.e. arm-A losers. The 431 dropped trades average
+**−0.727R** for arm A, so the paired set is enriched with arm-A winners — arm A reads +0.024R
+on the pairs versus −0.122R on the full 2,217. That inflates arm A's *level*; whether it
+inflated Δ needed testing. B2 requires no stop-crossing test, so it recovers those pairs.
+
+| cell | n | arm A | arm B | **Δ** | CI95 |
+|---|---|---|---|---|---|
+| FIXED / B2 | 2,114 | **−0.127** | −0.595 | **−0.468** | [−0.538, −0.399] |
+| RUNNER / B2 | 2,114 | +0.112 | −0.556 | **−0.668** | [−0.728, −0.610] |
+
+Arm A now reads −0.127R under FIXED, against −0.122R for the full stop-study population —
+the enrichment is gone. Δ shrinks by **+0.160R (FIXED)** and **+0.130R (RUNNER)**, i.e. the
+exclusion inflated the effect by roughly 16–20%. **The verdict is unchanged**: OUTCOME A on
+n=2,114, 11/11 symbols negative (−0.410 to −0.823), every year negative, ×1.5 stress
+identical. The registered figures should be read as the upper end of the effect and the
+B2-full figures as the better estimate of its size.
+
+### The mechanism is *not* the one the hypothesis led with
+
+H1 gave two channels: (a) confirmation surrenders the first leg, worsening realized RR
+against a fixed target; (b) it conditions on "price already moved", which at M5 is largely
+noise. The data separates them, and **(a) is largely falsified as the dominant channel**:
+
+- **B2 freezes RR at exactly 2.0 in both arms by construction.** Risk is re-anchored to
+  1.0×ATR(H1) from arm B's own entry and the target recomputed from it, so "worse realized RR
+  against a fixed target" cannot operate in B2 at all. B2 is nonetheless the **worse** arm
+  (−0.798 vs B1's −0.684 in the gate; −0.668 on the full set). The channel that is switched
+  off is not the channel doing the damage.
+- **On the full set the mean signed first leg is only +0.087R** (median +0.315R, 63.8%
+  adverse) — near-neutral entry displacement — yet Δ = −0.668R. The entry price arm B gets is
+  not, on average, materially worse.
+- **What collapses is the win rate: 35.9% → 20.3% at identical geometry and identical RR.**
+  Breakeven at RR 2.0 is 33.3%, so arm A sits just above it and arm B far below.
+
+The cost therefore survives freezing entry geometry, risk and RR. What remains is *timing*:
+arm B enters a median 15–18 M5 bars later, on a move that has already happened, and wins
+barely half as often at the same odds. That is channel (b) — and it is the same shape as
+Mesfin (2026) arXiv:2605.04004, where a 1-bar entry delay flipped London Signal B from
+T = +5.15 to T = −3.56. Delay at LTF resolution does not tax the edge proportionally; it
+inverts the sign.
+
+### What this establishes, and what it does not
+
+**Establishes.** M5 MSS confirmation on a retest subtracts ≈0.47–0.67R per trade (best
+estimate, full-set B2) from an entry stream that clears costs — decisively, on every symbol,
+in every year, under both exit models, both anchorings, and ×1.5 spreads. The mechanism is
+delay/conditioning, not surrendered RR.
+
+**Does not establish.** That MSS *caused* the OTE / Unicorn / CRT NO-GOs. Those remain
+separate claims about separate rule sets with different zone primitives; this experiment
+raises the posterior but is not a retro-verdict on them. Nor is arm B a tradeable variant —
+it inherits arm A's signal selection by construction (see Occupancy), so its pooled level is
+a per-trade counterfactual only.
+
+**Consequence for the arsenal.** Per the registered Outcome-A band: LTF candidates are
+screened on **entry trigger**, and the confirmation branch is closed absent a new
+mechanically-motivated design with its own pre-registration. The one-pass rule applies — "try
+a different MSS lookback" is not such a design.
+
+**Standing caveats.** Already-seen data (SilverBullet's stop model and exit variant were
+selected on it; the MSS component never was, and Δ is a paired difference in which the
+baseline's selection bias largely cancels — but this is not out-of-sample). STRAT-01: both
+arms run through the offline `replay_managed`, not the live `trade_manager`, so levels are
+upper bounds and the bias largely cancels in Δ. Arm B's market entry has unmodelled
+slippage, biasing Δ *upward* — the Outcome-A result is conservative on that axis.

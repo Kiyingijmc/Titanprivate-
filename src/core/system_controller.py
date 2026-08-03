@@ -12,10 +12,11 @@ import asyncio
 import yaml
 import sys
 import os
+import math
 import subprocess
 import pytz
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from enum import Enum
 from dotenv import load_dotenv
@@ -26,7 +27,7 @@ from src.execution.bridge_zmq import ZMQBridge
 from src.core.data_store import MultiTimeframeStore
 from src.analysis.bias_engine import BiasEngine
 from src.analysis.time_math import TimeNormalizer
-from src.analysis.news_manager import NewsManager
+from src.analysis.news import NewsManager
 from src.analysis.smc_analyzer import SMCAnalyzer
 from src.analysis.signal_grader import SignalGrader
 from src.risk.risk_manager import RiskManager
@@ -41,6 +42,7 @@ from src.core.events import (TickReceived, BarClosed, HeartbeatReceived,
 from src.ops.jsonlog import JsonLogger
 from src.ops.event_journal import EventJournal
 from src.ops.health import HealthProbe, sd_notify
+from src.ops.equity_recorder import EquityRecorder
 from src.features.feature_bus import FeatureBus
 from src.features.packs.smc_pack import register_smc_pack
 from src.arbiter.arbiter import Arbiter
@@ -109,11 +111,21 @@ class SystemController:
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
+        self.live_spreads = {}   # symbol -> ask-bid from the latest TICK (price units)
         self.active_symbols = set()
         
         # REPORTING
-        self.daily_closed_trades = [] 
+        self.daily_closed_trades = []
         self.report_sent_today = False
+        # Edge-triggered per trading day (RS-RISK-01 pattern): the trading-day
+        # key this digest was last sent for, or None. Replaces the old pair of
+        # level-triggered flags (news_digest_sent_today / news_daily_reset_done)
+        # that depended on the main loop observing an exact wall-clock minute --
+        # see _maybe_send_news_digest.
+        self.news_digest_sent_for_key = None
+        self.news_alerts_sent = set()
+        self._news_alert_cache = None
+        self._news_alert_cache_at = None
         
         # Logic Engine Instantiation
         offset = self.config['connection'].get('broker', {}).get('timezone_offset', 2)
@@ -121,7 +133,7 @@ class SystemController:
         
         self.risk_manager = RiskManager(self.config, self.logger)
         self.exposure_manager = ExposureManager(self.config, self.market_data)
-        self.news_manager = NewsManager(self.logger)
+        self.news_manager = NewsManager(self.logger, self.config)
         self.signal_grader = SignalGrader(self.config)
 
         # --- Trading OS B0: bus, structured log, golden tape ---
@@ -170,7 +182,28 @@ class SystemController:
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
-        
+
+        # RISK-01: restore today's drawdown anchor before the first heartbeat.
+        # Without this, every restart re-anchored the 3% breaker to whatever
+        # equity happened to be live at boot, discarding the day's realised
+        # drawdown. An absent or stale row changes nothing here, so boot
+        # restore alone can only KEEP an anchor the old code threw away.
+        #
+        # That is NOT by itself sufficient, and the original design's claim
+        # that the whole change was "strictly monotone" was FALSE (RS-RISK-01
+        # MAJOR-1): safety also depends on the anchor's day being rolled on the
+        # same key the row is stamped with. See _roll_trading_day_if_needed --
+        # without it a stale anchor was re-labelled with the new day's key here
+        # and restored for the rest of that day.
+        self._last_persisted_anchor = None
+        self._restore_daily_anchor_at_boot(datetime.now(self.uganda_tz))
+
+        self.equity_recorder = EquityRecorder(
+            str(self.root_dir / "data/db/titan_core.db"),
+            config=(self.config.get("ops", {}) or {}).get("equity", {}),
+            logger=self.logger,
+        )
+
         self.trade_manager = TradeManager(self.logger, self.state_manager, self.risk_manager,
                                           config=self.config)
         
@@ -190,6 +223,136 @@ class SystemController:
         
         # Default safety
         if not self.active_symbols: self.active_symbols.add("BTCUSD")
+
+    # RISK-01. The daily DD anchor is keyed by TRADING day, not calendar day.
+    # The bot already re-anchors at 23:45 Africa/Kampala (the Uganda report block
+    # in the main loop), so a restore that used a midnight boundary would
+    # disagree with that reset for 15 minutes every night -- long enough for a
+    # restart in that window to resurrect an anchor the reset had superseded.
+    # Shifting the clock forward 15 minutes makes plain strftime roll over at
+    # exactly 23:45.
+    @staticmethod
+    def _trading_day_key(now_uganda):
+        """'%Y-%m-%d' label for the trading day containing `now_uganda`."""
+        return (now_uganda + timedelta(minutes=15)).strftime('%Y-%m-%d')
+
+    def _restore_daily_anchor_at_boot(self, now_uganda):
+        """Restore today's persisted DD anchor. Returns True if one was applied.
+
+        Extracted from __init__ (RS-RISK-01 MEDIUM-8). MAJOR-1 lived inside
+        this block and no test could reach it, because nothing in the suite
+        constructs SystemController through __init__ -- every fixture uses
+        object.__new__ and hand-sets attributes. As a method it is driven by a
+        stub `self`, exactly as _persist_daily_anchor already is, so "known
+        coverage boundary" stops being the resting place for the code that
+        decides whether a safety limit is armed.
+        """
+        self._current_day_key = self._trading_day_key(now_uganda)
+        today_key = self._current_day_key
+
+        # MEDIUM-4: a failed READ must not look like "nothing saved yet".
+        # Both left the fix disabled, but only one is a fault, and the operator
+        # cannot act on a signal that never appears.
+        try:
+            saved = self.state_manager.get_risk_anchor()
+        except Exception as e:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Could not READ the persisted DD anchor ({e!r}). The daily "
+                f"drawdown breaker will anchor from live equity instead, so a "
+                f"restart today re-grants the full allowance. Investigate "
+                f"data/db/trade_state.db.",
+                {"error": repr(e)})
+            return False
+
+        if not saved:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"No persisted DD anchor; anchoring fresh for {today_key}.")
+            return False
+
+        if saved.get('trading_day_key') != today_key:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Persisted anchor is for {saved.get('trading_day_key')}, "
+                f"today is {today_key}; anchoring fresh.")
+            return False
+
+        # MINOR-7: only claim a restore that actually happened. A NULL column
+        # makes restore_daily_anchor a no-op, and the old code still logged
+        # "Restored daily DD anchor 0.00 ... (survived restart)" -- a false
+        # positive in the very log an operator reads to diagnose corruption.
+        self.risk_manager.restore_daily_anchor(saved.get('day_start_equity'))
+        applied = self.risk_manager.day_start_equity
+        if applied <= 0:
+            self.logger.log_event(
+                "RISK", "ANCHOR",
+                f"Persisted anchor for {today_key} was REJECTED as unusable "
+                f"({saved.get('day_start_equity')!r}); anchoring fresh.",
+                {"value": repr(saved.get('day_start_equity'))})
+            return False
+
+        self._last_persisted_anchor = (today_key, applied)
+        self.logger.log_event(
+            "RISK", "ANCHOR",
+            f"Restored daily DD anchor {applied:.2f} for trading day "
+            f"{today_key} (survived restart).")
+        return True
+
+    def _roll_trading_day_if_needed(self, now_uganda):
+        """Edge-triggered trading-day rollover for the DD anchor (RS-RISK-01 MAJOR-1).
+
+        The 23:45 report block re-anchored as a side effect, but it is
+        LEVEL-triggered on a one-minute wall-clock window and the main loop is
+        not always running during that minute -- `_wait_for_bridge_connection`
+        is an unbounded `while True`, so a restart while the EA is down parks
+        the process for hours and resumes on a later day having never observed
+        23:45. The anchor then still belonged to the old day while
+        `_persist_daily_anchor` stamped it with the NEW day's key.
+
+        Rolling on the key itself makes the anchor and the key provably the
+        same boundary, which is what the design claimed but did not achieve.
+        Returns True when a roll happened (for tests and logging).
+        """
+        key = self._trading_day_key(now_uganda)
+        if key == self._current_day_key:
+            return False
+        self.risk_manager.roll_daily_anchor()
+        self._current_day_key = key
+        return True
+
+    def _persist_daily_anchor(self, now_uganda):
+        """Write the DD anchor when it CHANGES (RISK-01).
+
+        Driven from the main loop rather than the HEARTBEAT branch: this is
+        periodic bookkeeping, and _process_incoming_data stays pure
+        data-routing. The loop already holds `now_uganda`, so this adds no
+        extra clock read.
+
+        The loop spins roughly every millisecond, so the (key, equity) cache
+        is what keeps this to a real write twice a day -- once when the boot
+        anchor first appears, once after the 23:45 reset.
+
+        An anchor that is not a usable positive number is skipped rather than
+        written, exactly as RiskManager.restore_daily_anchor skips one: a
+        malformed value must not be able to overwrite a good persisted anchor.
+        """
+        try:
+            equity = float(self.risk_manager.day_start_equity)
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(equity) and equity > 0):
+            return
+        key = self._trading_day_key(now_uganda)
+        if self._last_persisted_anchor == (key, equity):
+            return
+        # MEDIUM-3: cache ONLY on success. Caching unconditionally meant one
+        # transient "database is locked" suppressed every later attempt for
+        # that (key, equity) pair -- RISK-01 silently off for the rest of the
+        # day after a single failed write. Leaving the cache untouched makes
+        # the next loop iteration retry.
+        if self.state_manager.save_risk_anchor(key, equity):
+            self._last_persisted_anchor = (key, equity)
 
     def _load_env(self):
         env_path = self.root_dir / ".env"
@@ -275,8 +438,11 @@ class SystemController:
         await self._wait_for_bridge_connection()
 
         self._init_strategies()
-        await self.news_manager.update_calendar()
-        
+        try:
+            await self.news_manager.update_calendar()
+        except Exception as e:
+            self.logger.log_event("WARN", "NEWS", f"Boot calendar fetch failed: {e}")
+
         for sym in self.active_symbols:
             self.market_data[sym] = MultiTimeframeStore(sym)
 
@@ -321,6 +487,7 @@ class SystemController:
                 # --- A. SYNC GUARD ---
                 if now_ts - self.last_recon_time > self.recon_interval:
                     await self._perform_reconciliation()
+                    self.equity_recorder.prune()
                     self.last_recon_time = now_ts
 
                 # --- B. WATCHDOG ---
@@ -334,7 +501,10 @@ class SystemController:
 
                 # --- C. CONTROL & TELEMETRY ---
                 await self.telemetry.poll_commands()
-                await self._check_news_status() 
+                try:
+                    await self._check_news_status()
+                except Exception as e:
+                    self.logger.log_event("WARN", "NEWS", f"News status check failed: {e}")
 
                 # --- D. DATA INGESTION ---
                 if self.bridge:
@@ -348,13 +518,33 @@ class SystemController:
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
+
+                # RISK-01: roll the DD anchor on the trading-day KEY, before
+                # anything reads it. Edge-triggered, so an outage spanning the
+                # boundary still rolls (the 23:45 window below can be missed
+                # entirely). Anchor only -- the report's range trackers below
+                # must survive to describe the day being reported on.
+                self._roll_trading_day_if_needed(now_uganda)
+
                 if now_uganda.hour == 23 and now_uganda.minute == 45:
                     if not self.report_sent_today:
                         await self._send_detailed_performance_report()
                         self.report_sent_today = True
                         self.risk_manager.reset_daily_metrics()
-                
+
+                await self._maybe_send_news_digest(now_uganda)
+                await self._maybe_send_news_alerts(datetime.now(timezone.utc))
+
                 if now_uganda.hour == 0: self.report_sent_today = False
+
+                # RISK-01: persist LAST (RS-RISK-01 MINOR-6). Running before
+                # the rollover/reset wrote the OLD day's anchor under the NEW
+                # day's key on the first iteration after the boundary -- a real
+                # wrong-day row observed live on 2026-08-01 23:45:00.748.
+                # Kept out of the HEARTBEAT branch on purpose: this is periodic
+                # bookkeeping like the Sync Guard and ghost cleanup above, and
+                # _process_incoming_data must stay pure data-routing.
+                self._persist_daily_anchor(now_uganda)
 
                 # --- G. PULSE SYNC ---
                 # 10s PING to keep connection alive
@@ -395,7 +585,22 @@ class SystemController:
             self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
+    def _news_blocks_symbol(self, symbol):
+        """Per-symbol red-folder gate. Never raises: a news fault must not
+        crash the trade path, so an internal error degrades to 'not blocked'
+        while the global stale-cache guard remains in force."""
+        try:
+            return self.news_manager.check_symbol(symbol)
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Symbol gate failed for {symbol}: {exc}")
+            return False, None
+
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
+        news_blocked, news_reason = self._news_blocks_symbol(symbol)
+        if news_blocked:
+            self.logger.log_event("INFO", "NEWS", f"{symbol} signal skipped: {news_reason}")
+            return
+
         p = self.risk_manager.normalize_price(decision['price'], symbol)
         sl = self.risk_manager.normalize_price(decision['sl'], symbol)
         tp = self.risk_manager.normalize_price(decision['tp'], symbol)
@@ -414,7 +619,17 @@ class SystemController:
         throttle_fn = getattr(getattr(self, 'risk_manager', None), 'throttle_factor', None)
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
-        if lot <= 0: return
+        if lot <= 0:
+            # Fail-safe skip (specs missing, or min-lot risk exceeds the
+            # per-trade budget at this balance). Must be LOUD: a graded,
+            # passing signal that vanishes silently is indistinguishable
+            # from a dead pipeline (cost a live debugging session 2026-08-01
+            # when Gyroscope's first BTCUSD signal was unsizeable at $459).
+            self.logger.log_event(
+                "RISK", "SIZING",
+                f"{symbol} {name} signal skipped: lot=0 "
+                f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
+            return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
         if not allowed:
@@ -688,6 +903,9 @@ class SystemController:
             if not symbol: return
             
             self.live_prices[symbol] = float(msg.get('b', 0))
+            if msg.get('a') is not None:
+                # live spread for strategy screens (Gyroscope max_spread_atr_frac)
+                self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
             if self.state == BotState.ACTIVE:
                 closed_candles = self.market_data[symbol].process_tick(msg)
@@ -709,9 +927,10 @@ class SystemController:
         elif msg_type == 'HEARTBEAT':
             bal = float(msg.get('bal', 0))
             eq = float(msg.get('eq', 0))
-            if eq > 0: 
+            if eq > 0:
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
+                self.equity_recorder.record(bal, eq)
             
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
@@ -782,9 +1001,15 @@ class SystemController:
         try:
             cfg = self.config['connection']['zeromq']
             self.bridge = ZMQBridge(
-                push_port=cfg.get('push_port', 32768), 
-                pull_port=cfg.get('pull_port', 32769), 
-                req_port=32770
+                push_port=cfg.get('push_port', 32768),
+                pull_port=cfg.get('pull_port', 32769),
+                req_port=32770,
+                # SEC-05: config declared connection.zeromq.host all along and
+                # nothing read it, so the sockets bound every interface. Read it
+                # here (loopback if absent) -- this is also the operator's lever
+                # if WSL ever leaves mirrored networking and the EA needs a
+                # routable bind again.
+                host=cfg.get('host', '127.0.0.1')
             )
             return True
         except Exception as e: 
@@ -812,10 +1037,12 @@ class SystemController:
         }
 
     async def _run_strategies(self, symbol, tf_df, tf="M5"):
-        # Only strategies triggered by this timeframe's close; skip the SMC
-        # enrichment entirely when none match (e.g. H1 closes with an M5-only
-        # strategy set, and vice versa).
-        active = [s for s in self.strategies if getattr(s, 'timeframe', 'M5') == tf]
+        # Only strategies triggered by this timeframe's close AND scoped to
+        # this symbol (a strategy with a `pairs` list never sees other
+        # symbols); skip the SMC enrichment entirely when none match.
+        active = [s for s in self.strategies
+                  if getattr(s, 'timeframe', 'M5') == tf
+                  and (getattr(s, 'pairs', None) is None or symbol in s.pairs)]
         if not active:
             return
 
@@ -840,7 +1067,10 @@ class SystemController:
             'bias': bias_str,
             'liquidity': liq,
             'ny_time': self.time_engine.get_current_ny_string(),
-            'smc_df': enriched_df
+            'smc_df': enriched_df,
+            # latest tick spread (price units); None until a two-sided tick
+            # arrives. getattr: legacy __new__ fixtures predate the attr.
+            'spread': getattr(self, 'live_spreads', {}).get(symbol),
         }
 
         # v15.2: strategies submit Intents; the Arbiter resolves conflicts
@@ -869,7 +1099,7 @@ class SystemController:
                     f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
                     payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
                 )
-                if not self.signal_grader.passes(g['grade']):
+                if not self.signal_grader.passes(g['grade'], strat.name):
                     self.logger.log_event("SIGNAL", strat.name,
                                           f"{symbol} skipped: {g['grade']} below floor "
                                           f"{self.signal_grader.min_grade}")
@@ -935,16 +1165,186 @@ class SystemController:
             await asyncio.sleep(0.5)
 
     async def _check_news_status(self):
+        """Global pause is reserved for the ONE genuinely global condition: a
+        calendar too stale to trust. Ordinary red-folder blackouts are applied
+        per symbol in _execute_signal, so a BOE release cannot halt US100."""
         await self.news_manager.update_calendar()
-        blocked, reason = self.news_manager.check_news_block() 
+        blocked, reason = self.news_manager.is_globally_blocked()
         if blocked and self.state == BotState.ACTIVE:
             self.state = BotState.PAUSED
             self._publish(SystemStateChanged(state="PAUSED"))
-            await self.telemetry.send_message(f"🛑 **NEWS BLOCK**: {reason}", parse_mode="Markdown")
+            await self.telemetry.send_message(
+                f"🛑 **NEWS DATA STALE**: {reason}", parse_mode="Markdown")
         elif not blocked and self.state == BotState.PAUSED and not self.is_manual_pause:
             self.state = BotState.ACTIVE
             self._publish(SystemStateChanged(state="ACTIVE"))
-            await self.telemetry.send_message("✅ News Cleared. Resuming.", parse_mode="Markdown")
+            await self.telemetry.send_message(
+                "✅ News calendar refreshed. Resuming.", parse_mode="Markdown")
+
+    def _news_cfg(self):
+        """Total: whatever `config["news"]` holds, this never raises. A
+        misconfigured/scalar value (e.g. `news: "yes"`) degrades to {}
+        rather than blowing up every caller that does `.get(...)` on it."""
+        news = self.config.get("news")
+        return news if isinstance(news, dict) else {}
+
+    def _news_digest_cfg(self):
+        digest = self._news_cfg().get("digest")
+        return digest if isinstance(digest, dict) else {}
+
+    async def _maybe_send_news_digest(self, now_local):
+        """Once-a-day red-folder summary, edge-triggered per TRADING day
+        (RS-RISK-01 pattern reused here -- see `_trading_day_key` /
+        `_roll_trading_day_if_needed`).
+
+        The old gate was LEVEL-triggered on a one-minute wall-clock window
+        (`now.hour == hour and now.minute == minute`). `_wait_for_bridge_
+        connection` is an unbounded `while True`, so the loop can be parked
+        for hours and resume having never observed that minute -- the digest
+        then silently skips the day. Keying on `_trading_day_key` instead and
+        firing once the scheduled time has been REACHED OR PASSED for that
+        key makes a stall recoverable: the very next tick after a stall still
+        sends, whatever time it lands at.
+
+        That recoverability needs a ceiling, or a restart late in the day
+        would Telegram a digest of a day that is basically over. `catch_up_
+        hours` (config, default 3) bounds it: past that many hours since the
+        scheduled time, the key is marked sent WITHOUT sending -- a single
+        INFO log, not a WARN, because skipping a stale digest on purpose is
+        not a failure.
+
+        Never raises -- the main loop's handler re-raises. Every config read
+        (including the int()/float() coercions) lives inside this try: a bad
+        value (null/garbage hour, non-dict news block, ...) must degrade to a
+        WARN log and a skipped send, not an escaped exception -- this
+        coroutine is awaited from the main loop's `except Exception: raise
+        e`, and the bot runs outside systemd, so an escape here is a fatal,
+        non-restarting crash on the next tick."""
+        try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+
+            key = self._trading_day_key(now_local)
+            if self.news_digest_sent_for_key == key:
+                return
+
+            hour = int(cfg.get("hour", 7))
+            minute = int(cfg.get("minute", 0))
+
+            # `scheduled` must be anchored to the CALENDAR DATE the trading
+            # day `key` represents, not to `now_local`'s own calendar date --
+            # `_trading_day_key` rolls over 15 minutes EARLY (23:45 local),
+            # so during 23:45:00-23:59:59 `now_local`'s date is still today
+            # while `key` already names tomorrow. Anchoring to now_local's
+            # date there would make `scheduled` ~17h in the past relative to
+            # a `now_local` that is only minutes into the new key, tripping
+            # the catch-up branch and marking TOMORROW's key sent before
+            # tomorrow's real schedule ever arrives -- under continuous
+            # operation with no stalls at all, the digest would fire once
+            # and then never again (round-2 review finding).
+            key_date = datetime.strptime(key, "%Y-%m-%d").date()
+            scheduled = now_local.replace(
+                year=key_date.year, month=key_date.month, day=key_date.day,
+                hour=hour, minute=minute, second=0, microsecond=0)
+            if now_local < scheduled:
+                return   # not yet time for THIS trading day
+
+            catch_up_hours = float(cfg.get("catch_up_hours", 3))
+            elapsed_hours = (now_local - scheduled).total_seconds() / 3600.0
+            if elapsed_hours > catch_up_hours:
+                self.logger.log_event(
+                    "INFO", "NEWS",
+                    f"Digest for trading day {key} skipped as stale "
+                    f"({elapsed_hours:.1f}h past the {hour:02d}:{minute:02d} "
+                    f"schedule, catch_up_hours={catch_up_hours}).")
+                self.news_digest_sent_for_key = key
+                return
+
+            from src.ops.telegram_format import format_news_digest
+            digest = self.news_manager.digest()
+            await self.telemetry.send_message(format_news_digest(digest), parse_mode="HTML")
+            self.news_digest_sent_for_key = key
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"Digest send failed: {exc}")
+
+    def _alert_marker_pending(self, marker, now_utc):
+        """A marker matters only until its event releases. Never raises: an
+        unparseable marker is treated as resolved and dropped."""
+        try:
+            return datetime.fromisoformat(marker.split("|", 1)[0]) > now_utc
+        except Exception:
+            return False
+
+    async def _maybe_send_news_alerts(self, now_utc):
+        """One heads-up per red-folder event, `alert_lead_min` before it.
+
+        digest() is cached for 30s (keyed on the `now_utc` argument, never a
+        wall clock read here) -- a 15-minute lead window doesn't need
+        millisecond-fresh data, and calling digest() every loop tick was
+        measured to throttle the live loop to ~65-200Hz. The parsed
+        `when_utc` for each cached event is cached alongside it (as
+        `self._news_alert_cache`, a list of `(event, when_dt)` pairs) so
+        `datetime.fromisoformat` also runs once per 30s refresh rather than
+        once per tick per event -- re-parsing unchanged timestamps every
+        tick was the rest of that throttling. An event whose `when_utc`
+        fails to parse is dropped at cache-build time (logged once) instead
+        of being retried every tick.
+
+        Every config read (including the int() coercion) lives inside this
+        try, for the same reason as `_maybe_send_news_digest`: this coroutine
+        is awaited from the main loop's `except Exception: raise e`, and a
+        bad config value escaping here is a fatal, non-restarting crash.
+        """
+        try:
+            if not self._news_cfg().get("enabled", True):
+                return
+            cfg = self._news_digest_cfg()
+            if not cfg.get("enabled", True):
+                return
+            lead = timedelta(minutes=int(cfg.get("alert_lead_min", 15)))
+            from src.ops.telegram_format import format_news_alert
+            if (self._news_alert_cache_at is None
+                    or (now_utc - self._news_alert_cache_at).total_seconds() >= 30):
+                raw_events = (self.news_manager.digest() or {}).get("events") or []
+                parsed = []
+                for event in raw_events:
+                    try:
+                        when = datetime.fromisoformat(event["when_utc"])
+                    except Exception as exc:
+                        self.logger.log_event(
+                            "WARN", "NEWS", f"News alert event failed: {exc}")
+                        continue
+                    parsed.append((event, when))
+                self._news_alert_cache = parsed
+                self._news_alert_cache_at = now_utc
+            events = self._news_alert_cache or []
+            # Markers expire when their event releases -- not on a wall-clock day
+            # boundary. A daily .clear() wiped markers for events still pending across
+            # Kampala midnight (21:00 UTC), re-alerting them once.
+            if self.news_alerts_sent:
+                self.news_alerts_sent = {
+                    m for m in self.news_alerts_sent
+                    if self._alert_marker_pending(m, now_utc)
+                }
+            for event, when in events:
+                # Per-event guard: one bad send must not swallow every other
+                # event's alert this tick.
+                try:
+                    delta = when - now_utc
+                    if not (timedelta(0) < delta <= lead):
+                        continue
+                    marker = f"{event['when_utc']}|{event.get('title', '')}"
+                    if marker in self.news_alerts_sent:
+                        continue
+                    await self.telemetry.send_message(format_news_alert(event), parse_mode="HTML")
+                    self.news_alerts_sent.add(marker)
+                except Exception as exc:
+                    self.logger.log_event("WARN", "NEWS", f"News alert event failed: {exc}")
+        except Exception as exc:
+            self.logger.log_event("WARN", "NEWS", f"News alert failed: {exc}")
 
     def get_status_report(self):
         eq = self.risk_manager.current_equity

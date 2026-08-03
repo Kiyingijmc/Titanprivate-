@@ -1,6 +1,26 @@
 [Unit]
 Description=Titan trading engine (DEMO stage — separate checkout, own ports/DBs)
 After=network-online.target
+# RISK-01 / RS-RISK-01 MEDIUM-5: cap the crash-restart loop. With
+# Restart=on-failure below, an unbounded loop restarts the process
+# indefinitely and hides a hard fault behind an apparently-live unit.
+#
+# The original rationale here -- that each boot re-anchors the daily drawdown
+# breaker -- no longer applies: the anchor is persisted and restored across
+# restarts, and rolls on the trading-day key. The cap now exists for the
+# ordinary reason (do not mask a crash-loop), not for drawdown laundering.
+#
+# COST, and it is real: with RestartSec=10 the budget is exhausted in ~30s and
+# the unit enters `failed` and STAYS there. WatchdogSec=90 trips consume the
+# same budget, so an MT5 flap can do it. For the LIVE unit that means the
+# engine can be down indefinitely holding open positions -- no BE, no
+# partials, no trail, no daily-DD breaker -- so `failed` MUST be alerted.
+# OnFailure below hands that to titan-alert@.service; if you have not
+# installed that unit, external monitoring of `systemctl is-failed` is
+# mandatory before enabling this one.
+StartLimitBurst=3
+StartLimitIntervalSec=300
+OnFailure=titan-alert@%n.service
 
 [Service]
 Type=notify

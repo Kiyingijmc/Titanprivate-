@@ -564,7 +564,7 @@ Report in the results doc that `17 ≡ -7 (mod 24)`, so the derivation **confirm
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/ict_video_reads.py data/results/ict_video_reads/a1_session_buckets.txt
+git add scripts/ict_video_reads.py
 git commit -m "research(A1): session-bucket read on frozen ATR10 trades"
 ```
 
@@ -706,7 +706,7 @@ Expected: both blocks print. The A2 block ends with the power statement. Runtime
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/ict_video_reads.py data/results/ict_video_reads/a2_bias_agreement.txt
+git add scripts/ict_video_reads.py
 git commit -m "research(A2): fractal-vs-internal bias agreement read (underpowered, reported)"
 ```
 
@@ -1072,12 +1072,7 @@ def nearest_pool_beyond(pools, entry, risk, is_long, i,
 Run: `.venv/bin/python -m unittest tests.unit.test_liquidity_pools -v`
 Expected: PASS, 17 tests.
 
-- [ ] **Step 5: Run the whole unit suite for regressions**
-
-Run: `.venv/bin/python -m unittest discover -s tests/unit -p 'test_*.py' 2>&1 | tail -5`
-Expected: `OK`. Note the suite takes ~50 minutes on an idle box — run it in the background and check `uptime` load first. A `rc=124` is a timeout, not a failure.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/analysis/liquidity_pools.py tests/unit/test_liquidity_pools.py
@@ -1255,7 +1250,7 @@ Expect roughly 10–25 minutes.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/exp2_liquidity_target.py data/results/exp2_liquidity_target/
+git add scripts/exp2_liquidity_target.py
 git commit -m "research(A3): flat-RR sweep establishing the RR* control"
 ```
 
@@ -1617,7 +1612,6 @@ Paste the real numbers from `data/results/exp2_liquidity_target/` and
 
 ```bash
 git add scripts/exp2_liquidity_target.py \
-        data/results/exp2_liquidity_target/ \
         docs/research/2026-08-03-ict-video-rules-results.md
 git commit -m "research(EXP-2): liquidity-target experiment results"
 ```

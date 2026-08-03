@@ -390,20 +390,29 @@ describe("OverviewPage domain wiring (fix 3)", () => {
   // Panel in isolation and OverviewPage's own tests never assert WHICH domain
   // is wired to WHICH panel — swapping domain="execution" and domain="market"
   // between "Controls" and "Recent Activity" would pass every existing test.
-  // Each assertion is scoped to its own panel via `heading.closest("[data-domain]")`
-  // (the Card carrying `data-domain` is the nearest such ancestor of its own
-  // CardTitle) so a swap between two panels sharing a domain value (Overview/
-  // Equity both "analytics", Controls/Top Positions both "execution") is still
-  // caught — a bare `[data-domain="analytics"]` count would not catch that.
-  // `getByRole` alone is not enough here: the KPI row (StatTiles, a plain
-  // `Card`, not a `Panel`) has its own tile labelled "Equity", colliding with
-  // the "Equity" Panel's CardTitle. Only `Panel`'s own Card ever carries
-  // `data-domain`, so filtering on that ancestor picks the right heading
-  // without hardcoding the collision.
+  //
+  // `getByRole` alone is not enough: the KPI row (StatTiles' "Equity" tile, a
+  // plain `Card` nested INSIDE the "Overview" Panel) has a CardTitle reading
+  // "Equity" too, colliding with the real "Equity" Panel's CardTitle. That
+  // nested tile has no `data-domain` of its OWN, but `.closest("[data-domain]")`
+  // still finds one by climbing past it to the ANCESTOR "Overview" Panel's
+  // card — so an ancestor-only check silently reads Overview's domain for
+  // "Equity" and passes by coincidence whenever Overview and Equity happen to
+  // share a value (as they do today, both "analytics"). It would not catch a
+  // change to the real Equity Panel's domain, and would fail for the wrong
+  // reason if only Overview's domain changed. Requiring the matched
+  // `[data-domain]` ancestor to be the heading's OWN card — exactly two
+  // levels up, since `CardTitle` (`<h3>`) is a direct child of `CardHeader`,
+  // which is a direct child of `Card` — closes that: the nested StatTiles
+  // tile's own card has no `data-domain`, so it never satisfies the check and
+  // is skipped in favour of the real Panel heading.
   function domainOf(headingName: string): string | null {
     const headings = screen.getAllByRole("heading", { name: headingName });
-    const panelHeading = headings.find((h) => h.closest("[data-domain]") !== null);
-    return panelHeading?.closest("[data-domain]")?.getAttribute("data-domain") ?? null;
+    const panelHeading = headings.find((h) => {
+      const card = h.closest("[data-domain]");
+      return card !== null && card === h.parentElement?.parentElement;
+    });
+    return panelHeading?.parentElement?.parentElement?.getAttribute("data-domain") ?? null;
   }
 
   it("wires each Overview panel to its intended domain", async () => {

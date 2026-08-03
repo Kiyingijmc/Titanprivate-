@@ -32,6 +32,37 @@
   --warning: 36 79% 57%;       /* #E8A33D */
   --info: 212 77% 60%;         /* #4A93E8 */
   --blocked: 251 100% 76%;     /* #9C86FF — distinct from accent via brightness; Plan 2 may refine */
+
+  /* --- Semantic vocabulary (spec 2026-08-03 visual-language-foundation) ---
+     Defined here so sub-projects B (equity chart), C (news) and D (market
+     strip) share ONE vocabulary instead of inventing three. Some of these
+     have no consumer yet; that is intended, not dead code. */
+
+  /* Domain tints: identify a panel's subject at a glance. Used at --tint-weak
+     on a header wash and full strength on a 2px left border. */
+  --domain-risk: 20 70% 55%;
+  --domain-market: 200 70% 55%;
+  --domain-execution: 252 83% 65%;   /* the brand accent — execution IS the product */
+  --domain-analytics: 160 60% 50%;
+  --tint-weak: 0.07;
+  --tint-strong: 0.16;
+
+  /* News impact (red/orange/yellow folder convention).
+     WARNING: --impact-high (hue 10) sits ~12 deg from --loss (hue 358), and
+     that is deliberate — both are red by convention. Colour therefore must
+     NEVER be the only channel: every impact indicator also carries its text
+     label (High/Med/Low), so a red-green colour-blind operator cannot confuse
+     "high-impact release" with "losing money". */
+  --impact-high: 10 85% 56%;
+  --impact-medium: 32 90% 55%;
+  --impact-low: 48 75% 55%;
+
+  /* Drawdown severity, keyed by B to distance from the daily breaker
+     (risk.account.max_daily_dd_pct). Converges on --loss at the severe end so
+     a deep drawdown and a losing P&L read as the same red. */
+  --dd-shallow: 358 40% 55%;
+  --dd-moderate: 358 65% 60%;
+  --dd-severe: 358 84% 64%;
   /* radius / elevation / motion */
   --radius-lg: 10px; --radius-md: 8px; --radius-sm: 6px;
   --shadow-1: 0 1px 2px 0 hsl(225 20% 3% / 0.5);

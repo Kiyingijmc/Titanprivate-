@@ -131,3 +131,49 @@ describe("surface retune (spec §3)", () => {
     expect(contrastRatio(tokenValue("--text-muted"), tokenValue("--surface-1"))).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("semantic colour vocabulary (spec §4-§6)", () => {
+  const TOKENS = [
+    "--domain-risk", "--domain-market", "--domain-execution", "--domain-analytics",
+    "--impact-high", "--impact-medium", "--impact-low",
+    "--dd-shallow", "--dd-moderate", "--dd-severe",
+  ];
+
+  it("defines every semantic token as a bare HSL triple", () => {
+    for (const name of TOKENS) {
+      expect(tokenValue(name), name).toMatch(/^[\d.]+\s+[\d.]+%\s+[\d.]+%$/);
+    }
+  });
+
+  it("BINDS every semantic token to a utility that actually emits css", async () => {
+    // The failure this catches: a token defined in tokens.css but absent from
+    // tailwind.config.ts is valid CSS referenced by nothing — exactly the bug
+    // the GUI motion foundation shipped.
+    const classes = TOKENS.map((t) => `bg-${t.replace(/^--/, "")}`).join(" ");
+    const css = await emittedFor(`<div class="${classes}"></div>`);
+    for (const name of TOKENS) {
+      expect(css, `${name} emits no css — is it bound in tailwind.config.ts?`).toContain(name);
+    }
+  });
+
+  it("keeps the drawdown ramp monotonically more saturated toward severe", () => {
+    const sat = (n: string) => parseFloat(tokenValue(n).split(/\s+/)[1]);
+    expect(sat("--dd-shallow")).toBeLessThan(sat("--dd-moderate"));
+    expect(sat("--dd-moderate")).toBeLessThan(sat("--dd-severe"));
+  });
+
+  it("lands --dd-severe exactly on --loss so the ramp converges on the P&L red", () => {
+    expect(tokenValue("--dd-severe")).toBe(tokenValue("--loss"));
+  });
+
+  it("gives the four domains four distinct hues", () => {
+    const hues = ["--domain-risk", "--domain-market", "--domain-execution", "--domain-analytics"]
+      .map((n) => Number(tokenValue(n).split(/\s+/)[0]));
+    expect(new Set(hues).size).toBe(4);
+  });
+
+  it("exposes the tint alphas as tokens so tint strength is one decision", () => {
+    expect(tokenValue("--tint-weak")).toBe("0.07");
+    expect(tokenValue("--tint-strong")).toBe("0.16");
+  });
+});

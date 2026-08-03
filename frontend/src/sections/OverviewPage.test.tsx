@@ -614,3 +614,26 @@ describe("equity maximize", () => {
     await waitFor(() => expect(button).toHaveFocus());
   });
 });
+
+describe("news maximize", () => {
+  it("keeps exactly one news panel when maximized", async () => {
+    renderOverview({ snapshot: makeSnapshot({ news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} } }) });
+
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Economic Calendar" }));
+
+    expect(await screen.findByRole("dialog", { name: "Economic Calendar" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("news-panel")).toHaveLength(1);
+  });
+
+  // Only one dialog can exist because `maximized` is a single value, so this
+  // guards the structure rather than an interaction: with a modal open, the
+  // other panel's button is not reachable to click in the first place.
+  it("never renders more than one dialog", async () => {
+    renderOverview({ snapshot: makeSnapshot({ news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} } }) });
+    await screen.findByTestId("range-selector");
+
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
+    expect(await screen.findByRole("dialog", { name: "Equity" })).toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+});

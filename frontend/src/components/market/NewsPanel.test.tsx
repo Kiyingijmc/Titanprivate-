@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import { NewsPanel } from "./NewsPanel";
 import type { NewsBlock } from "@/lib/types";
 
@@ -114,5 +115,26 @@ describe("NewsPanel", () => {
     );
     expect(screen.getByText(/Core PCE m\/m/)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Core PCE m\/m/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("NewsPanel maximize affordance", () => {
+  it("renders no maximize control unless onMaximize is provided", () => {
+    render(<NewsPanel data={OK} />);
+    expect(screen.queryByRole("button", { name: /maximize/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a maximize control and calls back", async () => {
+    const onMaximize = vi.fn();
+    render(<NewsPanel data={OK} onMaximize={onMaximize} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Economic Calendar" }));
+    expect(onMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers maximize even in the unavailable state", async () => {
+    const onMaximize = vi.fn();
+    render(<NewsPanel onMaximize={onMaximize} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Economic Calendar" }));
+    expect(onMaximize).toHaveBeenCalledTimes(1);
   });
 });

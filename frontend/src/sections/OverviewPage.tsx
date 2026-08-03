@@ -266,7 +266,13 @@ export default function OverviewPage() {
         <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />
-        <NewsPanel data={snapshot?.news} />
+        {maximized === "news" ? (
+          // Placeholder keeps the grid cell occupied; the live instance lives in
+          // the dialog (spec §6). No data-testid — that must stay single-match.
+          <div className="rounded-lg border border-border bg-surface-1 p-4" aria-hidden />
+        ) : (
+          <NewsPanel data={snapshot?.news} onMaximize={() => setMaximized("news")} />
+        )}
       </div>
 
       <Panel status={baseStatus} title="Overview">
@@ -332,6 +338,16 @@ export default function OverviewPage() {
         title="Equity"
       >
         <EquityPanelBody {...equityBodyProps} fill />
+      </MaximizedDialog>
+
+      <MaximizedDialog
+        open={maximized === "news"}
+        onOpenChange={(open) => setMaximized(open ? "news" : null)}
+        title="Economic Calendar"
+      >
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <NewsPanel data={snapshot?.news} />
+        </div>
       </MaximizedDialog>
     </div>
   );

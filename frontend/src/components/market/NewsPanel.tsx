@@ -1,11 +1,20 @@
 import { Calendar } from "lucide-react";
+import { MaximizeButton } from "@/components/shell/MaximizeButton";
 import type { NewsBlock, NewsTodayEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Economic calendar widget: next high-impact release, symbols it affects,
  * and any symbols currently news-blocked. Deliberately uses warning/muted
  * tokens (NOT profit/loss tones) — this is calendar risk, not P&L. */
-export function NewsPanel({ data, className }: { data?: NewsBlock; className?: string }) {
+export function NewsPanel({
+  data,
+  className,
+  onMaximize,
+}: {
+  data?: NewsBlock;
+  className?: string;
+  onMaximize?: () => void;
+}) {
   if (!data || data.status === "unavailable") {
     return (
       <div
@@ -15,7 +24,7 @@ export function NewsPanel({ data, className }: { data?: NewsBlock; className?: s
           className
         )}
       >
-        <Header status={data?.status} />
+        <Header status={data?.status} onMaximize={onMaximize} />
         <div
           data-testid="news-panel-empty"
           className="flex flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-6 text-center"
@@ -42,7 +51,7 @@ export function NewsPanel({ data, className }: { data?: NewsBlock; className?: s
         className
       )}
     >
-      <Header status={data.status} cacheAgeMin={data.cache_age_min} />
+      <Header status={data.status} cacheAgeMin={data.cache_age_min} onMaximize={onMaximize} />
 
       {data.status === "stale" && (
         <div
@@ -148,22 +157,33 @@ function TodayRow({ event }: { event: NewsTodayEvent }) {
   );
 }
 
-function Header({ status, cacheAgeMin }: { status?: NewsBlock["status"]; cacheAgeMin?: number | null }) {
+function Header({
+  status,
+  cacheAgeMin,
+  onMaximize,
+}: {
+  status?: NewsBlock["status"];
+  cacheAgeMin?: number | null;
+  onMaximize?: () => void;
+}) {
   return (
     <div className="flex items-center justify-between gap-2">
       <h3 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Calendar className="size-3.5" aria-hidden />
         Economic Calendar
       </h3>
-      {status === "degraded" ? (
-        <span className="rounded-full border border-warning/40 bg-warning/15 px-2 py-0.5 text-xs font-medium text-warning">
-          degraded
-        </span>
-      ) : status === "ok" && cacheAgeMin != null ? (
-        <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted-foreground">
-          {cacheAgeMin}m old
-        </span>
-      ) : null}
+      <div className="flex items-center gap-1.5">
+        {status === "degraded" ? (
+          <span className="rounded-full border border-warning/40 bg-warning/15 px-2 py-0.5 text-xs font-medium text-warning">
+            degraded
+          </span>
+        ) : status === "ok" && cacheAgeMin != null ? (
+          <span className="rounded-full border border-border bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted-foreground">
+            {cacheAgeMin}m old
+          </span>
+        ) : null}
+        {onMaximize && <MaximizeButton title="Economic Calendar" onClick={onMaximize} />}
+      </div>
     </div>
   );
 }

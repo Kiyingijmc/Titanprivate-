@@ -32,12 +32,6 @@ function makeSeriesWithDrawdown(depth: number, range: RangeName = "1d"): EquityS
   } as unknown as EquitySeries;
 }
 
-// makeSeriesWithDrawdown has no caller in this task — Task 4 is its first
-// consumer. This line is temporary scaffolding so noUnusedLocals doesn't
-// fail the build while the fixture is added ahead of need, per the plan's
-// "add both fixtures once, at Task 3" instruction; delete it when Task 4 lands.
-void makeSeriesWithDrawdown;
-
 describe("EquitySparkline", () => {
   it("renders a 'No data yet' empty state when points is empty", () => {
     render(<EquitySparkline points={[]} />);
@@ -240,6 +234,55 @@ describe("EquitySparkline", () => {
     };
     render(<EquitySparkline points={[]} series={series as never} width={400} height={200} />);
     expect(screen.getByTestId("equity-delta-basis")).toHaveTextContent("4h");
+  });
+});
+
+describe("underwater pane (spec §4, §6)", () => {
+  it("renders no underwater pane when collapsed", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="underwater-pane"]')).toBeNull();
+  });
+
+  it("renders the underwater pane when expanded", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="underwater-pane"]')).not.toBeNull();
+  });
+
+  it("still mounts exactly one equity-sparkline root when expanded", () => {
+    // The single-instance invariant from sub-project A: a second mounted chart
+    // makes getByTestId throw across unrelated suites and doubles live chart
+    // work every heartbeat. Two panes inside ONE component is the requirement.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelectorAll('[data-testid="equity-sparkline"]').length).toBe(1);
+  });
+
+  it("keeps drawing drawdown in the collapsed single pane", () => {
+    // Collapsed must not silently lose the drawdown area when the expanded path
+    // takes it over. Two areas = equity + drawdown.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelectorAll(".recharts-area").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("draws drawdown exactly once when expanded — moved, not duplicated", () => {
+    // Guards the failure this split invites: rendering the drawdown area in the
+    // equity pane AND the underwater pane, which double-paints it and makes the
+    // legend describe two things that look like one.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    const underwater = container.querySelector('[data-testid="underwater-pane"]')!;
+    expect(underwater.querySelectorAll(".recharts-area").length).toBe(1);
+    // The equity pane keeps only its own equity area.
+    const total = container.querySelectorAll(".recharts-area").length;
+    expect(total).toBe(2);
   });
 });
 

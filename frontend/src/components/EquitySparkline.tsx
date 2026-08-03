@@ -65,12 +65,11 @@ export function EquitySparkline({
   /** Today's breaker inputs. Absent until the risk block loads. */
   risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
-  // Consumed by Tasks 4-7; referenced here so the plumbing task type-checks.
-  void expanded;
+  // Consumed by Tasks 5-7; referenced here so the plumbing task type-checks.
   void risk;
 
   if (series) {
-    return <SeriesChart series={series} width={width} height={height} />;
+    return <SeriesChart series={series} width={width} height={height} expanded={expanded} />;
   }
 
   if (points.length === 0) {
@@ -166,10 +165,12 @@ function SeriesChart({
   series,
   width,
   height,
+  expanded,
 }: {
   series: EquitySeries;
   width: number | string;
   height: number | string;
+  expanded: boolean;
 }) {
   const rows = toChartRows(series);
 
@@ -217,6 +218,20 @@ function SeriesChart({
   const delta = last - first;
   const up = delta >= 0;
 
+  // The underwater pane takes a fixed share of the expanded height. Recharts'
+  // <ResponsiveContainer> only trusts a NUMERIC height as-is; a "100%" string
+  // is resolved by measuring the DOM container instead, via
+  // getBoundingClientRect() — which jsdom hard-codes to a zero rect (it does
+  // no real layout), so both panes would mount empty in tests. When the
+  // caller passes a literal pixel `height` (every test, and any real caller
+  // that already knows its own box), split it in JS so both panes get real
+  // numbers. When `height` is itself a CSS percentage (the maximized-dialog
+  // case in production), fall back to a flex/percentage split, which resolves
+  // fine under actual browser layout.
+  const numericTotal = expanded && typeof height === "number" ? height : undefined;
+  const underwaterHeight = numericTotal !== undefined ? Math.max(70, Math.round(numericTotal * 0.26)) : "100%";
+  const mainHeight = numericTotal !== undefined ? numericTotal - (underwaterHeight as number) : "100%";
+
   return (
     <div
       data-testid="equity-sparkline"
@@ -235,92 +250,153 @@ function SeriesChart({
           {series.range}
         </span>
       </div>
-      <ResponsiveContainer width={width} height={height}>
-        {/* ComposedChart, not AreaChart: recharts' AreaChart only recognizes
-            Area as a graphical child, so the balance Line below silently fails
-            to render inside it (0 recharts-line nodes in the DOM, no error).
-            ComposedChart supports mixing Area/Line/Bar/Scatter and renders
-            both series correctly. */}
-        <ComposedChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
-          <defs>
-            <linearGradient id="equity-series-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
-          <XAxis
-            dataKey="ts"
-            type="number"
-            domain={["dataMin", "dataMax"]}
-            scale="time"
-            stroke="hsl(var(--text-muted))"
-            tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v: number) => formatTick(v, series.range)}
-          />
-          <YAxis
-            yAxisId="equity"
-            domain={[min - pad, max + pad]}
-            stroke="hsl(var(--text-muted))"
-            tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            width={52}
-            tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
-          />
-          <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />
-          <Tooltip
-            cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
-            contentStyle={{
-              background: "hsl(var(--elevated))",
-              border: "1px solid hsl(var(--border-strong))",
-              borderRadius: 8,
-              color: "hsl(var(--foreground))",
-              fontSize: 12,
-            }}
-            isAnimationActive={false}
-            labelFormatter={(v: number) => formatTick(v, series.range)}
-            formatter={(v: number, name: string) => [
-              money(v),
-              name === "equity" ? "Equity" : name === "balance" ? "Balance" : "Drawdown",
-            ] as [string, string]}
-          />
-          <Area
-            yAxisId="dd"
-            type="monotone"
-            dataKey="drawdown"
-            stroke="none"
-            fill="hsl(var(--loss))"
-            fillOpacity={0.18}
-            dot={false}
-            isAnimationActive={false}
-            activeDot={false}
-          />
-          <Line
-            yAxisId="equity"
-            type="monotone"
-            dataKey="balance"
-            stroke="hsl(var(--text-muted))"
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-            activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
-          />
-          <Area
-            yAxisId="equity"
-            type="monotone"
-            dataKey="equity"
-            stroke="hsl(var(--accent))"
-            strokeWidth={2}
-            fill="url(#equity-series-fill)"
-            dot={false}
-            isAnimationActive={false}
-            activeDot={{ r: 3.5, fill: "hsl(var(--accent))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
+      <div className={cn("flex flex-col", expanded && "h-full")}>
+        <div className={cn(expanded ? "min-h-0 flex-1" : "contents")}>
+          <ResponsiveContainer width={width} height={expanded ? mainHeight : height}>
+            {/* ComposedChart, not AreaChart: recharts' AreaChart only recognizes
+                Area as a graphical child, so the balance Line below silently fails
+                to render inside it (0 recharts-line nodes in the DOM, no error).
+                ComposedChart supports mixing Area/Line/Bar/Scatter and renders
+                both series correctly. */}
+            <ComposedChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="equity-series-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
+              <XAxis
+                dataKey="ts"
+                type="number"
+                domain={["dataMin", "dataMax"]}
+                scale="time"
+                stroke="hsl(var(--text-muted))"
+                tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v: number) => formatTick(v, series.range)}
+              />
+              <YAxis
+                yAxisId="equity"
+                domain={[min - pad, max + pad]}
+                stroke="hsl(var(--text-muted))"
+                tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                width={52}
+                tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
+              />
+              {!expanded && <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />}
+              <Tooltip
+                cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
+                contentStyle={{
+                  background: "hsl(var(--elevated))",
+                  border: "1px solid hsl(var(--border-strong))",
+                  borderRadius: 8,
+                  color: "hsl(var(--foreground))",
+                  fontSize: 12,
+                }}
+                isAnimationActive={false}
+                labelFormatter={(v: number) => formatTick(v, series.range)}
+                formatter={(v: number, name: string) => [
+                  money(v),
+                  name === "equity" ? "Equity" : name === "balance" ? "Balance" : "Drawdown",
+                ] as [string, string]}
+              />
+              {!expanded && (
+                <Area
+                  yAxisId="dd"
+                  type="monotone"
+                  dataKey="drawdown"
+                  stroke="none"
+                  fill="hsl(var(--loss))"
+                  fillOpacity={0.18}
+                  dot={false}
+                  isAnimationActive={false}
+                  activeDot={false}
+                />
+              )}
+              <Line
+                yAxisId="equity"
+                type="monotone"
+                dataKey="balance"
+                stroke="hsl(var(--text-muted))"
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+                activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
+              />
+              <Area
+                yAxisId="equity"
+                type="monotone"
+                dataKey="equity"
+                stroke="hsl(var(--accent))"
+                strokeWidth={2}
+                fill="url(#equity-series-fill)"
+                dot={false}
+                isAnimationActive={false}
+                activeDot={{ r: 3.5, fill: "hsl(var(--accent))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        {expanded && (
+          <div
+            data-testid="underwater-pane"
+            className="h-[26%] min-h-[70px]"
+            style={numericTotal !== undefined ? { height: underwaterHeight as number } : undefined}
+          >
+            <ResponsiveContainer width={width} height={underwaterHeight}>
+              <ComposedChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
+                <XAxis
+                  dataKey="ts"
+                  type="number"
+                  domain={["dataMin", "dataMax"]}
+                  scale="time"
+                  hide
+                />
+                <YAxis
+                  yAxisId="dd"
+                  domain={[ddFloor, 0]}
+                  stroke="hsl(var(--text-muted))"
+                  tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                  tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
+                />
+                <Tooltip
+                  cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
+                  contentStyle={{
+                    background: "hsl(var(--elevated))",
+                    border: "1px solid hsl(var(--border-strong))",
+                    borderRadius: 8,
+                    color: "hsl(var(--foreground))",
+                    fontSize: 12,
+                  }}
+                  isAnimationActive={false}
+                  labelFormatter={(v: number) => formatTick(v, series.range)}
+                  formatter={(v: number) => [money(v), "Drawdown"] as [string, string]}
+                />
+                <Area
+                  yAxisId="dd"
+                  type="monotone"
+                  dataKey="drawdown"
+                  stroke="none"
+                  fill="hsl(var(--loss))"
+                  fillOpacity={0.18}
+                  dot={false}
+                  isAnimationActive={false}
+                  activeDot={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

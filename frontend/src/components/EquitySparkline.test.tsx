@@ -456,3 +456,43 @@ describe("high-water mark line (spec §5)", () => {
   });
 
 });
+
+describe("daily breaker line (spec §7)", () => {
+  const risk = { day_anchor: 1000, max_daily_dd_pct: 3 };
+
+  it("draws the breaker on an intraday range", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} risk={risk} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).not.toBeNull();
+  });
+
+  it("omits the breaker on a multi-day range", () => {
+    // day_anchor is TODAY-only and no historical anchors are stored, so a line
+    // spanning past days would be read against a threshold never in force then.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1w")} risk={risk} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  it("omits the breaker when the anchor has not been set yet", () => {
+    const { container } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1d")}
+        risk={{ day_anchor: 0, max_daily_dd_pct: 3 }}
+        width={400}
+        height={200}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  it("omits the breaker when no risk block has loaded", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+});

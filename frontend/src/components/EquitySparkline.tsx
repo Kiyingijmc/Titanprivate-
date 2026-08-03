@@ -13,8 +13,8 @@ import {
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
-import { drawdownSeverity, DD_FILL } from "@/lib/equityChartPolicy";
-import type { EquitySeries } from "@/lib/types";
+import { drawdownSeverity, DD_FILL, showsBreakerLine, breakerLevel } from "@/lib/equityChartPolicy";
+import type { EquitySeries, RangeName } from "@/lib/types";
 
 /**
  * A point in the legacy live-tail buffer. `t` is a monotonic SAMPLE COUNTER,
@@ -238,6 +238,11 @@ function SeriesChart({
   );
   const ddFill = DD_FILL[ddSeverity];
 
+  // Daily breaker line: drawn only on intraday ranges, and null when uncomputable.
+  const breakerY = showsBreakerLine(series.range as RangeName)
+    ? breakerLevel(risk?.day_anchor ?? 0, risk?.max_daily_dd_pct ?? 0)
+    : null;
+
   const last = equityValues[equityValues.length - 1] ?? 0;
   const first = equityValues[0] ?? last;
   const delta = last - first;
@@ -327,6 +332,22 @@ function SeriesChart({
                 tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
               />
               {!expanded && <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />}
+              {breakerY !== null && (
+                <ReferenceLine
+                  yAxisId="equity"
+                  y={breakerY}
+                  stroke="hsl(var(--loss))"
+                  strokeDasharray="6 4"
+                  strokeOpacity={0.8}
+                  ifOverflow="extendDomain"
+                  label={{
+                    value: "daily breaker",
+                    position: "insideBottomLeft",
+                    fill: "hsl(var(--loss))",
+                    fontSize: 10,
+                  }}
+                />
+              )}
               <Tooltip
                 cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
                 contentStyle={{
@@ -396,6 +417,11 @@ function SeriesChart({
               />
             </ComposedChart>
           </ResponsiveContainer>
+          {breakerY !== null && (
+            <span data-testid="breaker-line" className="sr-only">
+              Daily breaker at {money(breakerY)}
+            </span>
+          )}
         </div>
 
         {expanded && (

@@ -146,6 +146,89 @@ def infer_shift_verified():
     return infer_ny_shift(_week_open_hours(t)), per_year
 
 
+def _bias_levels_by_symbol(syms):
+    """Per-symbol H1 bias at two lookbacks from ONE algorithm.
+
+    fractal  = structure_bias(lk=5)
+    internal = structure_bias(lk=2)
+
+    Returns {sym: (h1_times, fractal_list, internal_list)}. The rig's existing
+    `bias` column is BiasEngine's 5-bar fractal - a DIFFERENT algorithm - so it
+    is never mixed into the comparison.
+    """
+    from src.analysis.ict_structure import structure_bias
+    out = {}
+    for sym in syms:
+        path = f"data/history/{sym}_M5.csv"
+        if not os.path.exists(path):
+            continue
+        df = pd.read_csv(path)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        h1 = (df.set_index("datetime")
+                .resample("1h").agg({"open": "first", "high": "max",
+                                     "low": "min", "close": "last"})
+                .dropna().reset_index())
+        highs = list(h1["high"].values)
+        lows = list(h1["low"].values)
+        out[sym] = (h1["datetime"].values,
+                    structure_bias(highs, lows, lk=5),
+                    structure_bias(highs, lows, lk=2))
+    return out
+
+
+def a2_bias_agreement(rows, out):
+    import numpy as np
+    p = out.append
+    p("=" * 78)
+    p("A2 -- FRACTAL vs INTERNAL BIAS AGREEMENT (Rule 1).")
+    p("REPORTED ONLY -- THIS READ CANNOT CARRY A VERDICT.")
+    p("=" * 78)
+    p("Both levels come from ict_structure.structure_bias: fractal lk=5,")
+    p("internal lk=2. The rig's own `bias` column is BiasEngine (a different")
+    p("algorithm) and is shown as context only, never mixed in.")
+    p("")
+
+    syms = sorted({t["sym"] for t in rows})
+    levels = _bias_levels_by_symbol(syms)
+
+    for t in rows:
+        t["_fractal"] = t["_internal"] = "NEUTRAL"
+        lv = levels.get(t["sym"])
+        if lv is None:
+            continue
+        h1_times, frac, intr = lv
+        k = int(np.searchsorted(h1_times, t["time"].to_datetime64())) - 1
+        if 0 <= k < len(frac):
+            t["_fractal"], t["_internal"] = frac[k], intr[k]
+
+    pooled = _stat(rows)
+    agree = [t for t in rows
+             if t["_fractal"] == t["_internal"] and t["_fractal"] != "NEUTRAL"]
+    disagree = [t for t in rows if t["_fractal"] != t["_internal"]]
+    aligned = [t for t in agree
+               if (t["dir"] == "BUY" and t["_fractal"] == "BULLISH")
+               or (t["dir"] == "SELL" and t["_fractal"] == "BEARISH")]
+
+    for label, sub in [("POOLED", rows), ("AGREE (non-neutral)", agree),
+                       ("DISAGREE", disagree), ("AGREE + trade aligned", aligned)]:
+        s = _stat(sub)
+        if s is None:
+            p(f"  {label:24} n=0")
+            continue
+        p(f"  {label:24} n={s['n']:5d}  exp={s['exp']:+.3f}R  "
+          f"win={s['win']:4.1f}% CI[{s['lo']:.0f}-{s['hi']:.0f}]")
+
+    p("")
+    p("POWER STATEMENT (declared before the run):")
+    p(f"  pooled n={pooled['n']}, agreement subset n={len(agree)}, "
+      f"aligned subset n={len(aligned)}.")
+    p("  Against a +0.109R base these subsets cannot resolve an increment of")
+    p("  the size the grading layer earns (+0.028R). This read is recorded as")
+    p("  an OBSERVATION that may motivate a later powered test. It is NOT a")
+    p("  gate and no GO/NO-GO may be drawn from it.")
+    p("")
+
+
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
     rows = load_atr10()
@@ -158,6 +241,13 @@ def main():
     print(text)
     with open(f"{OUTDIR}/a1_session_buckets.txt", "w") as f:
         f.write(text + "\n")
+
+    out2 = []
+    a2_bias_agreement(rows, out2)
+    text2 = "\n".join(out2)
+    print(text2)
+    with open(f"{OUTDIR}/a2_bias_agreement.txt", "w") as f:
+        f.write(text2 + "\n")
 
 
 if __name__ == "__main__":

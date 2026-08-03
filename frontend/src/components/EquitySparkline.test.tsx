@@ -378,6 +378,10 @@ describe("expanded + risk props (B1 plumbing)", () => {
       plain.querySelectorAll(".recharts-area").length,
     );
     expect(plain.querySelectorAll(".recharts-area").length).toBeGreaterThan(0);
+    // `.recharts-area` counts area fills only, so it structurally cannot see a
+    // <ReferenceLine> — it would stay identical even if a breaker line leaked
+    // into the collapsed card. Assert directly on the marker that names it.
+    expect(withProps.querySelector('[data-testid="breaker-line"]')).toBeNull();
   });
 });
 
@@ -460,38 +464,65 @@ describe("high-water mark line (spec §5)", () => {
 describe("daily breaker line (spec §7)", () => {
   const risk = { day_anchor: 1000, max_daily_dd_pct: 3 };
 
-  it("draws the breaker on an intraday range", () => {
-    const { container } = render(
-      <EquitySparkline points={[]} series={makeSeries("1d")} risk={risk} width={400} height={200} />,
-    );
-    expect(container.querySelector('[data-testid="breaker-line"]')).not.toBeNull();
-  });
-
-  it("omits the breaker on a multi-day range", () => {
-    // day_anchor is TODAY-only and no historical anchors are stored, so a line
-    // spanning past days would be read against a threshold never in force then.
-    const { container } = render(
-      <EquitySparkline points={[]} series={makeSeries("1w")} risk={risk} width={400} height={200} />,
-    );
-    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
-  });
-
-  it("omits the breaker when the anchor has not been set yet", () => {
+  it("draws the breaker on an intraday range (expanded)", () => {
     const { container } = render(
       <EquitySparkline
         points={[]}
         series={makeSeries("1d")}
-        risk={{ day_anchor: 0, max_daily_dd_pct: 3 }}
+        risk={risk}
+        expanded
         width={400}
-        height={200}
+        height={400}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).not.toBeNull();
+  });
+
+  it("omits the breaker on a multi-day range (expanded)", () => {
+    // day_anchor is TODAY-only and no historical anchors are stored, so a line
+    // spanning past days would be read against a threshold never in force then.
+    const { container } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1w")}
+        risk={risk}
+        expanded
+        width={400}
+        height={400}
       />,
     );
     expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
   });
 
-  it("omits the breaker when no risk block has loaded", () => {
+  it("omits the breaker when the anchor has not been set yet (expanded)", () => {
     const { container } = render(
-      <EquitySparkline points={[]} series={makeSeries("1d")} width={400} height={200} />,
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1d")}
+        risk={{ day_anchor: 0, max_daily_dd_pct: 3 }}
+        expanded
+        width={400}
+        height={400}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  it("omits the breaker when no risk block has loaded (expanded)", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  // The regression this whole describe block exists to prevent: every case
+  // above renders `expanded`, which alone could let an un-gated `breakerY`
+  // computation slip back in unnoticed (spec §9: the breaker is expanded-only
+  // — collapsed must NEVER show it, and it renders unlabeled there since the
+  // legend that names it is also expanded-gated).
+  it("omits the breaker in the COLLAPSED card even on an intraday range with a populated risk block", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} risk={risk} width={400} height={200} />,
     );
     expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
   });

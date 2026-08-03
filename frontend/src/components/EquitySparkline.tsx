@@ -239,8 +239,10 @@ function SeriesChart({
   );
   const ddFill = DD_FILL[ddSeverity];
 
-  // Daily breaker line: drawn only on intraday ranges, and null when uncomputable.
-  const breakerY = showsBreakerLine(series.range as RangeName)
+  // Daily breaker line: expanded view only (spec §9 — collapsed never shows
+  // it, and the legend that names it is itself expanded-only), drawn only on
+  // intraday ranges, and null when uncomputable.
+  const breakerY = expanded && showsBreakerLine(series.range as RangeName)
     ? breakerLevel(risk?.day_anchor ?? 0, risk?.max_daily_dd_pct ?? 0)
     : null;
 

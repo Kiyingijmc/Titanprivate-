@@ -166,8 +166,12 @@ def stop_price(sig, model):
     return (e + d) if sig["dir"] == "SELL" else (e - d)
 
 
-def resolve(signals, bars, model):
-    """Fixed-TP resolution, one open per symbol, limit fill within TTL."""
+def resolve(signals, bars, model, rr=RR):
+    """Fixed-TP resolution, one open per symbol, limit fill within TTL.
+
+    `rr` is the reward multiple for the take-profit. Defaults to the module
+    constant so existing callers are unaffected; the A3 sweep varies it.
+    """
     highs, lows = bars["high"], bars["low"]
     n = len(highs)
     trades = []
@@ -181,7 +185,7 @@ def resolve(signals, bars, model):
         if risk <= 0:
             continue
         is_long = sig["dir"] == "BUY"
-        tp = entry + RR * risk if is_long else entry - RR * risk
+        tp = entry + rr * risk if is_long else entry - rr * risk
 
         # limit fill: bar range touches entry within TTL (bars after signal bar)
         fill = None
@@ -201,7 +205,7 @@ def resolve(signals, bars, model):
                 outcome, r, exit_k = "SL", -1.0, k
                 break
             if tp_hit:
-                outcome, r, exit_k = "TP", RR, k
+                outcome, r, exit_k = "TP", rr, k
                 break
         busy_until = exit_k
         if outcome in ("SL", "TP"):

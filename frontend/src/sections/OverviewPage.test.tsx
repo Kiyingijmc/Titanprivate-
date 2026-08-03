@@ -628,12 +628,32 @@ describe("news maximize", () => {
   // Only one dialog can exist because `maximized` is a single value, so this
   // guards the structure rather than an interaction: with a modal open, the
   // other panel's button is not reachable to click in the first place.
-  it("never renders more than one dialog", async () => {
+  it("opening Equity yields exactly one dialog", async () => {
     renderOverview({ snapshot: makeSnapshot({ news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} } }) });
     await screen.findByTestId("range-selector");
 
     await userEvent.click(screen.getByRole("button", { name: "Maximize Equity" }));
     expect(await screen.findByRole("dialog", { name: "Equity" })).toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  });
+
+  // Mirror image of the equity focus-restore test above. `NewsPanel` (and its
+  // MaximizeButton) is UNMOUNTED entirely while the news dialog is open — see
+  // the `maximized === "news"` placeholder branch in OverviewPage — so the
+  // button's DOM node is gone before Radix's FocusScope snapshots
+  // `document.activeElement`, unlike the Equity path where `Panel` keeps its
+  // header (and the button) mounted throughout. This must query the button
+  // FRESH after close: the pre-open node is stale once NewsPanel remounts.
+  it("closes on Escape and returns focus to the maximize button (news)", async () => {
+    renderOverview({ snapshot: makeSnapshot({ news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} } }) });
+
+    await userEvent.click(screen.getByRole("button", { name: "Maximize Economic Calendar" }));
+    await screen.findByRole("dialog", { name: "Economic Calendar" });
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    const button = await screen.findByRole("button", { name: "Maximize Economic Calendar" });
+    await waitFor(() => expect(button).toHaveFocus());
   });
 });

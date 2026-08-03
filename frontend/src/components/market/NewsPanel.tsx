@@ -10,10 +10,17 @@ export function NewsPanel({
   data,
   className,
   onMaximize,
+  hideHeader,
 }: {
   data?: NewsBlock;
   className?: string;
   onMaximize?: () => void;
+  /** Suppresses this panel's own "Economic Calendar" header. Used ONLY by the
+   *  maximized-dialog call site, which already renders a `DialogTitle` with
+   *  the same text — without this, the dialog shows two identical headings.
+   *  The collapsed card always passes this as falsy/omitted, so its header
+   *  (including the maximize button and status badge) is unaffected. */
+  hideHeader?: boolean;
 }) {
   if (!data || data.status === "unavailable") {
     return (
@@ -24,7 +31,7 @@ export function NewsPanel({
           className
         )}
       >
-        <Header status={data?.status} onMaximize={onMaximize} />
+        {!hideHeader && <Header status={data?.status} onMaximize={onMaximize} />}
         <div
           data-testid="news-panel-empty"
           className="flex flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-6 text-center"
@@ -51,7 +58,9 @@ export function NewsPanel({
         className
       )}
     >
-      <Header status={data.status} cacheAgeMin={data.cache_age_min} onMaximize={onMaximize} />
+      {!hideHeader && (
+        <Header status={data.status} cacheAgeMin={data.cache_age_min} onMaximize={onMaximize} />
+      )}
 
       {data.status === "stale" && (
         <div

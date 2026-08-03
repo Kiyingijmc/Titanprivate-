@@ -37,21 +37,36 @@ import { cn } from "@/lib/utils";
  * dispatches the mount-autofocus event, and only afterward — gated on the
  * event not being defaultPrevented — calls `focusFirst` to steal focus into
  * the content). So `document.activeElement` inside this handler is still the
- * real trigger. `onCloseAutoFocus` then `preventDefault()`s Radix's own
- * (trigger-less) restoration and focuses that snapshot instead.
+ * real trigger — USUALLY. Some callers (the news dialog) unmount their
+ * trigger's whole subtree while the dialog is open, so the button's DOM node
+ * can be destroyed before this snapshot is even read back on close (a
+ * passive-effect vs. mutation-phase ordering issue, not something this
+ * component controls). So the snapshot alone is not trustworthy at close
+ * time: `onCloseAutoFocus` revalidates it and falls back in this order:
+ *   1. the snapshot, if it is still a connected, non-`<body>` element;
+ *   2. otherwise the trigger re-located by its accessible name (`triggerLabel`,
+ *      which MUST match the `MaximizeButton`'s `aria-label`) — this is what
+ *      saves the news dialog, whose trigger remounts under a NEW DOM node
+ *      once `NewsPanel` comes back after the placeholder branch;
+ *   3. otherwise `preventDefault()` is NOT called at all, so Radix's own
+ *      (trigger-less, falls back to `<body>`) restoration proceeds instead of
+ *      this component silently focusing nothing.
  */
 export function MaximizedDialog({
   open,
   onOpenChange,
   title,
   children,
-  className,
+  triggerLabel,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: React.ReactNode;
-  className?: string;
+  /** Accessible name of the button that opens this dialog (its `aria-label`,
+   *  e.g. `Maximize ${title}`). Used to relocate the trigger on close when the
+   *  original snapshot is gone — see the focus-restoration note above. */
+  triggerLabel?: string;
 }) {
   const triggerRef = React.useRef<HTMLElement | null>(null);
 
@@ -60,17 +75,29 @@ export function MaximizedDialog({
       <DialogContent
         className={cn(
           "flex max-w-none flex-col gap-3",
-          "h-[85vh] w-[95vw] md:h-[75vh] md:w-[75vw]",
-          className
+          "h-[85vh] w-[95vw] md:h-[75vh] md:w-[75vw]"
         )}
+        aria-describedby={undefined}
         onOpenAutoFocus={() => {
           triggerRef.current = document.activeElement as HTMLElement | null;
         }}
         onCloseAutoFocus={(event) => {
-          if (triggerRef.current) {
+          const snapshot = triggerRef.current;
+          if (isReturnable(snapshot)) {
             event.preventDefault();
-            triggerRef.current.focus();
+            snapshot.focus();
+            return;
           }
+          const relocated = triggerLabel
+            ? document.querySelector<HTMLElement>(`[aria-label="${triggerLabel}"]`)
+            : null;
+          if (isReturnable(relocated)) {
+            event.preventDefault();
+            relocated.focus();
+            return;
+          }
+          // No valid target on either path — let Radix's default restoration
+          // run rather than preventDefault-ing into focusing nothing.
         }}
       >
         <DialogTitle>{title}</DialogTitle>
@@ -78,4 +105,11 @@ export function MaximizedDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** A snapshot/relocated candidate is only worth restoring focus to if it is
+ *  still attached to the document and isn't the `<body>` fallback that
+ *  `document.activeElement` reports when nothing was actually focused. */
+function isReturnable(el: HTMLElement | null): el is HTMLElement {
+  return el !== null && el !== document.body && document.contains(el);
 }

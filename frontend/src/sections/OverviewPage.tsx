@@ -297,8 +297,14 @@ export default function OverviewPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel status={equityStatus} title="Equity" onMaximize={() => setMaximized("equity")}>
           {/* Reserve the collapsed height so closing the dialog doesn't jump.
-              Range row (~36px) + its mb-3 (12px) + the 140px chart. */}
-          <div className="min-h-[188px]">
+              Range row (~36px) + its mb-3 (12px) + the 140px chart = 188px
+              base. When `/api/equity` is failing, EquityPanelBody also renders
+              the `equity-fetch-error` badge above the chart (~24px of text-xs
+              content/padding + the badge's own mb-2 = 8px margin, 32px total)
+              — reserve that too, or closing the dialog while the fetch stays
+              down still shifts layout, which is exactly what this reserve
+              exists to prevent. */}
+          <div className={cn("min-h-[188px]", equity.error !== null && "min-h-[220px]")}>
             {maximized === "equity" ? null : <EquityPanelBody {...equityBodyProps} />}
           </div>
         </Panel>
@@ -336,6 +342,7 @@ export default function OverviewPage() {
         open={maximized === "equity"}
         onOpenChange={(open) => setMaximized(open ? "equity" : null)}
         title="Equity"
+        triggerLabel="Maximize Equity"
       >
         <EquityPanelBody {...equityBodyProps} fill />
       </MaximizedDialog>
@@ -344,9 +351,10 @@ export default function OverviewPage() {
         open={maximized === "news"}
         onOpenChange={(open) => setMaximized(open ? "news" : null)}
         title="Economic Calendar"
+        triggerLabel="Maximize Economic Calendar"
       >
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <NewsPanel data={snapshot?.news} />
+          <NewsPanel data={snapshot?.news} hideHeader />
         </div>
       </MaximizedDialog>
     </div>

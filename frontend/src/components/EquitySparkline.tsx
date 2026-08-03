@@ -1,8 +1,21 @@
-import { Area, AreaChart, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { money } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { toChartRows } from "@/lib/equityChartData";
-import type { EquitySeries } from "@/lib/types";
+import { drawdownSeverity, DD_FILL, showsBreakerLine, breakerLevel } from "@/lib/equityChartPolicy";
+import { EquityLegend, type LegendEntry } from "@/components/EquityLegend";
+import type { EquitySeries, RangeName } from "@/lib/types";
 
 /**
  * A point in the legacy live-tail buffer. `t` is a monotonic SAMPLE COUNTER,
@@ -52,14 +65,21 @@ export function EquitySparkline({
   series,
   width = "100%",
   height = 140,
+  expanded = false,
+  risk,
 }: {
   points: BufferPoint[];
   series?: EquitySeries;
   width?: number | string;
   height?: number | string;
+  /** Render the maximized two-pane layout (equity + underwater). Comes from
+   *  EquityPanelBody's `fill`, never inferred from `height`. */
+  expanded?: boolean;
+  /** Today's breaker inputs. Absent until the risk block loads. */
+  risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
   if (series) {
-    return <SeriesChart series={series} width={width} height={height} />;
+    return <SeriesChart series={series} width={width} height={height} expanded={expanded} risk={risk} />;
   }
 
   if (points.length === 0) {
@@ -155,10 +175,15 @@ function SeriesChart({
   series,
   width,
   height,
+  expanded,
+  risk,
 }: {
   series: EquitySeries;
   width: number | string;
   height: number | string;
+  expanded: boolean;
+  /** Today's breaker inputs. Absent until the risk block loads. */
+  risk?: { day_anchor: number; max_daily_dd_pct: number };
 }) {
   const rows = toChartRows(series);
 
@@ -170,7 +195,11 @@ function SeriesChart({
   const isFinite_ = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   const equityValues = rows.map((r) => r.equity).filter(isFinite_);
   const balanceValues = rows.map((r) => r.balance).filter(isFinite_);
-  const allValues = [...equityValues, ...balanceValues];
+  const peakValues = rows.map((r) => r.peak).filter(isFinite_);
+  // Include peak in allValues so that padding is proportional to the full plotted
+  // range (equity, balance, peak), not just equity/balance. The YAxis' default
+  // allowDataOverflow={false} ensures the peak Line stays on-canvas regardless.
+  const allValues = [...equityValues, ...balanceValues, ...peakValues];
 
   if (allValues.length === 0) {
     const everRecorded = series.coverage.first_sample_ts !== null;
@@ -187,8 +216,7 @@ function SeriesChart({
 
   const min = Math.min(...allValues);
   const max = Math.max(...allValues);
-  // Same auto-fit padding rule as the legacy path, but fit over equity AND
-  // balance together — otherwise the balance line can sit outside the band.
+  // Auto-fit padding is computed from max - min, so it scales with the full data range.
   const pad = max - min > 0 ? (max - min) * 0.18 : Math.max(1, Math.abs(max) * 0.0015);
 
   // Drawdown gets its OWN y-axis (id "dd"), never the equity/balance one: on a
@@ -201,14 +229,76 @@ function SeriesChart({
   const minDrawdown = drawdownValues.length > 0 ? Math.min(...drawdownValues) : 0;
   const ddFloor = minDrawdown < 0 ? minDrawdown * 1.18 : -1;
 
+  // One fill for the whole area, keyed to the DEEPEST drawdown in the window —
+  // "how bad did it get here". A per-point gradient would need a value-keyed
+  // linearGradient and buys nothing at these sizes.
+  const ddSeverity = drawdownSeverity(
+    minDrawdown,
+    risk?.day_anchor ?? 0,
+    risk?.max_daily_dd_pct ?? 0,
+  );
+  const ddFill = DD_FILL[ddSeverity];
+
+  // Daily breaker line: expanded view only (spec §9 — collapsed never shows
+  // it, and the legend that names it is itself expanded-only), drawn only on
+  // intraday ranges, and null when uncomputable.
+  const breakerY = expanded && showsBreakerLine(series.range as RangeName)
+    ? breakerLevel(risk?.day_anchor ?? 0, risk?.max_daily_dd_pct ?? 0)
+    : null;
+
+  // Legend entries mirror the exact colour + dash each series is drawn with,
+  // so a token retune moves both together. The breaker entry is gated on the
+  // SAME `breakerY !== null` that gates the line itself — reusing the
+  // condition (not recomputing it) is what keeps the legend from ever naming
+  // a reference that isn't actually drawn.
+  const equityLegend: LegendEntry[] = [
+    { key: "equity", label: "Equity", swatch: "hsl(var(--accent))" },
+    { key: "balance", label: "Balance", swatch: "hsl(var(--text-muted))" },
+    { key: "peak", label: "High-water mark", swatch: "hsl(var(--text-muted))", dashed: true },
+    ...(breakerY !== null
+      ? [{ key: "breaker", label: "Daily breaker", swatch: "hsl(var(--loss))", dashed: true }]
+      : []),
+  ];
+  const underwaterLegend: LegendEntry[] = [
+    { key: "drawdown", label: "Drawdown", swatch: ddFill },
+  ];
+
   const last = equityValues[equityValues.length - 1] ?? 0;
   const first = equityValues[0] ?? last;
   const delta = last - first;
   const up = delta >= 0;
 
+  // The underwater pane takes a fixed share of the expanded height. Recharts'
+  // <ResponsiveContainer> only trusts a NUMERIC height as-is; a "100%" string
+  // is resolved by measuring the DOM container instead, via
+  // getBoundingClientRect() — which jsdom hard-codes to a zero rect (it does
+  // no real layout), so both panes would mount empty in tests. When the
+  // caller passes a literal pixel `height` (every test, and any real caller
+  // that already knows its own box), split it in JS so both panes get real
+  // numbers. When `height` is itself a CSS percentage (the maximized-dialog
+  // case in production), fall back to a flex/percentage split, which resolves
+  // fine under actual browser layout.
+  //
+  // Both panes are derived from ONE guarded computation so they cannot
+  // disagree: `underwaterHeight` is clamped to `numericTotal` itself (not
+  // just floored at UNDERWATER_MIN_PX), which guarantees
+  // `mainHeight = numericTotal - underwaterHeight` can never go negative even
+  // at a pathologically small total height. Recharts does not hard-fail on a
+  // zero/negative numeric height — it only warns and proceeds — so an
+  // unclamped remainder would ship as a silently blank equity pane rather
+  // than a crash.
+  const UNDERWATER_MIN_PX = 70;
+  const numericTotal = expanded && typeof height === "number" ? height : undefined;
+  const underwaterHeight =
+    numericTotal !== undefined
+      ? Math.min(numericTotal, Math.max(UNDERWATER_MIN_PX, Math.round(numericTotal * 0.26)))
+      : "100%";
+  const mainHeight = numericTotal !== undefined ? numericTotal - (underwaterHeight as number) : "100%";
+
   return (
     <div
       data-testid="equity-sparkline"
+      data-dd-severity={ddSeverity}
       className="relative"
       style={{ width: "100%", height }}
       role="img"
@@ -224,92 +314,212 @@ function SeriesChart({
           {series.range}
         </span>
       </div>
-      <ResponsiveContainer width={width} height={height}>
-        {/* ComposedChart, not AreaChart: recharts' AreaChart only recognizes
-            Area as a graphical child, so the balance Line below silently fails
-            to render inside it (0 recharts-line nodes in the DOM, no error).
-            ComposedChart supports mixing Area/Line/Bar/Scatter and renders
-            both series correctly. */}
-        <ComposedChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
-          <defs>
-            <linearGradient id="equity-series-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
-          <XAxis
-            dataKey="ts"
-            type="number"
-            domain={["dataMin", "dataMax"]}
-            scale="time"
-            stroke="hsl(var(--text-muted))"
-            tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            tickFormatter={(v: number) => formatTick(v, series.range)}
-          />
-          <YAxis
-            yAxisId="equity"
-            domain={[min - pad, max + pad]}
-            stroke="hsl(var(--text-muted))"
-            tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
-            tickLine={false}
-            axisLine={false}
-            width={52}
-            tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
-          />
-          <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />
-          <Tooltip
-            cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
-            contentStyle={{
-              background: "hsl(var(--elevated))",
-              border: "1px solid hsl(var(--border-strong))",
-              borderRadius: 8,
-              color: "hsl(var(--foreground))",
-              fontSize: 12,
-            }}
-            isAnimationActive={false}
-            labelFormatter={(v: number) => formatTick(v, series.range)}
-            formatter={(v: number, name: string) => [
-              money(v),
-              name === "equity" ? "Equity" : name === "balance" ? "Balance" : "Drawdown",
-            ] as [string, string]}
-          />
-          <Area
-            yAxisId="dd"
-            type="monotone"
-            dataKey="drawdown"
-            stroke="none"
-            fill="hsl(var(--loss))"
-            fillOpacity={0.18}
-            dot={false}
-            isAnimationActive={false}
-            activeDot={false}
-          />
-          <Line
-            yAxisId="equity"
-            type="monotone"
-            dataKey="balance"
-            stroke="hsl(var(--text-muted))"
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-            activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
-          />
-          <Area
-            yAxisId="equity"
-            type="monotone"
-            dataKey="equity"
-            stroke="hsl(var(--accent))"
-            strokeWidth={2}
-            fill="url(#equity-series-fill)"
-            dot={false}
-            isAnimationActive={false}
-            activeDot={{ r: 3.5, fill: "hsl(var(--accent))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
+      <div className={cn("flex flex-col", expanded && "h-full")}>
+        <div className={cn(expanded ? "min-h-0 flex-1" : "contents")}>
+          <ResponsiveContainer width={width} height={expanded ? mainHeight : height}>
+            {/* ComposedChart, not AreaChart: recharts' AreaChart only recognizes
+                Area as a graphical child, so the balance Line below silently fails
+                to render inside it (0 recharts-line nodes in the DOM, no error).
+                ComposedChart supports mixing Area/Line/Bar/Scatter and renders
+                both series correctly. */}
+            <ComposedChart data={rows} margin={{ top: 22, right: 8, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="equity-series-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--accent))" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="hsl(var(--accent))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
+              <XAxis
+                dataKey="ts"
+                type="number"
+                domain={["dataMin", "dataMax"]}
+                scale="time"
+                stroke="hsl(var(--text-muted))"
+                tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v: number) => formatTick(v, series.range)}
+              />
+              <YAxis
+                yAxisId="equity"
+                domain={[min - pad, max + pad]}
+                stroke="hsl(var(--text-muted))"
+                tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                width={52}
+                tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
+              />
+              {!expanded && <YAxis yAxisId="dd" hide domain={[ddFloor, 0]} />}
+              {/* No inline SVG label here: the equity legend now names this
+                  line ("Daily breaker", spec §8), and the sr-only span below
+                  gives its exact value. A third, on-chart label would repeat
+                  what the legend already says and double up for screen
+                  readers (visible SVG text + the sr-only span). */}
+              {breakerY !== null && (
+                <ReferenceLine
+                  yAxisId="equity"
+                  y={breakerY}
+                  stroke="hsl(var(--loss))"
+                  strokeDasharray="6 4"
+                  strokeOpacity={0.8}
+                  ifOverflow="extendDomain"
+                />
+              )}
+              <Tooltip
+                cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
+                contentStyle={{
+                  background: "hsl(var(--elevated))",
+                  border: "1px solid hsl(var(--border-strong))",
+                  borderRadius: 8,
+                  color: "hsl(var(--foreground))",
+                  fontSize: 12,
+                }}
+                isAnimationActive={false}
+                labelFormatter={(v: number) => formatTick(v, series.range)}
+                formatter={(v: number, name: string) => [
+                  money(v),
+                  name === "equity" ? "Equity"
+                    : name === "balance" ? "Balance"
+                    : name === "peak" ? "High-water mark"
+                    : "Drawdown",
+                ] as [string, string]}
+              />
+              {!expanded && (
+                <Area
+                  yAxisId="dd"
+                  type="monotone"
+                  dataKey="drawdown"
+                  stroke="none"
+                  fill={ddFill}
+                  fillOpacity={0.18}
+                  dot={false}
+                  isAnimationActive={false}
+                  activeDot={false}
+                />
+              )}
+              <Line
+                yAxisId="equity"
+                type="monotone"
+                dataKey="balance"
+                stroke="hsl(var(--text-muted))"
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+                activeDot={{ r: 3, fill: "hsl(var(--text-muted))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
+              />
+              <Line
+                yAxisId="equity"
+                type="stepAfter"
+                dataKey="peak"
+                name="peak"
+                stroke="hsl(var(--text-muted))"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                dot={false}
+                isAnimationActive={false}
+                activeDot={false}
+                connectNulls
+                data-testid="hwm-line"
+              />
+              <Area
+                yAxisId="equity"
+                type="monotone"
+                dataKey="equity"
+                stroke="hsl(var(--accent))"
+                strokeWidth={2}
+                fill="url(#equity-series-fill)"
+                dot={false}
+                isAnimationActive={false}
+                activeDot={{ r: 3.5, fill: "hsl(var(--accent))", stroke: "hsl(var(--bg))", strokeWidth: 2 }}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+          {breakerY !== null && (
+            <span data-testid="breaker-line" className="sr-only">
+              Daily breaker at {money(breakerY)}
+            </span>
+          )}
+        </div>
+        {expanded && <EquityLegend entries={equityLegend} />}
+
+        {expanded && (
+          <div
+            data-testid="underwater-pane"
+            className="h-[26%] min-h-[70px]"
+            style={numericTotal !== undefined ? { height: underwaterHeight as number } : undefined}
+          >
+            <ResponsiveContainer width={width} height={underwaterHeight}>
+              <ComposedChart data={rows} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="hsl(var(--border-strong))" strokeOpacity={0.45} vertical={false} />
+                <XAxis
+                  dataKey="ts"
+                  type="number"
+                  domain={["dataMin", "dataMax"]}
+                  scale="time"
+                  hide
+                />
+                <YAxis
+                  yAxisId="dd"
+                  domain={[ddFloor, 0]}
+                  stroke="hsl(var(--text-muted))"
+                  tick={{ fill: "hsl(var(--text-muted))", fontSize: 11 }}
+                  tickLine={false}
+                  axisLine={false}
+                  width={52}
+                  tickFormatter={(v: number) => Math.round(v).toLocaleString("en-US")}
+                />
+                {minDrawdown < 0 && (
+                  <ReferenceLine
+                    yAxisId="dd"
+                    y={minDrawdown}
+                    stroke={ddFill}
+                    strokeDasharray="3 3"
+                    strokeOpacity={0.9}
+                    label={{
+                      value: `max ${money(minDrawdown)}`,
+                      position: "insideTopRight",
+                      fill: "hsl(var(--text-muted))",
+                      fontSize: 10,
+                    }}
+                  />
+                )}
+                <Tooltip
+                  cursor={{ stroke: "hsl(var(--accent))", strokeOpacity: 0.5, strokeWidth: 1 }}
+                  contentStyle={{
+                    background: "hsl(var(--elevated))",
+                    border: "1px solid hsl(var(--border-strong))",
+                    borderRadius: 8,
+                    color: "hsl(var(--foreground))",
+                    fontSize: 12,
+                  }}
+                  isAnimationActive={false}
+                  labelFormatter={(v: number) => formatTick(v, series.range)}
+                  formatter={(v: number) => [money(v), "Drawdown"] as [string, string]}
+                />
+                <Area
+                  yAxisId="dd"
+                  type="monotone"
+                  dataKey="drawdown"
+                  stroke="none"
+                  fill={ddFill}
+                  fillOpacity={0.55}
+                  dot={false}
+                  isAnimationActive={false}
+                  activeDot={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+            {minDrawdown < 0 && (
+              <span data-testid="max-dd-reference" className="sr-only">
+                Deepest drawdown in this window: {money(minDrawdown)}
+              </span>
+            )}
+          </div>
+        )}
+        {expanded && <EquityLegend entries={underwaterLegend} />}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,36 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { EquitySparkline } from "./EquitySparkline";
+import type { EquitySeries, RangeName } from "@/lib/types";
+
+/** A minimal well-formed series. `peak === equity`, so drawdown is flat 0. */
+function makeSeries(range: RangeName = "1d"): EquitySeries {
+  return {
+    range, tier: "coarse", bucket_s: 300,
+    series: ["equity", "balance", "peak"],
+    points: [
+      { ts: 1000, equity: 1000, balance: 1000, peak: 1000 },
+      { ts: 2000, equity: 1000, balance: 1000, peak: 1000 },
+    ],
+    coverage: { first_sample_ts: 1000, n: 2, series_first_ts: {}, gaps: [] },
+  } as unknown as EquitySeries;
+}
+
+/** A series whose deepest point sits `depth` below the high-water mark.
+ *  `depth` is NEGATIVE (drawdown = equity - peak). */
+function makeSeriesWithDrawdown(depth: number, range: RangeName = "1d"): EquitySeries {
+  const peak = 1000;
+  return {
+    range, tier: "coarse", bucket_s: 300,
+    series: ["equity", "balance", "peak"],
+    points: [
+      { ts: 1000, equity: peak, balance: peak, peak },
+      { ts: 2000, equity: peak + depth, balance: peak, peak },
+      { ts: 3000, equity: peak + depth / 2, balance: peak, peak },
+    ],
+    coverage: { first_sample_ts: 1000, n: 3, series_first_ts: {}, gaps: [] },
+  } as unknown as EquitySeries;
+}
 
 describe("EquitySparkline", () => {
   it("renders a 'No data yet' empty state when points is empty", () => {
@@ -108,15 +138,27 @@ describe("EquitySparkline", () => {
    * `isAnimationActive={true}` makes this fail):
    *   - an animated <Area> emits `<clipPath id="animationClipPath-…">` and
    *     wraps its curve in `clip-path="url(#animationClipPath-…)"`,
-   *   - an animated <Line> gets a `stroke-dasharray` on its curve path.
+   *   - an animated <Line> gets a `stroke-dasharray` on its curve path (rewritten
+   *     to computed lengths, never the static "4 3" value).
    */
   function expectNoAnimation(container: HTMLElement) {
     expect(container.querySelectorAll('[id^="animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll('[clip-path^="url(#animationClipPath"]')).toHaveLength(0);
     expect(container.querySelectorAll("animate, animateTransform, animateMotion")).toHaveLength(0);
+    // <Area> animates via clip-path (checked above). <Line> animates via stroke-dasharray.
+    // The high-water mark curve (data-testid="hwm-line") has intentional dashed styling "4 3".
+    // Recharts' Line animation rewrites stroke-dasharray to computed path lengths,
+    // so asserting the EXACT value "4 3" catches animation while allowing intentional styling.
     const curves = container.querySelectorAll("path.recharts-curve");
     expect(curves.length).toBeGreaterThan(0);   // or the assertion is vacuous
-    curves.forEach((c) => expect(c.hasAttribute("stroke-dasharray")).toBe(false));
+    curves.forEach((c) => {
+      const dash = c.getAttribute("stroke-dasharray");
+      if (c.getAttribute("data-testid") === "hwm-line") {
+        expect(dash).toBe("4 3");
+      } else {
+        expect(dash).toBeNull();
+      }
+    });
   }
 
   it("never animates on the legacy buffer path", () => {
@@ -131,8 +173,8 @@ describe("EquitySparkline", () => {
   });
 
   it("never animates any of the series-path series", () => {
-    // Covers all three (drawdown Area, balance Line, equity Area) — the ones the
-    // old source-string check could not see at all.
+    // Covers all four (drawdown Area, balance Line, peak Line, equity Area) — the
+    // ones the old source-string check could not see at all.
     const series = {
       range: "1d", tier: "coarse" as const, bucket_s: 300,
       series: ["equity", "balance", "peak"],
@@ -146,9 +188,10 @@ describe("EquitySparkline", () => {
     const { container } = render(
       <EquitySparkline points={[]} series={series as never} width={400} height={200} />,
     );
-    // all three graphical series really are on screen, so this isn't vacuous
+    // all four graphical series really are on screen, so this isn't vacuous:
+    // drawdown area + balance line + peak line + equity area
     expect(container.querySelectorAll("path.recharts-area-area")).toHaveLength(2);
-    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(1);
+    expect(container.querySelectorAll("path.recharts-line-curve")).toHaveLength(2);
     expectNoAnimation(container);
   });
 
@@ -207,6 +250,97 @@ describe("EquitySparkline", () => {
   });
 });
 
+describe("underwater pane (spec §4, §6)", () => {
+  it("renders no underwater pane when collapsed", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="underwater-pane"]')).toBeNull();
+  });
+
+  it("renders the underwater pane when expanded", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="underwater-pane"]')).not.toBeNull();
+  });
+
+  it("still mounts exactly one equity-sparkline root when expanded", () => {
+    // The single-instance invariant from sub-project A: a second mounted chart
+    // makes getByTestId throw across unrelated suites and doubles live chart
+    // work every heartbeat. Two panes inside ONE component is the requirement.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelectorAll('[data-testid="equity-sparkline"]').length).toBe(1);
+  });
+
+  it("keeps drawing drawdown in the collapsed single pane", () => {
+    // Collapsed must not silently lose the drawdown area when the expanded path
+    // takes it over. Two areas = equity + drawdown.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelectorAll(".recharts-area").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("draws drawdown exactly once when expanded — moved, not duplicated", () => {
+    // Guards the failure this split invites: rendering the drawdown area in the
+    // equity pane AND the underwater pane, which double-paints it and makes the
+    // legend describe two things that look like one.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    const underwater = container.querySelector('[data-testid="underwater-pane"]')!;
+    expect(underwater.querySelectorAll(".recharts-area").length).toBe(1);
+    // The equity pane keeps only its own equity area.
+    const total = container.querySelectorAll(".recharts-area").length;
+    expect(total).toBe(2);
+  });
+
+  it("never lets a pane's numeric height go negative, even at a pathologically small total", () => {
+    // Mutation this pins: if the `underwaterHeight` clamp in EquitySparkline.tsx
+    // were relaxed from `Math.min(numericTotal, Math.max(UNDERWATER_MIN_PX, ...))`
+    // back to a bare `Math.max(UNDERWATER_MIN_PX, ...)` (no upper clamp to the
+    // total), then at height=50 underwaterHeight would compute to 70 (the
+    // floor), and mainHeight = 50 - 70 = -20 — a negative height handed
+    // straight to Recharts, which does not hard-fail on it (only warns), so it
+    // would ship as a silently blank equity pane rather than a visible crash.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={50} />,
+    );
+    const panes = container.querySelectorAll(".recharts-responsive-container");
+    // Both panes still mount structurally (degrade predictably), not vacuous.
+    expect(panes.length).toBe(2);
+    panes.forEach((pane) => {
+      const h = parseFloat((pane as HTMLElement).style.height);
+      expect(Number.isFinite(h)).toBe(true);
+      expect(h).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  it("lines up the two panes' plot areas at the same x offset", () => {
+    // The whole point of the split: <YAxis width={52} /> parity on both panes
+    // plus a matching XAxis (dataKey/type/domain/scale) makes the equity and
+    // underwater plot areas start at the same left edge. Assert on RENDERED
+    // geometry (the grid line's x1), not on the YAxis width prop itself — a
+    // prop-level assertion would not catch two panes whose axes drift apart
+    // in a way that still individually "looks right".
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    const surfaces = container.querySelectorAll("svg.recharts-surface");
+    expect(surfaces.length).toBe(2); // one per pane — equity, then underwater
+    const [equityX1, underwaterX1] = Array.from(surfaces).map((surface) => {
+      const gridLine = surface.querySelector(".recharts-cartesian-grid-horizontal line");
+      expect(gridLine).not.toBeNull();
+      return gridLine!.getAttribute("x1");
+    });
+    expect(equityX1).not.toBeNull();
+    expect(underwaterX1).toBe(equityX1);
+  });
+});
+
 describe("EquitySparkline sizing", () => {
   const points = [
     { t: 0, equity: 10000 },
@@ -221,5 +355,217 @@ describe("EquitySparkline sizing", () => {
   it("accepts a percentage height so it can fill a maximized panel", () => {
     render(<EquitySparkline points={points} height="100%" />);
     expect(screen.getByTestId("equity-sparkline")).toHaveStyle({ height: "100%" });
+  });
+});
+
+describe("expanded + risk props (B1 plumbing)", () => {
+  it("accepts expanded and risk without changing what it renders by default", () => {
+    const { container: plain } = render(
+      <EquitySparkline points={[]} series={makeSeries()} width={400} height={200} />,
+    );
+    const { container: withProps } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries()}
+        risk={{ day_anchor: 1000, max_daily_dd_pct: 3 }}
+        width={400}
+        height={200}
+      />,
+    );
+    // expanded defaults to false, so passing risk alone must not alter the
+    // collapsed rendering: same number of drawn series.
+    expect(withProps.querySelectorAll(".recharts-area").length).toBe(
+      plain.querySelectorAll(".recharts-area").length,
+    );
+    expect(plain.querySelectorAll(".recharts-area").length).toBeGreaterThan(0);
+    // `.recharts-area` counts area fills only, so it structurally cannot see a
+    // <ReferenceLine> — it would stay identical even if a breaker line leaked
+    // into the collapsed card. Assert directly on the marker that names it.
+    expect(withProps.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+});
+
+describe("drawdown severity ramp (spec §6)", () => {
+  // 1000 anchor at 3% => a 30-unit daily budget. -25 is 83% consumed (severe);
+  // -5 is 17% (shallow).
+  const RISK = { day_anchor: 1000, max_daily_dd_pct: 3 };
+  const severityOf = (container: HTMLElement) =>
+    container.querySelector('[data-testid="equity-sparkline"]')?.getAttribute("data-dd-severity");
+
+  it("stamps severe for a drawdown past two thirds of the daily budget", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} risk={RISK} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("severe");
+  });
+
+  it("stamps shallow for a small drawdown", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-5)} risk={RISK} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("shallow");
+  });
+
+  it("falls back to moderate when no risk block has loaded", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(severityOf(container)).toBe("moderate");
+  });
+
+  it("stamps the same severity in the expanded view", () => {
+    // The ramp applies in BOTH views (spec §6) — placement differs, colour does not.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} risk={RISK} expanded width={400} height={400} />,
+    );
+    expect(severityOf(container)).toBe("severe");
+  });
+});
+
+describe("max-drawdown reference (spec §6)", () => {
+  it("marks the deepest point in the expanded underwater pane", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).not.toBeNull();
+  });
+
+  it("omits it in the collapsed card", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).toBeNull();
+  });
+
+  it("omits it when the window never went underwater", () => {
+    // makeSeries has peak === equity throughout, so minDrawdown is 0 and a
+    // "deepest point" reference would be a line at zero claiming a drawdown
+    // that never happened.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries()} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="max-dd-reference"]')).toBeNull();
+  });
+});
+
+describe("high-water mark line (spec §5)", () => {
+  it("draws two lines — balance and the high-water mark", () => {
+    // Before this task there is exactly one <Line> (balance). The peak line is
+    // the second, so a count of 2 fails if it was never added AND if it was
+    // added as an Area by mistake.
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelectorAll(".recharts-line").length).toBe(2);
+  });
+
+});
+
+describe("daily breaker line (spec §7)", () => {
+  const risk = { day_anchor: 1000, max_daily_dd_pct: 3 };
+
+  it("draws the breaker on an intraday range (expanded)", () => {
+    const { container } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1d")}
+        risk={risk}
+        expanded
+        width={400}
+        height={400}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).not.toBeNull();
+  });
+
+  it("omits the breaker on a multi-day range (expanded)", () => {
+    // day_anchor is TODAY-only and no historical anchors are stored, so a line
+    // spanning past days would be read against a threshold never in force then.
+    const { container } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1w")}
+        risk={risk}
+        expanded
+        width={400}
+        height={400}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  it("omits the breaker when the anchor has not been set yet (expanded)", () => {
+    const { container } = render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeries("1d")}
+        risk={{ day_anchor: 0, max_daily_dd_pct: 3 }}
+        expanded
+        width={400}
+        height={400}
+      />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  it("omits the breaker when no risk block has loaded (expanded)", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} expanded width={400} height={400} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+
+  // The regression this whole describe block exists to prevent: every case
+  // above renders `expanded`, which alone could let an un-gated `breakerY`
+  // computation slip back in unnoticed (spec §9: the breaker is expanded-only
+  // — collapsed must NEVER show it, and it renders unlabeled there since the
+  // legend that names it is also expanded-gated).
+  it("omits the breaker in the COLLAPSED card even on an intraday range with a populated risk block", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeries("1d")} risk={risk} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="breaker-line"]')).toBeNull();
+  });
+});
+
+describe("legend wiring (spec §8)", () => {
+  const RISK = { day_anchor: 1000, max_daily_dd_pct: 3 };
+
+  it("names every drawn series in the expanded view", () => {
+    render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeriesWithDrawdown(-25, "1d")}
+        expanded
+        risk={RISK}
+        width={400}
+        height={400}
+      />,
+    );
+    for (const label of ["Equity", "Balance", "High-water mark", "Drawdown", "Daily breaker"]) {
+      expect(screen.getByText(label), label).toBeInTheDocument();
+    }
+  });
+
+  it("drops the breaker entry on ranges where the line is not drawn", () => {
+    render(
+      <EquitySparkline
+        points={[]}
+        series={makeSeriesWithDrawdown(-25, "1w")}
+        expanded
+        risk={RISK}
+        width={400}
+        height={400}
+      />,
+    );
+    expect(screen.getByText("Equity")).toBeInTheDocument();
+    expect(screen.queryByText("Daily breaker")).toBeNull();
+  });
+
+  it("renders no legend in the collapsed card", () => {
+    const { container } = render(
+      <EquitySparkline points={[]} series={makeSeriesWithDrawdown(-25)} width={400} height={200} />,
+    );
+    expect(container.querySelector('[data-testid="equity-legend"]')).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import itertools
 import unittest
 import pandas as pd
 
@@ -56,6 +57,76 @@ class TestGradeSignal(unittest.TestCase):
         out = grade_signal(_sig(bias="NEUTRAL"))
         self.assertEqual(out["bias_class"], "neutral")
         self.assertEqual(out["score"], 75)
+
+    # --- Regression tests: these fail against the old recompute-from-raw-inputs
+    # adapter, which drifted from the real grader's epsilon tolerance and its
+    # eq/unknown pd_array points. ---
+
+    def test_displacement_bucket_uses_the_graders_epsilon_tolerance(self):
+        """body_atr=1.4999999 is float-noise for 1.5. The real grader treats
+        it as >= 1.5 - eps and awards 20 (score 95, A++); the old recompute
+        used a bare `>=` with no epsilon and recorded 15 instead."""
+        out = grade_signal(_sig(body_atr=1.4999999))
+        self.assertEqual(out["displacement_bucket"], 20)
+        self.assertEqual(out["score"], 95)
+        self.assertEqual(out["grade"], "A++")
+
+    def test_pd_array_awards_five_for_empty_liq_status(self):
+        """liq_status="" is eq/unknown to the real grader: +5, not the old
+        recompute's 0."""
+        out = grade_signal(_sig(liq_status=""))
+        self.assertEqual(out["pd_array"], 5)
+
+    def test_pd_array_awards_five_for_eq_liq_status(self):
+        """liq_status="EQ" is also eq/unknown: +5, not the old recompute's 0."""
+        out = grade_signal(_sig(liq_status="EQ"))
+        self.assertEqual(out["pd_array"], 5)
+
+    def test_degenerate_entry_equals_sl_does_not_crash_and_documents_defaults(self):
+        """The grader short-circuits entry==sl with
+        factors == ['invalid_risk_distance'] and no per-factor +N strings at
+        all. Parsing must not crash on that; the documented default is
+        bias_class="invalid", and 0 for every point column."""
+        sig = {
+            "dir": "BUY", "entry": 1.1000, "sl": 1.1000, "tp": 1.1200,
+            "atr": 0.0010, "body_atr": 1.6, "bias": "BULLISH",
+            "liq_status": "DISCOUNT", "hour": 16,
+        }
+        out = grade_signal(sig)
+        self.assertEqual(out["score"], 0)
+        self.assertEqual(out["grade"], "C")
+        self.assertEqual(out["bias_class"], "invalid")
+        self.assertEqual(out["bias_points"], 0)
+        self.assertEqual(out["displacement_bucket"], 0)
+        self.assertEqual(out["pd_array"], 0)
+        self.assertEqual(out["killzone"], 0)
+
+    def test_score_equals_sum_of_the_decomposed_factor_points(self):
+        """Strongest guard: for a spread of generated signals, the returned
+        decomposed columns (plus the rr points read straight off `factors`)
+        must always sum to exactly `score`. Any future drift between the
+        columns and the real score is impossible to miss."""
+        cases = itertools.product(
+            ("BUY", "SELL"),
+            ("BULLISH", "BEARISH", "NEUTRAL"),
+            (0.3, 0.8, 0.9999999, 1.0, 1.4999999, 1.5, 2.5),
+            ("DISCOUNT", "PREMIUM", "EQ", "", None),
+            (0, 3, 6, 8, 12, 16, 23),
+        )
+        for direction, bias, body_atr, liq_status, hour in cases:
+            with self.subTest(direction=direction, bias=bias, body_atr=body_atr,
+                               liq_status=liq_status, hour=hour):
+                out = grade_signal(_sig(
+                    dir=direction, bias=bias, body_atr=body_atr,
+                    liq_status=liq_status, hour=hour,
+                ))
+                rr_factors = [f for f in out["factors"] if f.startswith("rr=")]
+                rr_points = int(rr_factors[0].rsplit("+", 1)[1])
+                total = (
+                    out["bias_points"] + rr_points + out["displacement_bucket"]
+                    + out["pd_array"] + out["killzone"]
+                )
+                self.assertEqual(total, out["score"])
 
 
 if __name__ == "__main__":

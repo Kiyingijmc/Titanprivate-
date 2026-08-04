@@ -187,39 +187,64 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
   return (
     <div
       data-testid={`session-chip-${session.id}`}
-      className="flex flex-col gap-1 rounded-md border border-l-2 border-border bg-surface-2 px-3 py-2"
+      className="flex min-w-0 flex-col gap-1 rounded-md border border-l-2 border-border bg-surface-2 px-3 py-2"
       style={{
         borderLeftColor: color,
         // A faint session-color wash over the card surface while the market is open.
         ...(session.open ? { boxShadow: `inset 0 0 0 9999px ${wash}` } : {}),
       }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold" style={{ color }}>
+      {/* STACKED, not side by side. The name and the clock used to share a
+          `justify-between` row, which needed ~118px in a 53px track and clipped
+          every clock mid-digit. Each is its own row (own DOM parent), so it
+          only ever competes with its own width, never a sibling's. */}
+      <div>
+        <span
+          data-testid="session-name"
+          className="truncate text-sm font-semibold"
+          style={{ color }}
+          title={session.label}
+        >
           {session.label}
         </span>
-        {/* Live HH:MM:SS in the session's own timezone — ticks every second. */}
-        <span className="font-mono tabnum text-xs text-secondary-foreground">{session.localClock}</span>
       </div>
+
+      {/* Live HH:MM:SS in the session's own timezone — OPEN sessions only.
+          A closed session's wall-clock time drives no decision; its countdown does. */}
+      {session.open && (
+        <div>
+          <span
+            data-testid="session-clock"
+            className="truncate font-mono tabnum text-xs text-secondary-foreground"
+          >
+            {session.localClock}
+          </span>
+        </div>
+      )}
+
       {session.open ? (
         <span
-          className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
+          data-testid="session-status"
+          className="inline-flex w-fit max-w-full items-center gap-1.5 truncate rounded-full px-2 py-0.5 text-xs font-medium"
           style={{ backgroundColor: chipBg, color }}
+          title={session.statusLabel}
         >
           {/* Static dot. It used to pulse forever, which is the highest-
               frequency animation in the app: always on screen, always moving,
-              on a surface the operator watches for hours. The chip already
-              says "Open" in the session colour, so the motion carried no
-              information it was not already showing. */}
+              on a surface the operator watches for hours. */}
           <span
-            className="size-1.5 rounded-full"
+            className="size-1.5 shrink-0 rounded-full"
             style={{ backgroundColor: color }}
             aria-hidden
           />
-          Open
+          {session.statusLabel}
         </span>
       ) : (
-        <span className="w-fit rounded-full bg-surface-1 px-2 py-0.5 font-mono tabnum text-xs text-muted-foreground">
+        <span
+          data-testid="session-status"
+          className="w-fit max-w-full truncate rounded-full bg-surface-1 px-2 py-0.5 font-mono tabnum text-xs text-muted-foreground"
+          title={session.statusLabel}
+        >
           {session.statusLabel}
         </span>
       )}

@@ -94,3 +94,72 @@ describe("MarketSessions", () => {
     }
   });
 });
+
+describe("SessionChip layout (spec §3)", () => {
+  // 2026-08-04 08:30 UTC. VERIFIED against Intl, not reasoned about:
+  //   sydney  local 18:30, window 7-16  => closed
+  //   tokyo   local 17:30, window 9-18  => OPEN
+  //   london  local 09:30, window 8-17  => OPEN
+  //   newyork local 04:30, window 8-17  => closed
+  // Pinning `now` is mandatory: sessionStates() reads the wall clock, so an
+  // unpinned test passes or fails depending on the hour it runs, and never
+  // exercises the strings that actually break the layout.
+  const NOW = new Date("2026-08-04T08:30:00Z");
+
+  it("gives an OPEN session a clock row", () => {
+    render(<MarketSessions now={NOW} />);
+    const chip = screen.getByTestId("session-chip-london");
+    expect(chip.querySelector('[data-testid="session-clock"]')).not.toBeNull();
+  });
+
+  it("gives a CLOSED session no clock row", () => {
+    // The mutation this kills: rendering the clock unconditionally, which is
+    // exactly what the pre-fix component did and what caused the overflow.
+    render(<MarketSessions now={NOW} />);
+    const chip = screen.getByTestId("session-chip-sydney");
+    expect(chip.querySelector('[data-testid="session-clock"]')).toBeNull();
+  });
+
+  it("renders both states at this fixture — so neither assertion above is vacuous", () => {
+    render(<MarketSessions now={NOW} />);
+    expect(screen.getByTestId("session-chip-london").querySelector('[data-testid="session-clock"]')).not.toBeNull();
+    expect(screen.getByTestId("session-chip-sydney").querySelector('[data-testid="session-clock"]')).toBeNull();
+  });
+
+  it("shows the closes-in countdown on an open chip, not a bare 'Open'", () => {
+    // sessions.ts:127 already computes `Open · closes in Xh Ym` and the chip
+    // threw it away for a hardcoded "Open". This surfaces it.
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-london").querySelector('[data-testid="session-status"]')!;
+    expect(status.textContent).toMatch(/Open/);
+    expect(status.textContent).toMatch(/\d+m/);   // a countdown is present
+  });
+
+  it("shows the opens-in countdown on a closed chip", () => {
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-sydney").querySelector('[data-testid="session-status"]')!;
+    expect(status.textContent).toMatch(/\d+m/);
+    expect(status.textContent).not.toMatch(/^Open\b/);
+  });
+
+  it("exercises a MAXIMUM-WIDTH countdown, not a convenient short one", () => {
+    // Verified: at this `now`, sydney reads "Opens in 12h 30m" — two-digit
+    // hours, which is the widest form `fmtCountdown` can emit (`NNh NNm`).
+    // WIDTH is what breaks this layout, not magnitude, so 12h 30m pins the
+    // same worst case as 23h 59m. A fixture that happened to produce "5m"
+    // would look green while never testing the string that overflows.
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-sydney").querySelector('[data-testid="session-status"]')!;
+    expect(status.textContent).toMatch(/\d{2}h \d{2}m/);
+  });
+
+  it("puts the name and clock in SEPARATE rows, not one flex row", () => {
+    // The overflow's root cause: name + clock side by side needed 118px in a
+    // 53px row. If they share a parent again, this fails.
+    render(<MarketSessions now={NOW} />);
+    const chip = screen.getByTestId("session-chip-london");
+    const name = chip.querySelector('[data-testid="session-name"]')!;
+    const clock = chip.querySelector('[data-testid="session-clock"]')!;
+    expect(name.parentElement).not.toBe(clock.parentElement);
+  });
+});

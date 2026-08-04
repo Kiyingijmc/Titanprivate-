@@ -263,7 +263,17 @@ export default function OverviewPage() {
     <div className="grid gap-4">
       {/* Market Context strip (Task 12): always-on session timeline + local
           clock + USD bias + economic calendar, above the account KPIs. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+      {/* Content-driven, not hand-tuned. The previous 2fr/1fr/1fr/1fr was
+          fractions guessed at one viewport, which is how this strip reached zero
+          slack and truncated every card at once. Local Time and Dollar Bias take
+          exactly their natural width; Market Sessions is elastic and absorbs the
+          remainder, so the card with the MOST content is no longer the starved
+          one; the calendar is capped and yields first (it renders "unavailable"
+          almost always, and sub-project C rebuilds it).
+          The minmax(0,…) wrappers are load-bearing: a bare 1fr has a
+          min-width:auto content floor, which is exactly what lets a grid child
+          refuse to shrink and overflow its track. */}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_max-content_max-content_minmax(0,0.8fr)]">
         <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />

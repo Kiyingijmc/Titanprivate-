@@ -762,3 +762,17 @@ describe("news maximize", () => {
     await waitFor(() => expect(button).toHaveFocus());
   });
 });
+
+describe("market-context strip (spec §4)", () => {
+  it("renders all four strip cards", () => {
+    // A structural regression guard for the grid change: if a track list edit
+    // drops or hides a card, this fails. It deliberately does NOT assert the
+    // track list itself — that would be a class-string assertion, which jsdom
+    // cannot falsify.
+    renderOverview();
+    expect(screen.getByText(/market sessions/i)).toBeInTheDocument();
+    expect(screen.getByTestId("locality-clock")).toBeInTheDocument();
+    expect(screen.getByTestId("dollar-bias")).toBeInTheDocument();
+    expect(screen.getByTestId("news-panel")).toBeInTheDocument();
+  });
+});

@@ -79,8 +79,13 @@ per-bucket A+/A++ expectancy (§2.4), and conviction-scaled sizing (§6.2).
 ### 2.1 Population
 
 All SilverBullet H1 signals in `data/history/sb_stops_trades_H1.csv` where `model == "ATR10"`
-(the live stop model): **n = 2,217**, 11 symbols, 2023-06 → 2026-06. Chronological IS/OOS
-split at 0.70 with purge/embargo (§4.3), matching every other gate in this repository.
+(the live stop model): **n = 2,217**, 11 symbols, 2023-06 → 2026-06 — **regenerated per §2.7**,
+which adds the expired signals the source file dropped, so the final n will exceed 2,217 and is
+reported rather than assumed.
+
+IS/OOS split at 0.70, **cut at the calendar date before which 70% of signals fall — not at a row
+index**, so symbols with denser signal counts cannot dominate the training period. Purge and
+embargo per §4.3.
 
 **Primary universe = all 11 symbols**, chosen because n is the binding constraint. The **live
 9-symbol cost-viable set** (the frozen-lake universe: AUDUSD, BTCUSD, EURUSD, GBPJPY, GBPUSD,
@@ -92,13 +97,18 @@ survivor that works only on the two symbols Titan does not trade (GBPCAD, XBRUSD
 Excursions are measured **from the signal bar, relative to the nominal entry level, over a
 fixed forward horizon** — never from a modelled fill, never to a modelled exit.
 
-This removes two confounds at once:
+This removes the **exit-engine** confound: no ratchet, partial, runner or time-stop enters the
+measurement, so STRAT-01 cannot invalidate the result. What remains is a property of the entry
+alone — exactly what EXP-0's doctrine requires.
 
-- **The exit engine never enters the measurement**, so STRAT-01 cannot invalidate the result.
-- **The fill model never enters it either**, so the source file's pre-correction provenance
-  (§2.5) is irrelevant to the primary estimand.
-
-What remains is a property of the entry alone — exactly what EXP-0's doctrine requires.
+**It does not remove the fill-model confound, and an earlier draft of this spec wrongly claimed
+it did.** Anchoring at the signal bar governs *how* an outcome is measured; it has no bearing on
+*which signals are in the sample*. Measured fill waits in the source file run 1…12 bars with a
+**100% fill rate and a hard maximum of exactly 12** — the rig applied a 12-bar expiry and
+**discarded every expired signal**. The population is therefore already conditioned on filling,
+under the pre-correction resolver that admitted BUY LIMITs one spread too easily,
+**direction-asymmetrically**. Because `bias_class` is a Family A test and correlates with
+direction mix, that selection lands squarely on a hypothesis under test. Resolution: §2.7.
 
 ### 2.3 Estimands
 
@@ -112,14 +122,32 @@ In R units, where 1R = the ATR10 stop distance recorded per signal:
 | `P(MFE ≥ 2R before MAE ≥ 1R)` | path-ordered hit proxy at the live 2R target | descriptive |
 
 Both excursions are positive magnitudes floored at 0, so `skew_H` is a signed quantity where
-positive means the trade's favourable path dominated. **The window opens at the first M5 bar
-whose open is strictly after the signal H1 bar closes** and runs H H1-bars forward.
+positive means the trade's favourable path dominated.
 
-**Unreached entry levels are kept, not dropped.** SilverBullet enters on a LIMIT, so price may
-never reach the nominal level within H; excursions are still measured against that level, which
-can make `MFE_H` zero for the whole window. This is intended — reachability is part of signal
-quality, and discarding those signals would select on a post-signal outcome. It is recorded
-here so it is not "fixed" during implementation.
+**`MFE_H` is truncated at the first 1R adverse touch — this is not optional.** An untruncated
+MFE credits favourable movement that occurs *after* the position would already have been
+stopped out, which is unrealizable by construction. A signal reaching MFE 3R only after first
+printing MAE 2R scores `skew_H = +1.0` while being a dead trade. Truncation makes the primary
+estimand "how much did this entry give me before it killed me," which is what a confidence
+estimate is supposed to rank.
+
+Truncating at 1R does **not** reintroduce the exit engine: 1R *is* the entry's own stop, the
+same ATR10 distance that defines the R unit. No ratchet, partial, runner, or time-stop enters
+the measurement, so STRAT-01 remains irrelevant to the result. The untruncated variant is
+retained as a descriptive companion, never as the promotion criterion.
+
+**Window construction.** The excursion window opens at the **first touch of the nominal entry
+level** (a LIMIT does not exist as a position before then) and runs H H1-bars forward from that
+touch. The entry must be touched within **W = 12 H1 bars** of the signal bar — the same expiry
+the source rig applied, adopted rather than invented so the population is not re-cut on a new
+parameter. Measured fill waits: median 3, p90 9, p99 12, max 12.
+
+**A signal that never touches within W scores `skew_H = 0`**, retained in the sample rather than
+dropped. Zero is the literal realizable outcome of a signal that never becomes a position, and
+dropping such signals would select on a post-signal event. Two consequences are pre-registered:
+the fraction at exactly 0 is reported (it is a tie mass that Spearman must handle by mid-ranks),
+and a feature that predicts *non-filling* rather than *bad filling* is reported as such rather
+than conflated with a skew result.
 
 **Estimand shopping is closed off.** The descriptive companions may inform interpretation and
 may **never** be substituted as the promotion criterion.
@@ -140,10 +168,11 @@ estimated, and the study will not report them as though they could.
 
 ### 2.5 Pre-registered caveats on the source data
 
-- `sb_stops_trades_H1.csv` is a **fixed, hash-frozen input** generated 2026-07-11 — it
-  predates the 2026-07-30 fill-model correction, which found BUY LIMITs filled one spread too
-  easily, **direction-asymmetrically**. Neutralised for the primary estimand by §2.2; relevant
-  only to the fill-conditional secondary cell.
+- **Retired by §2.7** (kept here so the reasoning survives): `sb_stops_trades_H1.csv` was
+  generated 2026-07-11, predating the 2026-07-30 fill-model correction, and contains **only
+  signals that filled within 12 bars** — a sampling frame chosen by a direction-asymmetric bug.
+  Regeneration removes this rather than caveating it. An earlier draft claimed §2.2's anchoring
+  neutralised it; that claim was wrong.
 - 2026 covers **Jan–Jun only**. BTCUSD includes **weekend sessions**.
 - Broker→NY offset is a fixed **−7h** with ±1h DST wobble (`poc_sb_stops.py:42`).
 - M5 CSVs carry **OHLC only — no volume, no spread**. Tick-volume and live-spread candidate
@@ -154,6 +183,28 @@ estimated, and the study will not report them as though they could.
 As a **secondary read only**: re-resolve fills with the corrected direction-aware resolver and
 repeat the primary test on filled-only signals. If primary and secondary disagree, **that
 disagreement is the finding** and is reported rather than reconciled away.
+
+### 2.7 Population regeneration — resolving the selection confound
+
+**Decision: regenerate the signal set rather than inherit it.** The screen re-runs signal
+collection from the frozen lake with the **corrected direction-aware resolver**, emitting
+**every signal including expired ones**, and uses that as its population.
+
+This is a deliberate scope increase (≈ +0.5–1 day) taken because the alternative is unsound:
+inheriting `sb_stops_trades_H1.csv` means testing `bias_class` on a sample whose membership was
+decided by a known direction-asymmetric bug. No amount of downstream statistical care repairs a
+biased sampling frame, and a "flat" verdict drawn from one would be the *right conclusion for
+the wrong reason* — the worst possible outcome for a study whose entire value is that its null
+is trustworthy.
+
+Regeneration also retires the §2.5 provenance caveats wholesale, and pairs naturally with the
+`skew_H = 0` treatment of unfilled signals (§2.3), which is inert on the inherited file (100%
+filled) and only becomes meaningful once expired signals exist in the sample.
+
+**The inherited file is retained** as a fixed, hash-frozen cross-check: the regenerated
+population must reproduce the inherited one's 2,217 filled signals to within the fill-model
+correction's expected direction-asymmetric difference. A larger or oppositely-signed
+discrepancy means the regeneration is wrong, not the original, and blocks the run.
 
 ---
 
@@ -205,6 +256,15 @@ separately, and if NEUTRAL exceeds the H1 bias's own NEUTRAL rate (42%, from §1
 null. The ≥50-bar warmup also means the earliest signals per symbol are legitimately NEUTRAL;
 those are excluded from feature 6's test and the excluded count is reported.
 
+**Interpretation caveat on features 1 and 2 — normalization circularity.** `skew_H` is
+denominated in R, and R *is* the ATR10 stop distance, so the outcome is already ATR-normalized.
+Features 1 and 2 are functions of ATR. If ATR systematically mis-scales true move size at
+volatility extremes — which is exactly what a fat-tailed regime does — these features will
+correlate with ATR-normalized skew **mechanically**, with no confidence information involved.
+A hit on 1 or 2 is therefore reported as **"volatility normalization or confidence — not
+separable by this design"**, and its promotion requires a follow-up gate measuring skew in
+absolute price units. A null on 1 or 2 is unaffected by this and remains a clean null.
+
 Features **7 and 8 are continuous versions of factors the grader currently binarizes** and are
 the highest-value cells in the panel: if continuous forms carry signal where binary ones do
 not, the finding is that the grader discards information at its thresholds — a config-scale
@@ -234,8 +294,11 @@ and days on top of that. Naive Spearman p-values
 would assume 2,217 independent observations against a far lower effective count — the standard
 way a panel study manufactures a false positive.
 
-**Method:** stationary block bootstrap resampling **whole calendar weeks with all symbols moved
-together** (~157 blocks), preserving serial and cross-sectional dependence in one operation.
+**Method:** a **cluster bootstrap over calendar-week blocks** — whole weeks resampled with
+replacement, all symbols moved together (~157 blocks), preserving serial and cross-sectional
+dependence in one operation. (Named precisely: the blocks are non-overlapping calendar units,
+not the randomly-placed variable-length blocks of a *stationary* bootstrap. The distinction
+matters because the two have different implementations and different edge behaviour.)
 
 **Concretely:** the bootstrapped statistic is the within-symbol-rank Spearman ρ between feature
 and `skew_H`. The null distribution is built by resampling weeks **with the feature column
@@ -274,6 +337,21 @@ budgets: splitting the panel would let a weak Family B result borrow significanc
 The placebos are **inside** the BH family rather than monitored alongside it. This makes the
 void condition (§5.1, §5.3) well-defined — "a placebo appears in the rejected set" — and is
 slightly conservative, which is the correct direction to err.
+
+**Dependence structure, stated rather than glossed.** `composite_score` is a deterministic
+function of the four other Family A factors, so those five tests are strongly positively
+dependent. Benjamini–Hochberg controls FDR under positive regression dependence, so the
+procedure remains valid — but it is *conservative* here, which means **a Family A null is more
+trustworthy than a Family A hit**. The redundant component tests are kept deliberately: without
+them, an individual factor scoring backwards (the inverted-direction row in §6) is undetectable,
+and that is the only outcome of this study that would identify a live defect rather than a
+missed opportunity.
+
+**If more than one feature survives all of §4.5**, exactly one is promoted, ranked by
+**economic-floor magnitude, not by p-value** — p-values under clustered inference are the
+noisier quantity and ranking on them invites selection on sampling error. Remaining survivors
+are recorded as secondary candidates, each requiring its own future gate. Pre-registering the
+tie-break removes the opportunity to choose a favourite after seeing the results.
 
 Robustness cells (H=24, fill-conditional, live-9 subset, per-symbol and per-year sign) apply
 only to survivors and are excluded from the FDR count: they confirm an already-selected
@@ -387,7 +465,10 @@ stream. Given §2.4, any viable ladder is **two tiers, not four**.
 | Test | Why it has teeth |
 |---|---|
 | Adapter ↔ real `SignalGrader` equivalence over generated rows | Prevents recurrence of the mirror drift this study uncovered (§5.4) |
-| **Look-ahead:** appending arbitrary future bars changes **no** feature value | A leaking feature otherwise surfaces only as an impossibly good result nobody questions |
+| **Look-ahead, features:** appending arbitrary future bars changes **no** feature value | A leaking feature otherwise surfaces only as an impossibly good result nobody questions |
+| **Look-ahead, outcomes:** appending bars beyond the H-window changes **no** `skew_H` value | The horizon is as leakable as the features, and an unbounded window would silently import future information into the outcome |
+| `MFE_H` truncation: a fixture that prints MAE 1R **then** MFE 3R scores `skew_H = −1.0`, not `+2.0` | This is the single defect most likely to be "simplified away" during implementation, and it inverts the ranking of exactly the trades a confidence score exists to separate |
+| An unfilled signal (level never touched within W) scores exactly `0.0` and **remains in the sample** | Dropping it is the natural implementation, and it silently selects on a post-signal event |
 | MFE/MAE on hand-built M5 fixtures, including a bar where both 2R-favourable and 1R-adverse occur | Path ordering is the entire reason for measuring on M5; only an order-sensitive fixture proves it |
 | Purge/embargo — a signal whose window crosses the split appears in **neither** set | Leakage is silent and would inflate OOS |
 | BH procedure against a known-answer fixture | An off-by-one in the BH rank is invisible in output |
@@ -402,14 +483,18 @@ stream. Given §2.4, any viable ladder is **two tiers, not four**.
   **committed before the run**; §§4–6 filled from results. Follows the fill-model-correction
   doc's structure, including its "run set fixed, measurement pending" status marker.
 - `scripts/confidence_skew_screen.py` — the analysis, **hash-recorded in the prereg doc**.
+- The regenerated population per §2.7 (corrected resolver, expired signals included), plus the
+  reconciliation report against the inherited `sb_stops_trades_H1.csv`.
 - Dataset frozen via `scripts/freeze_gate_dataset.py`; artifacts under
   `data/results/confidence_screen/`.
 - `tests/unit/test_confidence_skew_screen.py`.
 - `ARSENAL.md` and `IMPROVEMENTS.md` updated with the verdict either way.
 
-**Effort:** ~2–3 days. (Revised up from the ~2 days quoted during design: the hardening in
-§4–§5 — clustered bootstrap, permuted-outcome dry run, injected-signal recovery, look-ahead
-tests — is real implementation work, not documentation.)
+**Effort:** ~3–4 days. Revised twice during design, both times upward and both times for
+substantive reasons rather than padding: first for the §4–§5 hardening (cluster bootstrap,
+permuted-outcome dry run, injected-signal recovery, look-ahead tests), then for the §2.7
+population regeneration. The original ~2-day estimate assumed an inherited dataset that turned
+out to have a biased sampling frame.
 
 **Most likely outcome: Flat** — and that is the outcome with the highest value per unit cost,
 because it retires a proposed rewrite of 70–90% of the decision layer for a few days of work.

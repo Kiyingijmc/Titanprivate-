@@ -13,16 +13,24 @@ from scripts.confidence_screen import BOOTSTRAP_DRAWS, Q_FDR, SEED
 
 def _midrank(values):
     values = np.asarray(values, dtype=float)
+    n = len(values)
+    ranks = np.empty(n, dtype=float)
+    if n == 0:
+        return ranks
     order = np.argsort(values, kind="mergesort")
-    ranks = np.empty(len(values), dtype=float)
-    ranks[order] = np.arange(1, len(values) + 1, dtype=float)
-    # Average ranks within tie groups.
     sorted_vals = values[order]
-    start = 0
-    for i in range(1, len(values) + 1):
-        if i == len(values) or sorted_vals[i] != sorted_vals[start]:
-            ranks[order[start:i]] = ranks[order[start:i]].mean()
-            start = i
+    ranks_sorted = np.arange(1, n + 1, dtype=float)
+    # Average ranks within tie groups, fully vectorised (no per-element
+    # Python-level calls): group ties via a boundary indicator, then take
+    # group means with bincount instead of looping element-by-element.
+    is_new_group = np.empty(n, dtype=bool)
+    is_new_group[0] = True
+    if n > 1:
+        is_new_group[1:] = sorted_vals[1:] != sorted_vals[:-1]
+    group_id = np.cumsum(is_new_group) - 1
+    group_sums = np.bincount(group_id, weights=ranks_sorted)
+    group_counts = np.bincount(group_id)
+    ranks[order] = (group_sums / group_counts)[group_id]
     return ranks
 
 
@@ -69,10 +77,16 @@ def benjamini_hochberg(pvalues, q=Q_FDR):
 def cluster_bootstrap(x, y, clusters, n_draws=BOOTSTRAP_DRAWS, seed=SEED):
     """Cluster bootstrap over calendar-week blocks.
 
-    Whole clusters are resampled with replacement (all symbols move together),
-    preserving serial AND cross-sectional dependence. The null distribution
-    permutes the feature across clusters, so dependence survives while the
-    feature-outcome link is broken.
+    Whole clusters are resampled with replacement, the SAME index applied to
+    both x and y, so a cluster is never fragmented (spec §4.1). The p-value
+    is obtained by inverting this one resampling distribution around zero —
+    p = 2 * min(P(rho* <= 0), P(rho* >= 0)), clipped to 1 — so the p-value
+    and the confidence interval come from the same distribution.
+
+    A separate permutation-based null distribution existed here until
+    2026-08-04 and has been deleted, not disabled — see spec §4.1 Amendment
+    for the full rationale and the measured 15%-against-5% false-positive
+    rate that caused its removal. Do not reintroduce any form of it.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -83,18 +97,13 @@ def cluster_bootstrap(x, y, clusters, n_draws=BOOTSTRAP_DRAWS, seed=SEED):
     index_by_cluster = {c: np.where(clusters == c)[0] for c in unique}
     rng = np.random.default_rng(seed)
 
-    boot, null = np.empty(n_draws), np.empty(n_draws)
+    boot = np.empty(n_draws)
     for d in range(n_draws):
         picked = rng.choice(unique, size=len(unique), replace=True)
         idx = np.concatenate([index_by_cluster[c] for c in picked])
         boot[d] = spearman_rho(x[idx], y[idx])
 
-        shuffled = rng.permutation(unique)
-        remap = np.concatenate([index_by_cluster[c] for c in shuffled])
-        straight = np.concatenate([index_by_cluster[c] for c in unique])
-        null[d] = spearman_rho(x[remap], y[straight])
-
-    pvalue = float((np.abs(null) >= abs(observed)).mean())
+    pvalue = float(min(1.0, 2.0 * min((boot <= 0.0).mean(), (boot >= 0.0).mean())))
     return {"rho": float(observed), "pvalue": pvalue,
             "ci_lo": float(np.quantile(boot, 0.025)),
             "ci_hi": float(np.quantile(boot, 0.975))}

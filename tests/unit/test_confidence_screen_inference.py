@@ -63,12 +63,27 @@ class TestSpearman(unittest.TestCase):
         self.assertAlmostEqual(spearman_rho(x, -x), -1.0, places=9)
 
 
+def _ragged_clusters(rng, n_clusters, lo=3, hi=41):
+    """Deliberately UNEQUAL cluster sizes (spec §4.1 Amendment).
+
+    Equal 10-per-cluster fixtures are exactly what hid the original defect:
+    the deleted permutation null fragmented a cluster across neighbours only
+    when block boundaries didn't line up, which never happens when every
+    block is the same size. Sizes are drawn uniformly from [lo, hi) so real
+    calendar-week-sized ragged blocks (weeks vary from a few signals to
+    dozens) are represented.
+    """
+    sizes = rng.integers(lo, hi, size=n_clusters)
+    clusters = np.repeat(np.arange(n_clusters), sizes)
+    return clusters, int(sizes.sum())
+
+
 class TestClusterBootstrap(unittest.TestCase):
-    def _data(self, n=400, seed=3):
+    def _data(self, seed=3, n_clusters=20):
         rng = np.random.default_rng(seed)
+        clusters, n = _ragged_clusters(rng, n_clusters)
         x = rng.normal(size=n)
         y = 0.6 * x + rng.normal(size=n)
-        clusters = np.repeat(np.arange(n // 10), 10)
         return x, y, clusters
 
     def test_is_deterministic_for_a_fixed_seed(self):
@@ -86,10 +101,71 @@ class TestClusterBootstrap(unittest.TestCase):
 
     def test_pure_noise_is_not_significant(self):
         rng = np.random.default_rng(9)
-        n = 400
+        c, n = _ragged_clusters(rng, 20)
         x, y = rng.normal(size=n), rng.normal(size=n)
-        c = np.repeat(np.arange(n // 10), 10)
         self.assertGreater(cluster_bootstrap(x, y, c, n_draws=500, seed=5)["pvalue"], 0.05)
+
+
+class TestClusterBootstrapCalibration(unittest.TestCase):
+    """Binding requirement from spec §4.1 Amendment: a calibration check on
+    DELIBERATELY UNEQUAL cluster sizes, because the deleted permutation null
+    was invisible to 14 passing tests purely because every bootstrap fixture
+    used equal 10-per-cluster blocks. That null measured a 15% false-positive
+    rate against a nominal 5%; this pins the replacement — inverting the
+    same-index resampling distribution — at nominal.
+    """
+
+    N_TRIALS = 250
+    N_CLUSTERS = 15
+    # Production default (BOOTSTRAP_DRAWS) is 10,000 draws; that is far more
+    # than a calibration loop needs per trial (this test already runs 250
+    # independent trials) and would blow the module's runtime budget, so a
+    # deliberately modest per-trial draw count is used instead.
+    N_DRAWS = 300
+    ALPHA = 0.05
+
+    def test_false_positive_rate_is_near_nominal_with_ragged_clusters(self):
+        """H0 is mechanically true here (x, y independent) so any rejection
+        at alpha=0.05 is by construction a false positive.
+
+        Trial count / band reasoning: with N_TRIALS=250 independent trials,
+        the binomial standard error of the measured FPR under a truly
+        nominal 5% rate is sqrt(0.05*0.95/250) ~= 0.0138. A 3-SE band
+        ([0.0086, 0.0914]) keeps the test from flaking on ordinary Monte
+        Carlo noise while still being far tighter than the 15% the deleted
+        permutation null actually measured (>7 SE outside this band, so a
+        regression back to that defect fails loudly, not marginally).
+        250 trials x 300 draws keeps this test in the tens-of-seconds range
+        rather than the minutes a production-scale 10,000-draw bootstrap
+        would take per trial.
+        """
+        rng = np.random.default_rng(2026)
+        rejects = 0
+        for _ in range(self.N_TRIALS):
+            clusters, n = _ragged_clusters(rng, self.N_CLUSTERS)
+            x = rng.normal(size=n)
+            y = rng.normal(size=n)  # independent of x: H0 is true
+            draw_seed = int(rng.integers(0, 2**31 - 1))
+            out = cluster_bootstrap(x, y, clusters, n_draws=self.N_DRAWS, seed=draw_seed)
+            if out["pvalue"] < self.ALPHA:
+                rejects += 1
+        fpr = rejects / self.N_TRIALS
+        se = (self.ALPHA * (1 - self.ALPHA) / self.N_TRIALS) ** 0.5
+        self.assertGreater(fpr, self.ALPHA - 3 * se, msg=f"measured FPR={fpr}")
+        self.assertLess(fpr, self.ALPHA + 3 * se, msg=f"measured FPR={fpr}")
+
+    def test_still_detects_genuine_association_with_ragged_clusters(self):
+        """Companion to the calibration test above: a method that always
+        returns pvalue=1.0 would also "pass" a calibration-only check, so
+        this proves the same ragged-cluster setup still finds a real signal.
+        """
+        rng = np.random.default_rng(4242)
+        clusters, n = _ragged_clusters(rng, self.N_CLUSTERS)
+        x = rng.normal(size=n)
+        y = 0.6 * x + rng.normal(size=n)
+        out = cluster_bootstrap(x, y, clusters, n_draws=1000, seed=7)
+        self.assertGreater(out["rho"], 0.3)
+        self.assertLess(out["pvalue"], self.ALPHA)
 
 
 class TestICC(unittest.TestCase):

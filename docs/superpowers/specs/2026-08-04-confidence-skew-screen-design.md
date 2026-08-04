@@ -201,6 +201,14 @@ Regeneration also retires the §2.5 provenance caveats wholesale, and pairs natu
 `skew_H = 0` treatment of unfilled signals (§2.3), which is inert on the inherited file (100%
 filled) and only becomes meaningful once expired signals exist in the sample.
 
+**A third selection layer, found while planning:** `poc_sb_stops.resolve()` carries a
+`busy_until` cursor enforcing one-open-position-per-symbol, so any signal arriving while a prior
+trade is open is **discarded entirely** — a filter driven by previous trades' *outcomes*, which
+is post-signal selection on the sharpest possible variable. The regenerated population is built
+from `collect_signals()` directly and **never calls `resolve()`**: no `busy_until`, no fill
+filter, no expiry drop. Position-count limits are an Arbiter concern, not a property of signal
+quality, and this study ranks signals.
+
 **The inherited file is retained** as a fixed, hash-frozen cross-check: the regenerated
 population must reproduce the inherited one's 2,217 filled signals to within the fill-model
 correction's expected direction-asymmetric difference. A larger or oppositely-signed

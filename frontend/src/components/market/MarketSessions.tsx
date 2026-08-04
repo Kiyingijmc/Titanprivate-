@@ -213,6 +213,7 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
         <span
           data-testid="session-clock"
           className="truncate font-mono tabnum text-xs text-secondary-foreground"
+          title={session.localClock}
         >
           {session.localClock}
         </span>

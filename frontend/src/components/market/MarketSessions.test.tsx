@@ -165,4 +165,14 @@ describe("SessionChip layout (spec §3)", () => {
     expect(name.parentElement).toBe(chip);
     expect(clock.parentElement).toBe(chip);
   });
+
+  it("gives every truncatable span a title, so truncation cannot destroy information", () => {
+    render(<MarketSessions now={NOW} />);
+    const chip = screen.getByTestId("session-chip-london"); // open: has all three
+    for (const id of ["session-name", "session-clock", "session-status"]) {
+      const el = chip.querySelector(`[data-testid="${id}"]`)!;
+      expect(el, id).not.toBeNull();
+      expect(el.getAttribute("title"), id).toBe(el.textContent);
+    }
+  });
 });

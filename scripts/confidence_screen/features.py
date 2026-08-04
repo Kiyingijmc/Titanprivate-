@@ -57,23 +57,33 @@ def build_features(sig, h1, seed=SEED, h4_bias=None):
     f1 = float((win <= atr[-1]).sum()) / float(len(win))
 
     # f2: ATR(10)/ATR(50)
-    f2 = float(atr[-10:].mean() / atr[-50:].mean())
+    denom = float(atr[-50:].mean())
+    f2 = float(atr[-10:].mean() / denom) if denom > 0 else 1.0
 
     # f3: Kaufman efficiency ratio over 20 bars
     seg = close[-21:]
     path = float(np.abs(np.diff(seg)).sum())
     f3 = float(abs(seg[-1] - seg[0]) / path) if path > 0 else 0.0
 
-    # f4: signed distance to the nearer previous-completed-day extreme, in R
-    day_len = 24
-    prev_day = slice(max(0, len(close) - 2 * day_len), max(0, len(close) - day_len))
-    if len(close[prev_day]) == 0:
+    # f4: signed distance to the nearer previous-completed-day extreme, in R.
+    # Derived from h1["time"] (calendar date, not a fixed bar count) so a
+    # weekend gap or short Friday close on this 24/5 universe doesn't drift
+    # the window off the real previous trading day.
+    time = h1["time"][:i + 1]
+    if len(time) == 0 or risk <= 0:
         f4 = 0.0
     else:
-        pdh, pdl = float(hi[prev_day].max()), float(lo[prev_day].min())
-        entry = float(sig["entry"])
-        raw = min(abs(entry - pdh), abs(entry - pdl)) / risk
-        f4 = raw if is_long else -raw
+        bar_dates = time.astype("datetime64[D]")
+        cur_date = bar_dates[-1]
+        prev_dates = bar_dates[bar_dates < cur_date]
+        if len(prev_dates) == 0:
+            f4 = 0.0
+        else:
+            mask = bar_dates == prev_dates.max()
+            pdh, pdl = float(hi[mask].max()), float(lo[mask].min())
+            entry = float(sig["entry"])
+            raw = min(abs(entry - pdh), abs(entry - pdl)) / risk
+            f4 = raw if is_long else -raw
 
     f5 = _session(sig["hour"])
 

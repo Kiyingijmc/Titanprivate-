@@ -74,6 +74,22 @@ class TestTruncation(unittest.TestCase):
         self.assertAlmostEqual(out["mfe"], 3.0, places=6)
         self.assertAlmostEqual(out["mae"], 1.0, places=6)
 
+    def test_exact_2r_boundary_sets_hit_2r_flag(self):
+        """Regression test for floating-point precision at the 2.0R boundary.
+        A bar with favourable exactly at 2.0R (constructed via ENTRY + 2.0*RISK)
+        uses the same arithmetic that produces float noise elsewhere. This test
+        ensures the tolerance-based comparison catches the 2.0R threshold even
+        when the computed value is 2.0000000000000018 instead of 2.0."""
+        m5 = _m5([
+            (ENTRY, ENTRY),
+            (ENTRY + 2.0 * RISK, ENTRY),  # Exactly 2.0R favorable
+        ])
+        out = excursions(_sig(), m5)
+        self.assertTrue(out["filled"])
+        self.assertTrue(out["hit_2r_before_1r"],
+                       "hit_2r_before_1r should be True at exact 2.0R boundary")
+        self.assertAlmostEqual(out["mfe"], 2.0, places=6)
+
 
 class TestUnfilled(unittest.TestCase):
     def test_untouched_level_scores_zero_and_is_still_returned(self):

@@ -18,6 +18,11 @@ import numpy as np
 from scripts.confidence_screen import H_BARS, W_BARS
 
 _M5_PER_H1 = 12
+# Tolerance for R-multiple boundary checks (1.0 and 2.0) to account for IEEE 754
+# floating-point precision. Arithmetic like (ENTRY + 2.0 * RISK - ENTRY) / RISK
+# may yield 2.0000000000000018 instead of exactly 2.0. This tolerance only catches
+# precision artifacts (~1e-13 relative error), not real data deviations.
+_R_EPS = 1e-10
 
 
 def excursions(sig, m5, h_bars=H_BARS, w_bars=W_BARS):
@@ -56,12 +61,12 @@ def excursions(sig, m5, h_bars=H_BARS, w_bars=W_BARS):
             favourable = (entry - lows[k]) / risk
 
         # Adverse first (pessimistic) — see module docstring.
-        if adverse >= 1.0 - 1e-10:
+        if adverse >= 1.0 - _R_EPS:
             mae = 1.0
             break
         mae = max(mae, max(adverse, 0.0))
         favourable = max(favourable, 0.0)
-        if favourable >= 2.0:
+        if favourable >= 2.0 - _R_EPS:
             hit_2r = True
         mfe = max(mfe, favourable)
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import { SESSIONS } from "@/lib/sessions";
 import { MarketSessions } from "./MarketSessions";
 
 describe("MarketSessions", () => {
@@ -174,5 +175,19 @@ describe("SessionChip layout (spec §3)", () => {
       expect(el, id).not.toBeNull();
       expect(el.getAttribute("title"), id).toBe(el.textContent);
     }
+  });
+});
+
+describe("chip grid (spec §6)", () => {
+  const NOW = new Date("2026-08-04T08:30:00Z");
+
+  it("renders every session in SESSIONS — no chip is dropped by the grid change", () => {
+    // Derived from the table, not hard-coded: adding a fifth session extends
+    // this guard automatically instead of leaving it silently stale.
+    render(<MarketSessions now={NOW} />);
+    for (const s of SESSIONS) {
+      expect(screen.getByTestId(`session-chip-${s.id}`)).toBeInTheDocument();
+    }
+    expect(SESSIONS.length).toBeGreaterThan(0);   // or the loop is vacuous
   });
 });

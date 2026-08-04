@@ -170,7 +170,12 @@ export function MarketSessions({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {/* Intrinsic reflow instead of two guessed breakpoints: chips wrap when
+              they actually run out of room. 6rem is the stacked chip's real floor —
+              the longest session name (~62px) plus px-3 padding (24px) plus the
+              2px left border. Survives a font change or a card being added to the
+              strip; a fixed breakpoint does not. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(6rem,1fr))] gap-2">
             {sessions.map((session) => (
               <SessionChip key={session.id} session={session} color={SESSION_COLORS[session.id]} />
             ))}

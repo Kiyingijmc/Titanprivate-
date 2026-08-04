@@ -196,30 +196,26 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
     >
       {/* STACKED, not side by side. The name and the clock used to share a
           `justify-between` row, which needed ~118px in a 53px track and clipped
-          every clock mid-digit. Each is its own row (own DOM parent), so it
-          only ever competes with its own width, never a sibling's. */}
-      <div>
-        <span
-          data-testid="session-name"
-          className="truncate text-sm font-semibold"
-          style={{ color }}
-          title={session.label}
-        >
-          {session.label}
-        </span>
-      </div>
+          every clock mid-digit. Each is a direct child of this flex-col root,
+          so it only ever competes with its own width, never a sibling's. */}
+      <span
+        data-testid="session-name"
+        className="truncate text-sm font-semibold"
+        style={{ color }}
+        title={session.label}
+      >
+        {session.label}
+      </span>
 
       {/* Live HH:MM:SS in the session's own timezone — OPEN sessions only.
           A closed session's wall-clock time drives no decision; its countdown does. */}
       {session.open && (
-        <div>
-          <span
-            data-testid="session-clock"
-            className="truncate font-mono tabnum text-xs text-secondary-foreground"
-          >
-            {session.localClock}
-          </span>
-        </div>
+        <span
+          data-testid="session-clock"
+          className="truncate font-mono tabnum text-xs text-secondary-foreground"
+        >
+          {session.localClock}
+        </span>
       )}
 
       {session.open ? (

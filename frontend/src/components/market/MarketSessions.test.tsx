@@ -153,13 +153,16 @@ describe("SessionChip layout (spec §3)", () => {
     expect(status.textContent).toMatch(/\d{2}h \d{2}m/);
   });
 
-  it("puts the name and clock in SEPARATE rows, not one flex row", () => {
-    // The overflow's root cause: name + clock side by side needed 118px in a
-    // 53px row. If they share a parent again, this fails.
+  it("keeps the name and clock as separate rows of the chip, not a shared flex row", () => {
+    // The bug this kills: name + clock inside one `justify-between` row, which
+    // needed ~118px in a 53px track and clipped every clock mid-digit. Both must
+    // be direct children of the chip's flex-col root — if either gets re-wrapped
+    // in a shared row, its parent is no longer the root and this fails.
     render(<MarketSessions now={NOW} />);
     const chip = screen.getByTestId("session-chip-london");
     const name = chip.querySelector('[data-testid="session-name"]')!;
     const clock = chip.querySelector('[data-testid="session-clock"]')!;
-    expect(name.parentElement).not.toBe(clock.parentElement);
+    expect(name.parentElement).toBe(chip);
+    expect(clock.parentElement).toBe(chip);
   });
 });

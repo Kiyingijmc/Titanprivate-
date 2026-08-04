@@ -121,7 +121,9 @@ real; if only R passes, the habitat was the fix and J's doctrine added nothing.
 gambit:
   enabled: false          # research-first; stays off until a GO
   pairs: [US30, US100, XAUUSD, BTCUSD]
-  sessions: {london: ["02:00","05:00"], ny_am: ["08:30","11:00"]}
+  sessions:
+    london: {window: ["02:00","05:00"], range: ["18:00","02:00"]}
+    ny_am:  {window: ["08:30","11:00"], range: ["02:00","08:30"]}
   symbol_sessions:            # which windows each symbol trades
     US30: [ny_am]
     US100: [ny_am]
@@ -142,13 +144,14 @@ zero enabled setups is a valid (inert) state.
 Arbiter, RiskManager sizing, portfolio cap, TradeManager BE/partials, M5 routing
 and warmup.
 
-**New plumbing — `flat_at`:** strategies cannot close positions today (they only
-emit entries). The decision dict gains an optional `flat_at` (NY-time string);
-the controller stores it in `active_orders` metadata at registration (the same
-send-time-metadata pattern trade management already relies on, with heartbeat
-backfill), and TradeManager gains one check: if `flat_at` is set and NY now ≥
-`flat_at`, issue `CLOSE_POS`. Strategy-agnostic, opt-in per trade, no schema
-migration beyond a metadata field. SilverBullet never sets it and is untouched.
+**New plumbing — flat-by-close (amended at plan time):** implemented as a third
+variant of the existing `trade_management.time_exits` hook (joining Almanac's
+calendar rule and Gyroscope's `max_bars`): `Gambit: { flat_at_ny:
+["05:00","11:00"] }` closes any Gambit position once a listed NY wall-clock
+time has been crossed since placement. Strategy-name-keyed config — no new
+decision-dict field, no state-DB column, no heartbeat backfill concern. The
+original per-trade `flat_at` metadata design was dropped as strictly more
+plumbing for identical behavior.
 
 ## 5. Risk & execution guardrails
 

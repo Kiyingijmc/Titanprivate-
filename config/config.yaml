@@ -119,6 +119,7 @@ trade_management:
   time_exits:
     Almanac: { exit_trading_day: 3 }
     Gyroscope: { max_bars: 48 }   # v2b gate: close after 48 H1 bars
+    Gambit: { flat_at_ny: ["05:00", "11:00"] }  # session-flat (spec 2026-08-02)
 
 strategies:
   # 1. Silver Bullet (FVG displacement, H1)
@@ -190,6 +191,42 @@ strategies:
     ma_window: 24
     stop_atr: 1.0
     rr_target: 2.0
+
+  # 5. Gambit — M5 session playbook (Judas sweep-reversal + Reprise SB-M5).
+  # SPEC: docs/superpowers/specs/2026-08-02-gambit-m5-playbook-design.md.
+  # RESEARCH-ONLY: manifest status research + enabled false + both setups
+  # false. Each setup is enabled INDIVIDUALLY by its own gate GO — never
+  # flip these without a recorded verdict in docs/research/.
+  # min_stop_price = cost_floor_mult x (spread + commission) in PRICE units
+  # (values computed from data/specs.json + the shared SPREADS table; the
+  # derivation command is in the 2026-08-02 implementation plan, Task 6).
+  # max_spread_price = 1.5 x assumed spread (live analogue of the gate's
+  # x1.5 stress cell).
+  gambit:
+    enabled: false
+    timeframe: "M5"
+    rr: 2.0
+    broker_gmt_offset: 2          # keep equal to connection.broker.timezone_offset
+    sessions:
+      london: {window: ["02:00","05:00"], range: ["18:00","02:00"]}
+      ny_am:  {window: ["08:30","11:00"], range: ["02:00","08:30"]}
+    symbol_sessions:
+      US30: [ny_am]
+      US100: [ny_am]
+      XAUUSD: [london, ny_am]
+      BTCUSD: [london, ny_am]
+    setups:
+      judas:   {enabled: false, sweep_ttl_bars: 12, body_min_atr: 0.8, stop_buffer_atr: 0.2}
+      reprise: {enabled: false, body_min_atr: 0.8, stop_buffer_atr: 0.2}
+    cost_floor_mult: 4
+    # US100 has no row in data/specs.json (last refreshed 2026-07-14, before
+    # the 07-28 universe expansion); its tick_value/tick_size below are the
+    # bridge-measured fallback from scripts/gyro2_gate.py SPECS_EXTRA
+    # (0.1 / 0.01 -- identical to US30's specs.json row), NOT the derivation
+    # snippet's silent 1e-5/1.0 forex default, which would floor it near zero.
+    min_stop_price: {US30: 10.8, US100: 10.8, XAUUSD: 1.08, BTCUSD: 68}
+    max_spread_price: {US30: 3, US100: 3, XAUUSD: 0.3, BTCUSD: 15}
+    pairs: ["US30", "US100", "XAUUSD", "BTCUSD"]
 
 ops:
   journal:

@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.confidence_screen.features import (
-    FEATURE_SPECS, PLACEBO_NAMES, build_features,
+    FEATURE_SPECS, PLACEBO_NAMES, build_features, h4_bias_at, neutral_rate_report,
 )
 
 N = 400
@@ -198,6 +198,40 @@ class TestSpecTable(unittest.TestCase):
     def test_panel_has_exactly_eight_candidates_and_two_placebos(self):
         self.assertEqual(len(FEATURE_SPECS), 8)
         self.assertEqual(len(PLACEBO_NAMES), 2)
+
+
+class TestH4Bias(unittest.TestCase):
+    def _frame(self, n=600):
+        t = pd.date_range("2024-01-01", periods=n, freq="h")
+        close = pd.Series(range(n), dtype=float) * 0.001 + 1.10
+        return pd.DataFrame({"time": t, "open": close - 0.0002, "high": close + 0.0005,
+                             "low": close - 0.0005, "close": close})
+
+    def test_returns_a_valid_bias_label(self):
+        frame = self._frame()
+        out = h4_bias_at(frame, frame["time"].iloc[500])
+        self.assertIn(out, ("BULLISH", "BEARISH", "NEUTRAL"))
+
+    def test_short_history_yields_neutral_not_a_crash(self):
+        frame = self._frame(n=20)
+        self.assertEqual(h4_bias_at(frame, frame["time"].iloc[-1]), "NEUTRAL")
+
+    def test_uses_only_bars_closed_at_or_before_the_signal(self):
+        frame = self._frame()
+        cut = frame["time"].iloc[400]
+        tampered = frame.copy()
+        tampered.loc[401:, ["close", "high", "low"]] += 50.0
+        self.assertEqual(h4_bias_at(frame, cut), h4_bias_at(tampered, cut))
+
+
+class TestNeutralTripwire(unittest.TestCase):
+    def test_reports_the_neutral_rate(self):
+        report = neutral_rate_report(["BULLISH", "NEUTRAL", "NEUTRAL", "BEARISH"])
+        self.assertAlmostEqual(report["neutral_rate"], 0.5, places=9)
+        self.assertEqual(report["n"], 4)
+
+    def test_empty_input_is_reported_as_fully_neutral(self):
+        self.assertEqual(neutral_rate_report([])["neutral_rate"], 1.0)
 
 
 if __name__ == "__main__":

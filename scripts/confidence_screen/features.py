@@ -108,3 +108,37 @@ def build_features(sig, h1, seed=SEED, h4_bias=None):
     for salt, name in zip(("a", "b"), PLACEBO_NAMES):
         out[name] = _placebo(sig, salt, seed)
     return out
+
+
+def h4_bias_at(h1_frame, signal_time):
+    """Bias of the last CLOSED H4 bar at signal_time, via the shipped BiasEngine.
+
+    Not reimplemented: a null on a bias definition Titan does not use would
+    answer the wrong question (spec §3.2, same reasoning as §5.4).
+    """
+    import pandas as pd
+    from src.analysis.bias_engine import BiasEngine
+
+    closed = h1_frame[h1_frame["time"] <= signal_time]
+    if len(closed) < 4:
+        return "NEUTRAL"
+    h4 = (closed.set_index("time")
+                .resample("4h")
+                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                .dropna()
+                .reset_index())
+    if len(h4) < 50:
+        return "NEUTRAL"
+    bias, _liq = BiasEngine(h4).get_bias_context()
+    return bias
+
+
+def neutral_rate_report(values):
+    """Tripwire for feature 6: BiasEngine returns NEUTRAL on ANY exception
+    (bias_engine.py:66) and on <50 bars (:38), so a broken resample is
+    indistinguishable from a genuine range without this."""
+    values = list(values)
+    if not values:
+        return {"neutral_rate": 1.0, "n": 0}
+    neutral = sum(1 for v in values if v == "NEUTRAL")
+    return {"neutral_rate": neutral / len(values), "n": len(values)}

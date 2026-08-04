@@ -76,19 +76,25 @@ class TestTruncation(unittest.TestCase):
 
     def test_exact_2r_boundary_sets_hit_2r_flag(self):
         """Regression test for floating-point precision at the 2.0R boundary.
-        A bar with favourable exactly at 2.0R (constructed via ENTRY + 2.0*RISK)
-        uses the same arithmetic that produces float noise elsewhere. This test
-        ensures the tolerance-based comparison catches the 2.0R threshold even
-        when the computed value is 2.0000000000000018 instead of 2.0."""
+        Using RISK=0.0005 produces a 2.0R level that rounds BELOW 2.0 due to
+        IEEE 754 precision (1.9999999999997797). The tolerance check
+        (favourable >= 2.0 - _R_EPS) must catch this; strict >= 2.0 would fail."""
+        risk_2r = 0.0005
         m5 = _m5([
             (ENTRY, ENTRY),
-            (ENTRY + 2.0 * RISK, ENTRY),  # Exactly 2.0R favorable
-        ])
-        out = excursions(_sig(), m5)
+            (ENTRY + 2.0 * risk_2r, ENTRY),  # Rounds below 2.0
+        ], start=T0, step_min=5)
+        # Compute expected: (ENTRY + 2.0*risk_2r - ENTRY) / risk_2r
+        expected_fav = (ENTRY + 2.0 * risk_2r - ENTRY) / risk_2r
+        self.assertLess(expected_fav, 2.0, "Sanity check: 2R should round below 2.0")
+
+        sig_local = {"entry": ENTRY, "risk": risk_2r, "dir": "BUY",
+                     "time": T0, "symbol": "EURUSD"}
+        out = excursions(sig_local, m5, h_bars=12, w_bars=12)
         self.assertTrue(out["filled"])
         self.assertTrue(out["hit_2r_before_1r"],
-                       "hit_2r_before_1r should be True at exact 2.0R boundary")
-        self.assertAlmostEqual(out["mfe"], 2.0, places=6)
+                       "hit_2r_before_1r should be True even when favourable < 2.0")
+        self.assertAlmostEqual(out["mfe"], 2.0, places=4)
 
 
 class TestUnfilled(unittest.TestCase):

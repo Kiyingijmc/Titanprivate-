@@ -309,10 +309,29 @@ not the randomly-placed variable-length blocks of a *stationary* bootstrap. The 
 matters because the two have different implementations and different edge behaviour.)
 
 **Concretely:** the bootstrapped statistic is the within-symbol-rank Spearman ρ between feature
-and `skew_H`. The null distribution is built by resampling weeks **with the feature column
-permuted across weeks** (so dependence structure is retained while the feature–outcome link is
-broken); the two-sided p-value is the fraction of null draws at least as extreme as the
-observed ρ. 10,000 draws, seeded and recorded.
+and `skew_H`. Whole calendar weeks are resampled with replacement, **the same index applied to
+feature and outcome together**, so every cluster stays intact. The two-sided p-value is obtained
+by **inverting that resampling distribution**: `p = 2 · min(P(ρ* ≤ 0), P(ρ* ≥ 0))`, clipped to
+1. 10,000 draws, seeded and recorded.
+
+> **Amendment, 2026-08-04 (before any measurement).** This paragraph originally specified a
+> separate permutation null — "resampling weeks with the feature column permuted across weeks."
+> Review of the implementation found that construction **statistically unsound for this data**:
+> permuting cluster *order* pairs observations across differently-sized blocks, so a single
+> feature-cluster is fragmented across several unrelated outcome-clusters whenever cluster sizes
+> differ. Calendar weeks are never equal-sized. A calibration check measured a **15%
+> false-positive rate against a nominal 5%** — reintroducing precisely the false-positive
+> mechanism that clustering exists to prevent, inside the null itself.
+>
+> The permutation path is therefore **deleted**, not patched, and the p-value now comes from the
+> resampling distribution that was independently assessed as sound. This also removes an
+> incoherence in the original design, which drew the p-value from one distribution and the
+> confidence interval from another.
+>
+> **Binding requirement:** the implementation must carry a calibration test on **deliberately
+> unequal cluster sizes** demonstrating the false-positive rate sits at nominal. The original
+> defect was invisible to a 14-test suite because every bootstrap fixture used equal
+> 10-per-cluster blocks; an equal-size-only test set cannot detect this class of error.
 
 **Intracluster correlation is measured, not assumed:** ICC is computed on `skew_H` residuals
 after within-symbol rank-normalization, with the calendar week as the grouping unit. The design

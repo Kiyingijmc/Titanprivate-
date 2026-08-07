@@ -772,6 +772,9 @@ describe("market-context strip (spec §4)", () => {
     renderOverview();
     expect(screen.getByText(/market sessions/i)).toBeInTheDocument();
     expect(screen.getByTestId("locality-clock")).toBeInTheDocument();
+    // Testids, not getByText: with no dollar/news data in the test snapshot each
+    // card renders BOTH its title and its empty state ("Dollar Bias" + "Dollar bias
+    // unavailable"), so a text match throws "Found multiple elements".
     expect(screen.getByTestId("dollar-bias")).toBeInTheDocument();
     expect(screen.getByTestId("news-panel")).toBeInTheDocument();
   });

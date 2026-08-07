@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 /**
- * Re-runs the exact measurement that found the market-context strip overflow
- * (sub-project D, 2026-08-04): for every element in the strip, compare
- * scrollWidth against clientWidth, and flag any single-line row that has
- * grown taller than one line (the wrap tell — "New York" measured 40px
- * against a ~20px line).
+ * Prints the probe and driving recipe for the exact measurement that found the
+ * market-context strip overflow (sub-project D, 2026-08-04): for every element
+ * in the strip, compare scrollWidth against clientWidth, and flag any
+ * single-line row that has grown taller than one line (the wrap tell — "New
+ * York" measured 40px against a ~20px line).
  *
  * NOT a Vitest test: jsdom computes no layout, so this can only be answered by
- * a real browser. Run it against a devserver, never the live bot:
+ * a real browser running layout. This script PRINTS the probe and the recipe;
+ * it does not open a browser or connect to anything, so it always exits 0. It
+ * cannot gate CI on its own — a human or agent must run the printed recipe
+ * through the shared `browse` daemon (at $HOME/.claude/skills/gstack/browse/...)
+ * and interpret the findings. Making it self-driving would require calling that
+ * daemon's HTTP interface; do NOT add puppeteer — this project deliberately
+ * keeps one Chromium.
  *
- *   TITAN_GUI_PORT=8899 TITAN_GUI_TOKEN=layoutcheck \
- *     <checkout>/.venv/bin/python -m src.ops.web.devserver &
+ * Usage:
  *   node frontend/scripts/measure-strip-overflow.mjs
  *
- * Exits non-zero if anything overflows, so it can gate a future change.
+ * This prints the probe and a step-by-step recipe to run it at 1920, 1440, and
+ * 1280px widths. Follow those instructions manually, or dispatch an agent to.
  */
 const URL = process.env.STRIP_URL ?? "http://127.0.0.1:8899";
 const TOKEN = process.env.TITAN_GUI_TOKEN ?? "layoutcheck";

@@ -30,7 +30,7 @@ export function DollarBias({ data, className }: { data?: DollarBiasData; classNa
           className="flex flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-6 text-center"
         >
           <span className="text-sm text-muted-foreground">Dollar bias unavailable</span>
-          <span className="text-xs text-muted-foreground/70">
+          <span className="max-w-[24ch] text-xs text-muted-foreground/70">
             No USD price feed is connected yet — populated on demo and backtest data.
           </span>
         </div>
@@ -128,9 +128,9 @@ export function DollarBias({ data, className }: { data?: DollarBiasData; classNa
 function Header({ source }: { source?: DollarBiasData["source"] }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <h3 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <DollarSign className="size-3.5" aria-hidden />
-        Dollar Bias
+      <h3 className="flex min-w-0 items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <DollarSign className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">Dollar Bias</span>
       </h3>
       {source === "index" ? (
         <span className="rounded-full border border-accent/40 bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent">

@@ -91,13 +91,17 @@ export function MarketSessions({
 
   return (
     <div
+      data-testid="market-sessions"
       className={cn(
         "flex flex-col gap-4 rounded-lg border border-border bg-surface-1 p-4",
         className
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 className="min-w-0 truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <h3
+          className="min-w-0 truncate text-xs font-medium uppercase tracking-wide text-muted-foreground"
+          title="Market Sessions"
+        >
           Market Sessions
         </h3>
         {featuredOverlap && (
@@ -171,11 +175,17 @@ export function MarketSessions({
           </div>
 
           {/* Intrinsic reflow instead of two guessed breakpoints: chips wrap when
-              they actually run out of room. 6rem is the stacked chip's real floor —
-              the longest session name (~62px) plus px-3 padding (24px) plus the
-              2px left border. Survives a font change or a card being added to the
+              they actually run out of room. 10rem is the stacked chip's real
+              floor. It is NOT set by the session name any more (Critical-1 fix):
+              once the open pill's label was shortened to "Open · Xh Ym", the
+              widest row became the CLOSED pill, which still renders the full
+              `font-mono` statusLabel verbatim ("Opens in 12h 30m" at its widest,
+              16 monospace chars) — ~7.2px/char at text-xs monospace ≈ 115px of
+              text, plus the pill's own px-2 padding (16px), plus the chip's
+              px-3 padding (24px) and border (~2-3px) ≈ 158px ≈ 9.9rem. Rounded
+              up to 10rem. Survives a font change or a card being added to the
               strip; a fixed breakpoint does not. */}
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(6rem,1fr))] gap-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-2">
             {sessions.map((session) => (
               <SessionChip key={session.id} session={session} color={SESSION_COLORS[session.id]} />
             ))}
@@ -184,6 +194,15 @@ export function MarketSessions({
       )}
     </div>
   );
+}
+
+/** Mirrors the private `fmtCountdown` in lib/sessions.ts (`NNh NNm` / `Nm`) so
+ * the chip's short label, built from the SAME `countdownMin`, always reproduces
+ * the exact duration text embedded in the end of the full `statusLabel`. */
+function fmtCountdownShort(min: number): string {
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 function SessionChip({ session, color }: { session: SessionState; color: string }) {
@@ -227,7 +246,7 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
       {session.open ? (
         <span
           data-testid="session-status"
-          className="inline-flex w-fit max-w-full items-center gap-1.5 truncate rounded-full px-2 py-0.5 text-xs font-medium"
+          className="inline-flex w-fit max-w-full min-w-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
           style={{ backgroundColor: chipBg, color }}
           title={session.statusLabel}
         >
@@ -239,7 +258,13 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
             style={{ backgroundColor: color }}
             aria-hidden
           />
-          {session.statusLabel}
+          {/* `truncate` lives HERE, not on the flex pill above (same defect and
+              same fix as NewsPanel's h3: text-overflow:ellipsis never reaches a
+              bare text node inside a flex container). The visible text is also
+              SHORTENED to "Open · Xh Ym" (spec §3, ~80px) rather than the full
+              "Open · closes in Xh Ym" (~5x wider) — `title` above keeps the full
+              string recoverable. */}
+          <span className="truncate">Open · {fmtCountdownShort(session.countdownMin)}</span>
         </span>
       ) : (
         <span

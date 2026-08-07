@@ -85,14 +85,27 @@ describe("NewsPanel", () => {
 
   describe("overflow constraints (spec §4 fix)", () => {
     it("keeps the Economic Calendar title in its own element for truncation", () => {
-      // The h3 is a flex container. The title text must be in a separate
-      // <span className="truncate"> element, not a bare text node in the h3,
-      // or text-overflow:ellipsis will never apply.
+      // The h3 is a flex container. The title text must live inside its own
+      // CHILD ELEMENT, not as a bare text node directly inside the h3 (a bare
+      // text node is what text-overflow:ellipsis can never reach).
+      //
+      // I9: this asserts STRUCTURE, not a Tailwind class string. A
+      // `span.truncate` selector is falsifiable in the wrong direction — it
+      // goes red if `truncate` is swapped for an equivalent overflow utility
+      // (a non-regression), and it stays green for an INERT `truncate` class
+      // sitting on the flex container itself rather than the text (the exact
+      // defect this test exists to catch — see MarketSessions' status pill).
+      // `.children` is Element-only, so a bare text node never appears in it:
+      // if the fix regresses to `<h3><Icon/>Economic Calendar</h3>`, no
+      // element child's textContent matches and this fails for the right
+      // reason regardless of which CSS class does the truncating.
       render(<NewsPanel data={OK} />);
       const header = screen.getByRole("heading", { name: /Economic Calendar/ });
-      const titleSpan = header.querySelector('span.truncate');
-      expect(titleSpan).not.toBeNull();
-      expect(titleSpan?.textContent).toContain("Economic Calendar");
+      const titleEl = Array.from(header.children).find(
+        (child) => child.textContent?.trim() === "Economic Calendar"
+      );
+      expect(titleEl).toBeTruthy();
+      expect(titleEl?.nodeType).toBe(Node.ELEMENT_NODE);
     });
   });
 

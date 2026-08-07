@@ -37,7 +37,7 @@ export function NewsPanel({
           className="flex flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface-2 px-3 py-6 text-center"
         >
           <span className="text-sm text-muted-foreground">Economic calendar unavailable</span>
-          <span className="text-xs text-muted-foreground/70">
+          <span className="max-w-[24ch] text-xs text-muted-foreground/70">
             No news feed is connected yet — populated once the calendar source is live.
           </span>
         </div>
@@ -179,7 +179,9 @@ function Header({
     <div className="flex items-center justify-between gap-2">
       <h3 className="flex min-w-0 items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         <Calendar className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">Economic Calendar</span>
+        <span className="truncate" title="Economic Calendar">
+          Economic Calendar
+        </span>
       </h3>
       <div className="flex items-center gap-1.5">
         {status === "degraded" ? (

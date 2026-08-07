@@ -263,17 +263,25 @@ export default function OverviewPage() {
     <div className="grid gap-4">
       {/* Market Context strip (Task 12): always-on session timeline + local
           clock + USD bias + economic calendar, above the account KPIs. */}
-      {/* Content-driven, not hand-tuned. The previous 2fr/1fr/1fr/1fr was
-          fractions guessed at one viewport, which is how this strip reached zero
-          slack and truncated every card at once. Local Time and Dollar Bias take
-          exactly their natural width; Market Sessions is elastic and absorbs the
-          remainder, so the card with the MOST content is no longer the starved
-          one; the calendar is capped and yields first (it renders "unavailable"
-          almost always, and sub-project C rebuilds it).
+      {/* Content-driven, not hand-tuned — but Critical-2 fix: a BARE
+          `max-content` track is never reduced (only `fr` tracks give up space),
+          so Local Time and Dollar Bias used to take whatever they wanted FIRST
+          and Market Sessions — the track meant to be elastic — got whatever was
+          left, inverting the intended priority. Worse, DollarBias's and
+          NewsPanel's unavailable-state sentences are ~70-char prose in a
+          `flex-col`, so their unbounded max-content contribution was that
+          sentence unwrapped (~430px) — capped separately via `max-w-[24ch]` on
+          those spans.
+          `fit-content(15rem)` / `fit-content(20rem)` keep the same "take only
+          what you need" behaviour as `max-content` but CAP it, so Local Time
+          and Dollar Bias still shrink-to-fit their real content, never bloat
+          past a sane ceiling, and yield remaining space to the two `fr` tracks
+          (Market Sessions and the calendar) the way the old bare `max-content`
+          tracks could not.
           The minmax(0,…) wrappers are load-bearing: a bare 1fr has a
           min-width:auto content floor, which is exactly what lets a grid child
           refuse to shrink and overflow its track. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_max-content_max-content_minmax(0,0.8fr)]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_fit-content(15rem)_fit-content(20rem)_minmax(0,0.8fr)]">
         <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />

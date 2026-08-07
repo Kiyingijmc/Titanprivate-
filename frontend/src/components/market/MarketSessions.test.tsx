@@ -170,11 +170,61 @@ describe("SessionChip layout (spec §3)", () => {
   it("gives every truncatable span a title, so truncation cannot destroy information", () => {
     render(<MarketSessions now={NOW} />);
     const chip = screen.getByTestId("session-chip-london"); // open: has all three
-    for (const id of ["session-name", "session-clock", "session-status"]) {
+    for (const id of ["session-name", "session-clock"]) {
       const el = chip.querySelector(`[data-testid="${id}"]`)!;
       expect(el, id).not.toBeNull();
       expect(el.getAttribute("title"), id).toBe(el.textContent);
     }
+    // session-status is special (Critical-1 fix): the visible text is a
+    // SHORTENED reformat ("Open · 3h 12m"), not a CSS truncation of the full
+    // label ("Open · closes in 3h 12m") — the word "closes in" is missing from
+    // the MIDDLE, not the end, so `title` is not literally a superstring of
+    // the visible text (`title.includes(visibleText)` would be false even
+    // though `title` is strictly the fuller string). Assert the two
+    // properties that actually matter instead: `title` is strictly longer
+    // (carries more information) and still contains the exact duration the
+    // chip shows (nothing about WHEN it closes was lost, only the "closes in"
+    // wording).
+    const status = chip.querySelector('[data-testid="session-status"]')!;
+    const duration = status.textContent!.replace(/^Open\s*·\s*/, "");
+    expect(duration.length).toBeGreaterThan(0); // or the containment check below is vacuous
+    expect(status.getAttribute("title")).toContain(duration);
+    expect(status.getAttribute("title")!.length).toBeGreaterThan(status.textContent!.length);
+  });
+
+  it("wraps the open status text in its own child element, not a bare text node (Critical-1 fix)", () => {
+    // The mutation this kills: putting `{shortLabel}` back as a bare text
+    // node directly inside the status span (sibling of the aria-hidden dot)
+    // instead of inside its own <span>. `.children` is Element-only — a bare
+    // text node never shows up in it — so if the fix regresses, no non-hidden
+    // element child exists and the lookup below comes back empty.
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-london").querySelector('[data-testid="session-status"]')!;
+    const textEl = Array.from(status.children).find(
+      (child) => !child.hasAttribute("aria-hidden") && (child.textContent?.length ?? 0) > 0
+    );
+    expect(textEl).toBeTruthy();
+    expect(textEl?.textContent).toBe(status.textContent);
+  });
+});
+
+describe("open/closed status affordance (I8)", () => {
+  const NOW = new Date("2026-08-04T08:30:00Z"); // london OPEN, sydney CLOSED
+
+  it("gives an OPEN chip's status pill a coloured dot", () => {
+    // The mutation this kills: `session.open ? (...) : (...)` mutated to
+    // `false ? (...) : (...)` — every chip (including an actually-open one)
+    // would render the closed, dot-less branch, and every EXISTING test above
+    // still passes because none of them assert the dot's presence directly.
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-london").querySelector('[data-testid="session-status"]')!;
+    expect(status.querySelector("[aria-hidden]")).not.toBeNull();
+  });
+
+  it("gives a CLOSED chip's status pill no dot", () => {
+    render(<MarketSessions now={NOW} />);
+    const status = screen.getByTestId("session-chip-sydney").querySelector('[data-testid="session-status"]')!;
+    expect(status.querySelector("[aria-hidden]")).toBeNull();
   });
 });
 

@@ -32,9 +32,9 @@ export function LocalityClock({ now, className }: { now?: Date; className?: stri
         className
       )}
     >
-      <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <Globe className="size-3.5" aria-hidden />
-        <span>Local time</span>
+      <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <Globe className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">Local time</span>
       </div>
       <div className="font-mono tabnum text-3xl font-semibold leading-none text-foreground">
         {timeFormatter.format(at)}

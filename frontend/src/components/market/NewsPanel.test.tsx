@@ -83,6 +83,19 @@ describe("NewsPanel", () => {
     expect(screen.queryByTestId("news-today-strip")).not.toBeInTheDocument();
   });
 
+  describe("overflow constraints (spec §4 fix)", () => {
+    it("keeps the Economic Calendar title in its own element for truncation", () => {
+      // The h3 is a flex container. The title text must be in a separate
+      // <span className="truncate"> element, not a bare text node in the h3,
+      // or text-overflow:ellipsis will never apply.
+      render(<NewsPanel data={OK} />);
+      const header = screen.getByRole("heading", { name: /Economic Calendar/ });
+      const titleSpan = header.querySelector('span.truncate');
+      expect(titleSpan).not.toBeNull();
+      expect(titleSpan?.textContent).toContain("Economic Calendar");
+    });
+  });
+
   it("renders a today title with a url as a link", () => {
     render(
       <NewsPanel

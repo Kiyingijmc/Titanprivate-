@@ -177,9 +177,9 @@ function Header({
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
-      <h3 className="flex items-center gap-1.5 truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <Calendar className="size-3.5" aria-hidden />
-        Economic Calendar
+      <h3 className="flex min-w-0 items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <Calendar className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">Economic Calendar</span>
       </h3>
       <div className="flex items-center gap-1.5">
         {status === "degraded" ? (

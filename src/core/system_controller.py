@@ -907,15 +907,24 @@ class SystemController:
                 # live spread for strategy screens (Gyroscope max_spread_atr_frac)
                 self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
-            if self.state == BotState.ACTIVE:
-                closed_candles = self.market_data[symbol].process_tick(msg)
-                
+            # In-trade management also runs while PAUSED. Pausing stops the bot
+            # taking NEW risk; it must never abandon the open book, whose
+            # ratchet/BE/partials/kill-switch are the only things standing
+            # between a live position and an unmanaged loss. Same "ready to
+            # trade" grouping _readiness() uses; BOOTING/WARMUP/EMERGENCY still
+            # skip management.
+            if self.state in (BotState.ACTIVE, BotState.PAUSED):
                 if self.current_open_positions and symbol in self.live_prices:
                     relevant = [p for p in self.current_open_positions if p.get('s') == symbol]
                     cmds = self.trade_manager.sync_positions(relevant, self.live_prices)
                     for c in cmds:
                         await self._dispatch_mgmt_command(c)
-                
+
+            # New-signal generation stays ACTIVE-only: a paused bot builds no
+            # candles and runs no strategies, so it emits no new entries.
+            if self.state == BotState.ACTIVE:
+                closed_candles = self.market_data[symbol].process_tick(msg)
+
                 for tf, df in closed_candles:
                     last = df.iloc[-1]
                     self._publish(BarClosed(

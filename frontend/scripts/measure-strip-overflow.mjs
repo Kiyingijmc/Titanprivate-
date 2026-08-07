@@ -6,7 +6,15 @@
  * getBoundingClientRect().width for inline elements, which report 0 for
  * clientWidth), and flag any single-line row that has grown taller than its
  * own computed line-height (the wrap tell — "New York" measured 40px against
- * a ~20px line).
+ * a ~20px line). Elements that carry an explicit `max-width` (e.g. the
+ * `max-w-[24ch]` empty-state prose) are exempt from the wrap check — see the
+ * comment above `allowedToWrap` in the probe body for why.
+ *
+ * The probe returns `{ findings, cardWidths }`, not a bare array: `findings`
+ * is the pass/fail signal (CLIPPED/WRAPPED/PROBE_BROKEN); `cardWidths` is
+ * informational-only telemetry (each strip card's rendered width) with no
+ * pass/fail threshold — see the comment above `cardWidths` in the probe body
+ * for why no threshold is offered.
  *
  * NOT a Vitest test: jsdom computes no layout, so this can only be answered by
  * a real browser running layout. This script PRINTS the probe and the recipe;
@@ -64,7 +72,7 @@ const PROBE = `(() => {
         detail: \`selector "\${selector}" (\${name}) matched 0 elements — stale testid, NOT a clean run\` });
     }
   }
-  if (findings.some((f) => f.kind === 'PROBE_BROKEN')) return JSON.stringify(findings);
+  if (findings.some((f) => f.kind === 'PROBE_BROKEN')) return JSON.stringify({ findings, cardWidths: [] });
 
   const cards = document.querySelectorAll(Object.values(SELECTORS).join(', '));
 
@@ -75,6 +83,31 @@ const PROBE = `(() => {
   function isLeafLike(el) {
     if (el.children.length === 0) return true;
     return Array.from(el.children).every((c) => c.hasAttribute('aria-hidden'));
+  }
+
+  // Post-review fix: C2's grid fix (fit-content tracks) and I4's fix (dynamic
+  // line-height wrap check) were each correct in isolation and collided —
+  // C2 bounded DollarBias's/NewsPanel's empty-state prose with 'max-w-[24ch]'
+  // so it can no longer dominate the grid's max-content sizing, and that
+  // SAME bound is what makes the 73/75-char sentence wrap to 3-4 lines BY
+  // DESIGN. I4's height-vs-line-height check has no notion of "this element
+  // is deliberately allowed more than one line", so it would flag both empty
+  // states as WRAPPED on every single run — reinstating exactly the
+  // always-fires, gets-hand-waved failure mode I4 existed to close.
+  //
+  // Signal used: a computed 'max-width' other than 'none' is treated as an
+  // explicit "this element is allowed to wrap" marker, so the wrap check is
+  // skipped for it entirely. Chosen over deriving an expected line count from
+  // max-width/char-count because that would need a font-metrics assumption
+  // (avg char width) — exactly the kind of hand-tuned constant this
+  // sub-project's three Criticals were about UNLEARNING. Elements without an
+  // explicit max-width (the overwhelming majority of the strip: names,
+  // clocks, status pills, badges) get no free pass and are still held to the
+  // single-line bar. CLIPPED detection below is UNCHANGED by this and still
+  // runs for every leaf, wrap-exempt or not — bounding max-width does not
+  // exempt an element from overflowing its own box horizontally.
+  function allowedToWrap(el) {
+    return getComputedStyle(el).maxWidth !== 'none';
   }
 
   cards.forEach((card) => {
@@ -93,6 +126,8 @@ const PROBE = `(() => {
                         scrollW: el.scrollWidth, clientW: el.clientWidth, rectW: Math.round(rectWidth) });
       }
 
+      if (allowedToWrap(el)) return;
+
       // I4: compare against the element's OWN computed line-height, not a
       // fixed pixel constant. 'normal' has no numeric parse, so fall back to
       // the CSS-default ~1.2x font-size approximation in that case.
@@ -107,7 +142,25 @@ const PROBE = `(() => {
       }
     });
   });
-  return JSON.stringify(findings);
+
+  // C3: the probe only ever measured LEAVES, so a Sessions card squeezed to
+  // one chip column (each chip now with MORE room, not less) reports zero
+  // findings while being visibly wrong — a starved-card blind spot. C2's
+  // bounded tracks make that less likely, but only incidentally, not by
+  // design; the blind spot is still real.
+  //
+  // Reported as DATA, not a pass/fail: deliberately NO "too narrow" threshold
+  // — there is no principled number for it, and inventing one would be
+  // exactly the kind of hand-tuned constant this sub-project spent three
+  // Criticals unlearning. A human (or the next probe iteration, once a real
+  // threshold is EARNED from observed data) reads these widths; silence here
+  // is not a pass, it is simply not measured.
+  const cardWidths = Array.from(cards).map((card) => ({
+    card: card.getAttribute('data-testid'),
+    widthPx: Math.round(card.getBoundingClientRect().width),
+  }));
+
+  return JSON.stringify({ findings, cardWidths });
 })()`;
 
 console.log(`Measuring ${URL} at ${WIDTHS.join(", ")}px`);
@@ -134,7 +187,17 @@ Probe written to ${probeFile}. Drive this through the browse daemon:
     $B js "$(cat ${probeFile})"
   done
 
-Any CLIPPED or WRAPPED finding, or any PROBE_BROKEN finding (a stale
-selector), is a regression. Zero findings at all three widths is the
-requirement.
+The probe returns { findings, cardWidths } — TWO different kinds of output:
+
+  - findings: the pass/fail signal. Any CLIPPED or WRAPPED entry, or any
+    PROBE_BROKEN entry (a stale selector), is a regression. Zero findings at
+    all three widths is the requirement. (Elements with an explicit max-width,
+    e.g. the bounded empty-state prose, are deliberately EXEMPT from WRAPPED —
+    they are allowed to wrap; see the allowedToWrap comment in the probe.)
+  - cardWidths: INFORMATIONAL ONLY, no pass/fail threshold. Each strip card's
+    rendered width in px. Read this by eye for anything that looks squeezed
+    (e.g. Market Sessions reduced to one chip column, or a card near-zero
+    width) — the findings array cannot see a starved-but-not-clipped card, so
+    silence in findings is NOT proof the layout is healthy; cross-check
+    cardWidths too.
 `);

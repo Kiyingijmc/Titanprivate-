@@ -39,10 +39,22 @@ export function LocalityClock({ now, className }: { now?: Date; className?: stri
       <div className="font-mono tabnum text-3xl font-semibold leading-none text-foreground">
         {timeFormatter.format(at)}
       </div>
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <span>{dateFormatter.format(at)}</span>
-        <span aria-hidden>·</span>
-        <span className="font-mono">{timeZone}</span>
+      <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+        {/* The date must never split: without nowrap it wrapped mid-value and
+            orphaned the day number, rendering as "Tue, Aug · Africa/Kampala 4". */}
+        <span data-testid="locality-date" className="whitespace-nowrap">
+          {dateFormatter.format(at)}
+        </span>
+        <span aria-hidden className="shrink-0">·</span>
+        {/* The timezone is the one element allowed to truncate — it is the
+            longest and the least load-bearing. `title` keeps it recoverable. */}
+        <span
+          data-testid="locality-tz"
+          className="min-w-0 truncate font-mono"
+          title={timeZone}
+        >
+          {timeZone}
+        </span>
       </div>
     </div>
   );

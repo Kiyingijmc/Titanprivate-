@@ -97,7 +97,7 @@ export function MarketSessions({
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <h3 className="truncate text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Market Sessions
         </h3>
         {featuredOverlap && (

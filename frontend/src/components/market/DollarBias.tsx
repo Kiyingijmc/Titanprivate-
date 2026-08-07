@@ -63,7 +63,10 @@ export function DollarBias({ data, className }: { data?: DollarBiasData; classNa
           {data.bias > 0 ? "+" : ""}
           {data.bias.toFixed(1)}
         </span>
-        <span className={cn("text-xs font-medium uppercase tracking-wide", tone)}>
+        <span
+          className={cn("min-w-0 truncate text-xs font-medium uppercase tracking-wide", tone)}
+          title={strong ? "USD strong" : "USD weak"}
+        >
           {strong ? "USD strong" : "USD weak"}
         </span>
         {data.value != null && (

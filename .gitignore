@@ -42,3 +42,4 @@ graphify-out/
 .mig/state/
 .mig/worktrees/
 .gstack/
+.superpowers/

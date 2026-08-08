@@ -37,15 +37,23 @@ _USER_AGENTS = (
 class ForexFactoryCsvSource:
     NAME = "forexfactory"
     URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.csv"
+    # Spec 2026-08-08 §3.1. thisweek alone decays to ~0 days of lookahead by
+    # Friday, so the expanded view would be empty for much of its life.
+    NEXT_URL = "https://nfs.faireconomy.media/ff_calendar_nextweek.csv"
 
-    def __init__(self, logger, url: str | None = None, tz=timezone.utc):
+    def __init__(self, logger, url: str | None = None, tz=timezone.utc,
+                 next_url: str | None = None):
         self.logger = logger
         self.url = url or self.URL
+        self.next_url = next_url or self.NEXT_URL
         self.tz = tz
         self.max_retries = 3
         self.backoff_base_s = 1.0
         self.timeout_s = 15
         self.last_rows_seen = 0
+        # False only after an OBSERVED next-week failure. Optimistic before any
+        # attempt: absence of evidence of truncation, not a claim of success.
+        self.next_week_ok = True
 
     def parse(self, csv_text: str) -> list[CalendarEvent]:
         """Pure: CSV text -> events. Never raises; returns [] on bad input.
@@ -115,17 +123,17 @@ class ForexFactoryCsvSource:
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-    def _get(self):
+    def _get(self, url: str):
         """Blocking HTTP. Isolated so tests can substitute it."""
-        return requests.get(self.url, headers=self._headers(), timeout=self.timeout_s)
+        return requests.get(url, headers=self._headers(), timeout=self.timeout_s)
 
-    async def fetch(self) -> list[CalendarEvent]:
-        """Returns parsed events, or raises NewsFetchError if the feed never answered."""
+    async def _fetch_one(self, url: str) -> list[CalendarEvent]:
+        """One URL through the retry ladder. Raises if it never answered."""
         last = "no attempt made"
         for attempt in range(self.max_retries):
             body = None
             try:
-                response = await asyncio.to_thread(self._get)
+                response = await asyncio.to_thread(self._get, url)
                 if response.status_code == 200:
                     body = response.content.decode("utf-8", "replace")
                 else:
@@ -136,10 +144,39 @@ class ForexFactoryCsvSource:
                 # Deliberately outside the except above: a bug in parse() must
                 # surface as itself, never be retried and relabelled an outage.
                 return self.parse(body)
-            self.logger.log_event("WARN", "NEWS", f"Attempt {attempt + 1}: {last}")
+            self.logger.log_event("WARN", "NEWS", f"Attempt {attempt + 1} ({url}): {last}")
             if attempt < self.max_retries - 1 and self.backoff_base_s:
                 await asyncio.sleep(self.backoff_base_s * (2 ** attempt))
         raise NewsFetchError(last)
+
+    async def fetch(self) -> list[CalendarEvent]:
+        """This week UNION next week.
+
+        Three rules (spec §3.1), in priority order:
+          1. this week fails            -> raise, exactly as before
+          2. this week is BROKEN        -> return it alone, so NewsManager's
+             (rows>0, events==0)           `if rows_seen and not events` guard fires
+          3. next week fails            -> return this week, flag truncation
+        """
+        events = await self._fetch_one(self.url)     # rule 1: propagates
+        this_rows = self.last_rows_seen
+        if this_rows and not events:                 # rule 2
+            self.next_week_ok = True
+            return events
+        try:
+            upcoming = await self._fetch_one(self.next_url)
+        except NewsFetchError as exc:                # rule 3
+            self.next_week_ok = False
+            self.logger.log_event(
+                "WARN", "NEWS",
+                f"Next-week calendar unavailable ({exc}); horizon limited to this week.")
+            self.last_rows_seen = this_rows
+            return events
+        self.next_week_ok = True
+        # last_rows_seen must describe THIS week only -- it is the input to the
+        # broken-feed guard, and next week's row count would mask a drift.
+        self.last_rows_seen = this_rows
+        return events + upcoming
 
 
 def _clean(value) -> str | None:

@@ -25,6 +25,22 @@ class _Response:
         self.content = body.encode("utf-8")
 
 
+HEADER_ONLY = "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
+
+
+def _only_this_week(body, status=200):
+    """Answer the this-week URL with `body`; next-week gets an empty calendar.
+
+    Keeps these tests about the retry ladder rather than the union -- a stub
+    that returned the same CSV for both URLs would double every event count.
+    """
+    def _get(url):
+        if url == ForexFactoryCsvSource.URL:
+            return _Response(status, body)
+        return _Response(200, HEADER_ONLY)
+    return _get
+
+
 def _run(coro):
     """The repo's fresh-loop idiom: py3.12 deprecates get_event_loop()."""
     loop = asyncio.new_event_loop()
@@ -37,7 +53,7 @@ def _run(coro):
 class FetchSucceeds(unittest.TestCase):
     def test_returns_parsed_events_on_first_try(self):
         src = ForexFactoryCsvSource(_StubLogger())
-        src._get = lambda: _Response(200, CSV)
+        src._get = _only_this_week(CSV)
         events = _run(src.fetch())
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].title, "FOMC Statement")
@@ -46,7 +62,9 @@ class FetchSucceeds(unittest.TestCase):
         src = ForexFactoryCsvSource(_StubLogger())
         calls = {"n": 0}
 
-        def flaky():
+        def flaky(url):
+            if url != ForexFactoryCsvSource.URL:
+                return _Response(200, HEADER_ONLY)
             calls["n"] += 1
             if calls["n"] < 3:
                 raise ConnectionError("boom")
@@ -63,7 +81,9 @@ class FetchFails(unittest.TestCase):
         src = ForexFactoryCsvSource(_StubLogger())
         src.backoff_base_s = 0
 
-        def dead():
+        def dead(url):
+            if url != ForexFactoryCsvSource.URL:
+                return _Response(200, HEADER_ONLY)
             raise ConnectionError("down")
 
         src._get = dead
@@ -73,7 +93,7 @@ class FetchFails(unittest.TestCase):
     def test_http_error_status_raises(self):
         src = ForexFactoryCsvSource(_StubLogger())
         src.backoff_base_s = 0
-        src._get = lambda: _Response(503)
+        src._get = _only_this_week("", status=503)
         with self.assertRaises(NewsFetchError):
             _run(src.fetch())
 
@@ -81,7 +101,7 @@ class FetchFails(unittest.TestCase):
         """A week with no parseable rows is data, not an outage."""
         src = ForexFactoryCsvSource(_StubLogger())
         header_only = "Title,Country,Date,Time,Impact,Forecast,Previous,URL\n"
-        src._get = lambda: _Response(200, header_only)
+        src._get = _only_this_week(header_only)
         self.assertEqual(_run(src.fetch()), [])
 
 
@@ -92,7 +112,9 @@ class ParseBugsAreNotOutages(unittest.TestCase):
         src.backoff_base_s = 0
         calls = {"n": 0}
 
-        def counted():
+        def counted(url):
+            if url != ForexFactoryCsvSource.URL:
+                return _Response(200, HEADER_ONLY)
             calls["n"] += 1
             return _Response(200, CSV)
 

@@ -179,6 +179,11 @@ class SystemController:
         # trade, or age out after RESERVED_RISK_TTL_S.
         self._reserved_risk = {}
         self._uncomputable_alert_at = None
+        # One-shot latch for the daily-DD breaker alarm (see _check_dd_breaker):
+        # armed while the breaker is healthy, set on the True->False trip so the
+        # alert + pending sweep fire exactly once per trip, cleared again the
+        # moment check_can_trade recovers (intraday, or on the day's anchor roll).
+        self._dd_breaker_tripped = False
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
@@ -620,15 +625,31 @@ class SystemController:
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
         if lot <= 0:
-            # Fail-safe skip (specs missing, or min-lot risk exceeds the
-            # per-trade budget at this balance). Must be LOUD: a graded,
-            # passing signal that vanishes silently is indistinguishable
-            # from a dead pipeline (cost a live debugging session 2026-08-01
-            # when Gyroscope's first BTCUSD signal was unsizeable at $459).
-            self.logger.log_event(
-                "RISK", "SIZING",
-                f"{symbol} {name} signal skipped: lot=0 "
-                f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
+            # Fail-safe skip. Must be LOUD: a graded, passing signal that
+            # vanishes silently is indistinguishable from a dead pipeline
+            # (cost a live debugging session 2026-08-01 when Gyroscope's
+            # first BTCUSD signal was unsizeable at $459).
+            #
+            # calculate_lot_size returns 0.0 for TWO very different reasons:
+            # the daily-DD circuit breaker has tripped (a deliberate max-loss
+            # -day halt) or the trade cannot be sized (specs missing /
+            # unsizeable stop). Attributing the first to the second sends the
+            # operator hunting a data outage during a risk halt, so ask the
+            # breaker directly and label them apart. getattr-guarded like the
+            # throttle_factor lookup above: fixture risk_managers may not
+            # implement check_can_trade, and those are never breaker trips.
+            can_trade_fn = getattr(self.risk_manager, 'check_can_trade', None)
+            if callable(can_trade_fn) and not can_trade_fn():
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"{symbol} {name} signal skipped: lot=0 "
+                    f"(DAILY DRAWDOWN BREAKER TRIPPED — max-loss day; no new "
+                    f"entries until equity recovers above the anchor or the day rolls)")
+            else:
+                self.logger.log_event(
+                    "RISK", "SIZING",
+                    f"{symbol} {name} signal skipped: lot=0 "
+                    f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
             return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
@@ -762,6 +783,69 @@ class SystemController:
             f"symbols are blocked** until it clears.\nReason: `{reason}`{culprit}\n"
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
+
+    async def _check_dd_breaker(self):
+        """Make a tripped daily-drawdown breaker loud, once per trip.
+
+        `RiskManager.check_can_trade()` is the 3% max-loss-day hard breaker,
+        but its only observable effect was `calculate_lot_size` returning 0.0
+        — which the skip log then attributed to missing specs. Two things go
+        wrong when a trip is quiet:
+
+        1. the operator cannot tell a deliberate risk halt from a data
+           outage (audit-2026-08-07 D9), and
+        2. Titan's OWN resting LIMIT/STOP orders keep sitting in the book.
+           The breaker only blocks NEW entries; a pending placed before the
+           trip can still fill afterwards, adding exposure on exactly the day
+           risk should be shrinking. So the trip cancels them.
+
+        Latched on `_dd_breaker_tripped` (one alert + one sweep per trip),
+        re-armed as soon as the breaker clears — intraday recovery above the
+        anchor, or a fresh day via roll_daily_anchor — so a later trip is
+        announced again. Same shape as `_alert_uncomputable_book`'s re-arm,
+        but a boolean rather than a time throttle: a max-loss day is a single
+        discrete event, not an ongoing condition to re-nag about.
+        """
+        rm = self.risk_manager
+        can_trade_fn = getattr(rm, 'check_can_trade', None)
+        if not callable(can_trade_fn):
+            return
+        if can_trade_fn():
+            self._dd_breaker_tripped = False  # healthy: re-arm
+            return
+        if getattr(self, '_dd_breaker_tripped', False):
+            return  # already announced this trip
+        self._dd_breaker_tripped = True
+
+        # Pull every Titan-placed resting order. Manually-placed MT5 pendings
+        # have no DB row and cannot be swept from here (known gap: it would
+        # take an EA change to enumerate them).
+        cancelled = []
+        for o in (self.state_manager.get_pending_orders() or []):
+            ticket = o['ticket_id']
+            await self.bridge.send_command("CANCEL", {"ticket": ticket})
+            self.state_manager.delete_order(ticket)
+            cancelled.append(f"`#{ticket}` {o.get('symbol', '?')}")
+
+        equity = float(getattr(rm, 'current_equity', 0.0) or 0.0)
+        anchor = float(getattr(rm, 'day_start_equity', 0.0) or 0.0)
+        if anchor <= 0:
+            anchor = float(getattr(rm, 'starting_balance', 0.0) or 0.0)
+        pnl_pct = ((equity - anchor) / anchor * 100.0) if anchor > 0 else 0.0
+        pulled = ("\nCancelled resting orders: " + ", ".join(cancelled)
+                  if cancelled else "\nNo resting Titan orders to cancel.")
+
+        self.logger.log_event(
+            "RISK", "BREAKER",
+            f"DAILY DRAWDOWN BREAKER TRIPPED: equity ${equity:,.2f} vs anchor "
+            f"${anchor:,.2f} ({pnl_pct:+.2f}%); cancelled {len(cancelled)} "
+            f"resting order(s); no new entries until it clears.")
+        await self.telemetry.send_message(
+            "🛑 **Daily Drawdown Breaker TRIPPED**\nNo new entries for the rest "
+            f"of the day (or until equity recovers).\nEquity: `${equity:,.2f}` vs "
+            f"day anchor `${anchor:,.2f}` (`{pnl_pct:+.2f}%`, limit "
+            f"`-{getattr(rm, 'max_dd', 0)}%`).{pulled}\nOpen positions are left "
+            "under normal trade management.", parse_mode="Markdown")
 
     async def _dispatch_mgmt_command(self, c):
         """
@@ -940,7 +1024,9 @@ class SystemController:
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
                 self.equity_recorder.record(bal, eq)
-            
+                # Equity just moved: the breaker's verdict may have flipped.
+                await self._check_dd_breaker()
+
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
             self._publish(HeartbeatReceived(

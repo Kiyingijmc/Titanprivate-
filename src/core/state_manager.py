@@ -57,7 +57,8 @@ class StateManager:
                     initial_sl REAL DEFAULT 0.0,
                     lots REAL DEFAULT 0.0,
                     grade TEXT DEFAULT '',
-                    comment TEXT DEFAULT ''
+                    comment TEXT DEFAULT '',
+                    entry_synced INTEGER DEFAULT 0
                 )
             ''')
 
@@ -117,6 +118,14 @@ class StateManager:
             if 'grade' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN grade TEXT DEFAULT ''")
 
+            # v14.4 fill-price correction marker (audit D3) -- see
+            # backfill_position_state. Persisted rather than in-memory so a
+            # restart cannot re-open the one-shot correction window and let a
+            # mid-trade heartbeat redefine the entry.
+            if 'entry_synced' not in existing_cols:
+                self.conn.execute(
+                    "ALTER TABLE active_orders ADD COLUMN entry_synced INTEGER DEFAULT 0")
+
             cursor = self.conn.execute("PRAGMA table_info(trade_history)")
             hist_cols = [col[1] for col in cursor.fetchall()]
             for col, decl in [('entry', 'REAL DEFAULT 0.0'), ('sl', 'REAL DEFAULT 0.0'),
@@ -136,6 +145,12 @@ class StateManager:
         RETAINS FULL v14.1 logic:
         Uses COALESCE to preserve the specific 'phase' and 'ratchet_level'
         if the bot reboots while a trade is active.
+
+        'entry_synced' is deliberately NOT preserved: this call (re)writes
+        initial_entry from the send-time intended price, so the fill-price
+        correction window in backfill_position_state must re-open with it.
+        Latching it here would leave a re-registered ticket stuck on the
+        intended price forever; resetting it self-heals on the next heartbeat.
         """
         try:
             self.conn.execute("""
@@ -163,18 +178,47 @@ class StateManager:
 
     def backfill_position_state(self, ticket, entry=0.0, tp=0.0):
         """
-        Heartbeat sync: fills initial_entry/initial_tp ONLY where still zero
-        (the EA's OPENED message carries no prices) and marks the ticket ACTIVE
-        so the ratchet manager can engage. Never overwrites known values.
+        Heartbeat sync from a live position (`entry` = POSITION_PRICE_OPEN,
+        `tp` = the position's TP). Marks the ticket ACTIVE so the ratchet
+        manager can engage, and reconciles the two "initial" prices.
+
+        initial_tp: filled ONLY where still zero (the EA's OPENED message
+        carries no prices); a known TP is never overwritten.
+
+        initial_entry: for MARKET rows, CORRECTED ONCE to the broker's actual
+        fill (audit 2026-08-07 D3). It used to be fill-if-zero too, which meant
+        the send-time *intended* price written at EXECUTION:OPENED stood
+        forever -- but the EA sends MARKET orders with deviation=20, so the
+        broker may fill elsewhere. Every consumer keys off this column (the L1
+        break-even stop, all three ratchet pct thresholds, the close-time
+        R-multiple), so on a slipped BUY the "risk-free" break-even stop landed
+        BELOW the real fill and locked in a loss.
+
+        Three guards make the correction safe:
+        - MARKET only. A LIMIT/STOP fills AT its resting price, so the
+          heartbeat adds nothing there and the old semantics stand.
+        - Once per ticket, latched in `entry_synced` (persisted, so a restart
+          does not re-open the window). initial_entry is a fixed reference
+          point; a later heartbeat must never redefine it.
+        - entry > 0 only. A position dict missing `p` arrives as 0.0, and
+          zeroing the entry would silently disable ALL management for the
+          ticket (trade_manager skips rows whose entry is zero). The latch
+          stays open so the next heartbeat can still supply the real price.
         """
         try:
             self.conn.execute("""
                 UPDATE active_orders SET
-                    initial_entry = CASE WHEN initial_entry = 0 THEN ? ELSE initial_entry END,
+                    initial_entry = CASE
+                        WHEN order_type = 'MARKET' AND entry_synced = 0 AND ? > 0 THEN ?
+                        WHEN initial_entry = 0 THEN ?
+                        ELSE initial_entry END,
+                    entry_synced  = CASE
+                        WHEN order_type = 'MARKET' AND ? > 0 THEN 1
+                        ELSE entry_synced END,
                     initial_tp    = CASE WHEN initial_tp = 0 THEN ? ELSE initial_tp END,
                     status = 'ACTIVE'
                 WHERE ticket_id = ?
-            """, (entry, tp, ticket))
+            """, (entry, entry, entry, entry, tp, ticket))
             self.conn.commit()
         except Exception as e:
             print(f"[DB ERROR] Backfill: {e}")

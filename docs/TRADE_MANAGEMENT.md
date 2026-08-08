@@ -84,6 +84,31 @@ independent breaks:
    matched nothing) and sent cancels as `action="TRADE"` (dropped by the EA).
    Both fixed.
 
+## The reference price is the FILL, not the intended entry
+
+Everything above measures from `active_orders.initial_entry`: the L1 break-even
+stop, the 0.382/0.618/0.886 thresholds, and the close-time R-multiple. That
+column is first written with the price Titan *sent*, but the EA submits MARKET
+orders with `deviation=20`, so the broker can fill elsewhere. Audit 2026-08-07
+(D3) found the intended price was never corrected — a slipped BUY got its
+"risk-free" break-even stop placed *below* the real fill, locking in a loss,
+and every reported R was skewed by the slippage.
+
+`backfill_position_state` now overwrites `initial_entry` with the heartbeat's
+`POSITION_PRICE_OPEN`, under three guards:
+
+- **MARKET rows only.** A LIMIT/STOP fills at its resting price, so the
+  heartbeat tells us nothing new; those keep the old fill-if-zero semantics.
+- **Exactly once per ticket**, latched in the `entry_synced` column. The latch
+  is persisted, so a restart can't re-open the window and let a mid-trade
+  heartbeat redefine the entry. (`register_order` deliberately resets it: that
+  call rewrites the entry from send-time metadata, so the window must re-open
+  with it.)
+- **Non-zero prices only.** A position dict missing `p` arrives as `0.0`, and
+  zeroing the entry would silently disable *all* management for the ticket.
+
+`initial_tp` is unchanged — still fill-if-zero.
+
 ## Configuration (config/config.yaml)
 
 ```yaml

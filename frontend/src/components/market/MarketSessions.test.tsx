@@ -19,15 +19,24 @@ describe("MarketSessions", () => {
     expect(screen.getByText(/overlap/i)).toBeInTheDocument();
   });
 
-  it("shows an 'Opens in' countdown for a session that hasn't opened yet", () => {
+  it("shows a countdown for a session that hasn't opened yet, with the full sentence recoverable via title", () => {
     // 2026-07-15 03:00 UTC — Sydney is open (BST offset aside, Sydney's
     // local window is 07-16 local = ~21:00-06:00 UTC in July, AEST no DST),
     // but Tokyo (00:00-09:00 UTC) is open and London hasn't opened yet
     // (London opens 07:00 UTC in July). Assert London shows a countdown.
+    //
+    // Round-3 fix: the closed pill's visible text is now a SHORTENED
+    // duration ("in Xh Ym"), not the full "Opens in Xh Ym" sentence — matching
+    // the open pill's earlier shortening to fix the chip-grid floor. Assert on
+    // the duration digits being present in the visible text and the FULL
+    // sentence staying recoverable via `title`, the same way the open branch's
+    // tests were fixed, rather than matching the word "Opens" in visible text.
     const now = new Date("2026-07-15T03:00:00Z");
     render(<MarketSessions now={now} />);
     const londonChip = screen.getByTestId("session-chip-london");
-    expect(within(londonChip).getByText(/opens in/i)).toBeInTheDocument();
+    const status = londonChip.querySelector('[data-testid="session-status"]')!;
+    expect(status.textContent).toMatch(/\d+h \d+m|\d+m/);
+    expect(status.getAttribute("title")).toMatch(/^Opens in /i);
   });
 
   it("shows a weekend-closed banner on Saturday for an FX-only book", () => {
@@ -144,7 +153,8 @@ describe("SessionChip layout (spec §3)", () => {
   });
 
   it("exercises a MAXIMUM-WIDTH countdown, not a convenient short one", () => {
-    // Verified: at this `now`, sydney reads "Opens in 12h 30m" — two-digit
+    // Verified: at this `now`, sydney's `title` reads "Opens in 12h 30m" (the
+    // visible text is the shortened "in 12h 30m", round-3 fix) — two-digit
     // hours, which is the widest form `fmtCountdown` can emit (`NNh NNm`).
     // WIDTH is what breaks this layout, not magnitude, so 12h 30m pins the
     // same worst case as 23h 59m. A fixture that happened to produce "5m"

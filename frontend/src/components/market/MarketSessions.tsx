@@ -175,17 +175,11 @@ export function MarketSessions({
           </div>
 
           {/* Intrinsic reflow instead of two guessed breakpoints: chips wrap when
-              they actually run out of room. 10rem is the stacked chip's real
-              floor. It is NOT set by the session name any more (Critical-1 fix):
-              once the open pill's label was shortened to "Open · Xh Ym", the
-              widest row became the CLOSED pill, which still renders the full
-              `font-mono` statusLabel verbatim ("Opens in 12h 30m" at its widest,
-              16 monospace chars) — ~7.2px/char at text-xs monospace ≈ 115px of
-              text, plus the pill's own px-2 padding (16px), plus the chip's
-              px-3 padding (24px) and border (~2-3px) ≈ 158px ≈ 9.9rem. Rounded
-              up to 10rem. Survives a font change or a card being added to the
-              strip; a fixed breakpoint does not. */}
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-2">
+              they actually run out of room. PENDING-MEASUREMENT: value below is
+              a starting candidate for the real-browser measurement pass, not a
+              final number — see final-fix-report.md round 3 for the measured
+              table this gets replaced with. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2">
             {sessions.map((session) => (
               <SessionChip key={session.id} session={session} color={SESSION_COLORS[session.id]} />
             ))}
@@ -272,7 +266,13 @@ function SessionChip({ session, color }: { session: SessionState; color: string 
           className="w-fit max-w-full truncate rounded-full bg-surface-1 px-2 py-0.5 font-mono tabnum text-xs text-muted-foreground"
           title={session.statusLabel}
         >
-          {session.statusLabel}
+          {/* Round-3 fix: this branch was left asymmetric — the OPEN branch
+              was shortened to "Open · Xh Ym" but this one still rendered the
+              full "Opens in Xh Ym" sentence, which is what made the closed
+              pill the widest row in the chip and pushed the grid floor to a
+              value four columns can't fit. Mirror the open branch: duration
+              only, full sentence stays recoverable via `title` above. */}
+          in {fmtCountdownShort(session.countdownMin)}
         </span>
       )}
     </div>

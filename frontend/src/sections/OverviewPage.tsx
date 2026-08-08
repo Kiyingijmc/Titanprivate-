@@ -272,16 +272,20 @@ export default function OverviewPage() {
           `flex-col`, so their unbounded max-content contribution was that
           sentence unwrapped (~430px) — capped separately via `max-w-[24ch]` on
           those spans.
-          `fit-content(15rem)` / `fit-content(20rem)` keep the same "take only
-          what you need" behaviour as `max-content` but CAP it, so Local Time
-          and Dollar Bias still shrink-to-fit their real content, never bloat
-          past a sane ceiling, and yield remaining space to the two `fr` tracks
-          (Market Sessions and the calendar) the way the old bare `max-content`
-          tracks could not.
+          PENDING-MEASUREMENT (round 3): the real-browser pass found Dollar
+          Bias pinned at its `fit-content(20rem)` ceiling at every width below
+          1920 — 20rem was not a "shrink to real content" cap, it was wide
+          enough that DollarBias's min-content still exceeded it, so it never
+          yielded and stayed WIDER than Market Sessions the strip is supposed
+          to prioritise. The owner's call: hard-cap Dollar Bias below its own
+          min-content so Sessions gets the room. Value below is a starting
+          candidate for that re-measurement, not final — see
+          final-fix-report.md round 3 for the measured table this gets
+          replaced with.
           The minmax(0,…) wrappers are load-bearing: a bare 1fr has a
           min-width:auto content floor, which is exactly what lets a grid child
           refuse to shrink and overflow its track. */}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_fit-content(15rem)_fit-content(20rem)_minmax(0,0.8fr)]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_fit-content(15rem)_fit-content(10rem)_minmax(0,0.8fr)]">
         <MarketSessions hasCrypto={snapshot?.market?.has_crypto ?? false} />
         <LocalityClock />
         <DollarBias data={snapshot?.dollar} />

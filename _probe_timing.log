@@ -1,0 +1,5 @@
+  435.40s  rc=0  test_almanac_strategy  | OK
+  385.60s  rc=0  test_antibody  | OK
+  806.65s  rc=0  test_antibody_study  | OK
+   16.89s  rc=0  test_arbiter  | OK
+  321.25s  rc=0  test_backtest_only  | OK

@@ -10,7 +10,14 @@ MODEL_STRONG="opus"
 # 2026-08-07: suite = 1193 tests / 3042s on an IDLE box (see memory verify-suite-exceeds-mig-timeout);
 # 2400 was breached ~27% so every gate rc=124'd on green code. 4800 is a stopgap — the durable fix is
 # the parallel-test-runner backlog row; do NOT bump a 4th time.
-VERIFY_TIMEOUT="4800"
+#
+# 2026-08-08 (4th bump, owner-directed, overriding the line above): 1299 tests => ~3312s idle, so 4800
+# still had ~45% headroom on a QUIET box. Size was never the problem — CONTENTION is. This bump was
+# made with load avg 11 and two concurrent unittest runs on the box, where a 3300s suite stretches
+# past 4800s and rc=124s on green code. 7200 is ~2.2x the idle estimate, i.e. sized for a busy box.
+# This still does NOT make the ceiling right; it makes it survivable. The parallel runner
+# (backlog: parallel-unit-test-runner-to-un) remains the actual fix.
+VERIFY_TIMEOUT="7200"
 # Context layer (OPT-IN — uncomment to enable; see assets/context.graphify.example).
 # Fail-SOFT: a broken provider warns and the run proceeds hint-less.
 #CONTEXT_REFRESH_CMD="graphify update ."

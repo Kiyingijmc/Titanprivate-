@@ -7,7 +7,10 @@ RISKY_DOMAINS="execution risk_management order_lifecycle bridge_protocol mql5"
 MODEL_BUILD="sonnet"
 MODEL_REVIEW="sonnet"
 MODEL_STRONG="opus"
-VERIFY_TIMEOUT="2400"
+# 2026-08-07: suite = 1193 tests / 3042s on an IDLE box (see memory verify-suite-exceeds-mig-timeout);
+# 2400 was breached ~27% so every gate rc=124'd on green code. 4800 is a stopgap — the durable fix is
+# the parallel-test-runner backlog row; do NOT bump a 4th time.
+VERIFY_TIMEOUT="4800"
 # Context layer (OPT-IN — uncomment to enable; see assets/context.graphify.example).
 # Fail-SOFT: a broken provider warns and the run proceeds hint-less.
 #CONTEXT_REFRESH_CMD="graphify update ."

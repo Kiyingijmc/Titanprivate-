@@ -19,6 +19,7 @@
 | S018 | 2026-07-31 | risk-10-live-bars-and-history | DONE | data | finalized via mig (review PASS) | parent: none |
 | S019 | 2026-08-08 | paused-must-not-freeze-in-trade | DONE | order_lifecycle | finalized via mig (review CHANGES) | parent: none |
 | S020 | 2026-08-08 | enable-footgun-registry-enable-ignores-the | DONE | api | finalized via mig (review UNKNOWN) | parent: none |
+| S021 | 2026-08-09 | trade-management-math-uses-intended-entry | DONE | order_lifecycle | finalized via mig (review UNKNOWN) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -41,4 +42,5 @@
 | RS018 | 2026-07-31 | S018 (risk-10-live-bars-and-history) | DONE | PASS (mig orchestrator in-session independent review) | [RS018.md](../session-reviews/RS018.md) |
 | RS019 | 2026-08-08 | S019 (paused-must-not-freeze-in-trade) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS019.md](../session-reviews/RS019.md) |
 | RS020 | 2026-08-08 | S020 (enable-footgun-registry-enable-ignores-the) | DONE | UNKNOWN (mig orchestrator in-session independent review) | [RS020.md](../session-reviews/RS020.md) |
+| RS021 | 2026-08-09 | S021 (trade-management-math-uses-intended-entry) | DONE | UNKNOWN (mig orchestrator in-session independent review) | [RS021.md](../session-reviews/RS021.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

@@ -33,7 +33,7 @@ class MaSlopeBaseline(BaseStrategy):
         sign = 1 if slope > 0 else (-1 if slope < 0 else 0)
         prev = self._prev_sign.get(symbol, 0)
         self._prev_sign[symbol] = sign
-        if sign == 0 or sign == prev:
+        if sign == 0 or prev == 0 or sign == prev:
             return None
         atr = last_atr(df)
         if atr <= 0:

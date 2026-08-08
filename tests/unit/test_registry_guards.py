@@ -69,6 +69,22 @@ class TestResearchPromoteGate(unittest.TestCase):
         self.assertIsInstance(publisher.events[0], StrategyActivated)
         self.assertIsInstance(msg, str)
 
+    def test_enable_with_allow_research_still_vetoed_by_disabled_config(self):
+        manifest = _manifest(status="research")
+        publisher = RecordingPublisher()
+        reg = StrategyRegistry(
+            [manifest], {"fake_strat": {"enabled": False}}, _LOGGER, publish=publisher
+        )
+        reg.load_all()
+
+        msg = reg.enable("fake_strat", allow_research=True)
+
+        self.assertEqual(
+            msg, "Cannot enable 'fake_strat': disabled via config (enabled: false)."
+        )
+        self.assertEqual(reg.state_of("fake_strat"), "LOADED")
+        self.assertEqual(publisher.events, [])
+
     def test_live_status_enable_unaffected_by_new_kwarg(self):
         manifest = _manifest(status="live")
         publisher = RecordingPublisher()

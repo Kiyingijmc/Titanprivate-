@@ -186,7 +186,7 @@ strategies:
   # 4. MA-slope baseline — Gyroscope gate criterion 6 reference ONLY.
   # Never a live candidate; stays research forever.
   ma_slope_baseline:
-    enabled: true
+    enabled: false
     timeframe: "H1"
     ma_window: 24
     stop_atr: 1.0

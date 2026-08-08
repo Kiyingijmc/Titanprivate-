@@ -36,7 +36,11 @@ def _run(strat, df):
 class TestMaSlopeBaseline(unittest.TestCase):
     def test_uptrend_flip_emits_market_buy_once(self):
         strat = MaSlopeBaseline(CFG, _NullLogger())
-        closes = [1.0] * 8 + [1.0 + 0.002 * k for k in range(1, 8)]
+        # Establishes a negative slope sign first, then reverses to positive --
+        # a genuine flip, not a cold-start first reading.
+        down = [1.0 - 0.001 * k for k in range(10)]
+        up = [down[-1] + 0.01 + 0.001 * k for k in range(7)]
+        closes = down + up
         decisions = []
         for end in range(6, len(closes) + 1):
             d = _run(strat, _bars(closes[:end]))
@@ -52,7 +56,10 @@ class TestMaSlopeBaseline(unittest.TestCase):
 
     def test_downtrend_flip_emits_sell(self):
         strat = MaSlopeBaseline(CFG, _NullLogger())
-        closes = [1.0] * 8 + [1.0 - 0.002 * k for k in range(1, 8)]
+        # Establishes a positive slope sign first, then reverses to negative.
+        up = [1.0 + 0.001 * k for k in range(10)]
+        down = [up[-1] - 0.01 - 0.001 * k for k in range(7)]
+        closes = up + down
         decisions = [d for end in range(6, len(closes) + 1)
                      if (d := _run(strat, _bars(closes[:end])))]
         self.assertEqual(len(decisions), 1)
@@ -62,6 +69,13 @@ class TestMaSlopeBaseline(unittest.TestCase):
     def test_short_window_returns_none(self):
         strat = MaSlopeBaseline(CFG, _NullLogger())
         self.assertIsNone(_run(strat, _bars([1.0, 1.0, 1.0])))
+
+    def test_cold_start_first_nonzero_slope_emits_no_signal(self):
+        strat = MaSlopeBaseline(CFG, _NullLogger())
+        # A symbol's very first candle sequence, with an already-nonzero
+        # slope, must not fire: there is no established prior sign yet.
+        closes = [1.0 + 0.001 * k for k in range(6)]
+        self.assertIsNone(_run(strat, _bars(closes)))
 
 
 if __name__ == "__main__":

@@ -113,6 +113,9 @@ class StrategyRegistry:
                 f"⛔ '{strategy_id}' is research-status (ungated). "
                 f"Use `/enable {strategy_id} confirm` to override."
             )
+        params = self._params_by_id.get(strategy_id, {})
+        if params.get("enabled", True) is False:
+            return f"Cannot enable '{strategy_id}': disabled via config (enabled: false)."
         state = self._state.get(strategy_id)
         if state not in ("LOADED", "SUSPENDED"):
             return f"Cannot enable '{strategy_id}': illegal transition from {state}."

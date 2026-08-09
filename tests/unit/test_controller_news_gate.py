@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -53,12 +53,44 @@ class _PerSymbolNews:
         return False, None
 
 
-class _SweepBridge:
-    """FakeBridge only speaks the reliable REQ path; the sweep uses PUSH."""
+class _CountingNews(_PerSymbolNews):
+    """Records every calendar consultation, so a per-ROW walk is visible."""
 
-    def __init__(self):
+    def __init__(self, blocked_symbols, reason="Core PCE in 20m"):
+        super().__init__(blocked_symbols, reason)
+        self.calls = []
+
+    def check_symbol(self, symbol, now=None):
+        self.calls.append(symbol)
+        return super().check_symbol(symbol, now)
+
+
+class _StaleCalendarNews:
+    """The global halt: a cache too old to trust blocks EVERY symbol with no
+    event involved at all (manager.py is_globally_blocked)."""
+
+    REASON = ("News calendar is stale (3h 10m) and the feed is unreachable -- "
+              "trading halted until it refreshes.")
+
+    def is_globally_blocked(self, now=None):
+        return True, self.REASON
+
+    def check_symbol(self, symbol, now=None):
+        return True, self.REASON
+
+
+class _SweepBridge:
+    """FakeBridge only speaks the reliable REQ path; the sweep uses PUSH.
+
+    `send_ok=False` is the wire error ZMQBridge.send_command reports by
+    returning False (bridge_zmq.py:74-81) -- the failure mode the sweep must
+    not mistake for a completed cancel.
+    """
+
+    def __init__(self, send_ok=True):
         self.reliable = []
         self.commands = []
+        self.send_ok = send_ok
 
     async def send_order_reliable(self, payload, timeout=2500):
         self.reliable.append(dict(payload))
@@ -66,7 +98,7 @@ class _SweepBridge:
 
     async def send_command(self, cmd, payload=None):
         self.commands.append((cmd, dict(payload or {})))
-        return True
+        return self.send_ok
 
 
 class _SweepStateManager:
@@ -89,12 +121,27 @@ def _pending(ticket, symbol, strategy="SilverBullet"):
             "order_type": "LIMIT", "time_placed": 0.0, "status": "PENDING"}
 
 
-def _sweep_controller(rows, news):
-    c = _controller([])
-    c.bridge = _SweepBridge()
+def _sweep_controller(rows, news, resting=None, positions=None, send_ok=True):
+    """A controller whose broker book agrees with the DB unless told otherwise.
+
+    `resting` is the heartbeat's `orders` list (what the broker still reports);
+    it defaults to every row, because a cancel is only ever confirmed by a
+    ticket LEAVING that list. `positions` is the heartbeat's `pos` list.
+    """
+    c = _controller(positions or [])
+    c.bridge = _SweepBridge(send_ok=send_ok)
     c.state_manager = _SweepStateManager(rows)
     c.news_manager = news
+    c.current_pending_orders = (
+        [{"t": r["ticket_id"]} for r in rows] if resting is None else resting)
+    c.last_heartbeat_time = datetime.now()   # a live EA feed
     return c
+
+
+def _broker_no_longer_reports(c, ticket):
+    """The heartbeat proof a CANCEL landed."""
+    c.current_pending_orders = [
+        o for o in c.current_pending_orders if o["t"] != ticket]
 
 
 class _StubLogger:
@@ -236,12 +283,10 @@ class NewsSweepOfRestingPendings(unittest.TestCase):
     clear calendar can sit through a later red-folder release and fill into
     it. The sweep pulls it first."""
 
-    def test_blocked_symbols_pending_is_cancelled_and_deleted(self):
+    def test_blocked_symbols_pending_is_cancelled(self):
         c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews(["EURUSD"]))
         _run(c._sweep_news_blocked_pendings())
         self.assertEqual(c.bridge.commands, [("CANCEL", {"ticket": 111})])
-        self.assertEqual(c.state_manager.deleted, [111])
-        self.assertEqual(c.state_manager.get_pending_orders(), [])
 
     def test_unaffected_symbols_pending_is_left_untouched(self):
         """Control case: without it, a sweep that cancelled EVERY pending row
@@ -250,9 +295,10 @@ class NewsSweepOfRestingPendings(unittest.TestCase):
             [_pending(111, "EURUSD"), _pending(222, "GBPJPY")],
             _PerSymbolNews(["EURUSD"]))
         _run(c._sweep_news_blocked_pendings())
-        self.assertEqual(c.state_manager.deleted, [111])
+        self.assertEqual(c.bridge.commands, [("CANCEL", {"ticket": 111})])
+        self.assertEqual(c.state_manager.deleted, [])
         self.assertEqual(
-            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [222])
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111, 222])
 
     def test_quiet_calendar_cancels_nothing(self):
         c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews([]))
@@ -294,6 +340,230 @@ class NewsSweepOfRestingPendings(unittest.TestCase):
         loop it must be try/except'd short of the loop's own re-raise."""
         self.assertTrue(
             _call_site_is_guarded(_run_method_node(), "_sweep_news_blocked_pendings"))
+
+
+class NewsCancelIsVerifiedNotAssumed(unittest.TestCase):
+    """RS023 CRITICAL-1 -- the same defect RS022 MAJOR-1 was remediated for,
+    re-introduced 200 lines from its fix and with a far bigger blast radius
+    (this sweep fires for ANY blocked symbol, and a gate fault or a stale
+    calendar blocks EVERY symbol at once).
+
+    CANCEL is fire-and-forget on PUSH: send_command returns False on a wire
+    error and an EA-side reject never reaches Python at all. Deleting the DB
+    row on the strength of the send therefore loses a still-resting order --
+    nothing can re-register a swept PENDING row, so it fills into the very
+    release this sweep exists to prevent, invisible to the portfolio cap.
+    """
+
+    def _blocked(self, **kw):
+        return _sweep_controller([_pending(111, "EURUSD")],
+                                 _PerSymbolNews(["EURUSD"]), **kw)
+
+    def test_row_survives_the_first_cancel(self):
+        """The broker still reports it resting: the send proves nothing yet."""
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [])
+        self.assertEqual(
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
+
+    def test_row_is_deleted_only_once_the_broker_stops_reporting_it(self):
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        _broker_no_longer_reports(c, 111)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [111])
+        # ...and the confirmed pull is announced, not just the attempt: the
+        # only DB-row remover that said nothing was RS022 round-2 MINOR-3.
+        self.assertTrue(
+            any(e[1] == "NEWS" and "confirmed" in e[2] for e in c.logger.events),
+            c.logger.events)
+
+    def test_a_confirmed_cancel_is_not_re_sent(self):
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        _broker_no_longer_reports(c, 111)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [("CANCEL", {"ticket": 111})])
+
+    def test_unsent_cancel_keeps_the_row_and_is_retried(self):
+        """send_command returned False: the CANCEL never left the process."""
+        c = self._blocked(send_ok=False)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [])
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.bridge.commands), 2, c.bridge.commands)
+        self.assertEqual(c.state_manager.deleted, [])
+
+    def test_a_failed_send_is_not_announced_as_a_pull(self):
+        c = self._blocked(send_ok=False)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.telemetry.messages, [])
+
+    def test_cancel_that_did_not_take_is_resent_on_the_next_tick(self):
+        """The send landed on the wire but the EA refused it (10018 market
+        closed): the ticket is still in the heartbeat's `orders`."""
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands,
+                         [("CANCEL", {"ticket": 111})] * 2)
+        self.assertEqual(c.state_manager.deleted, [])
+
+    def test_confirmation_is_not_believed_on_a_stale_feed(self):
+        """After a restart inside a news window the DB still holds PENDING
+        rows while `current_pending_orders` is an empty list no heartbeat has
+        filled in yet. Absence from THAT list is not proof of anything."""
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        c.current_pending_orders = []
+        c.last_heartbeat_time = datetime.now() - timedelta(
+            seconds=c.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S + 5)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [])
+
+    def test_operator_notice_is_edge_triggered_per_ticket(self):
+        """The row now survives an unconfirmed cancel, so an un-edge-triggered
+        notice would Telegram the same order every 60s forever."""
+        c = self._blocked()
+        for _ in range(3):
+            _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+
+    def test_a_stuck_cancel_escalates_to_telegram(self):
+        """The operator was told the order is being cancelled; an EA that keeps
+        refusing leaves it resting into the release (RS022 round-2 MAJOR-1)."""
+        c = self._blocked()
+        for _ in range(c.NEWS_CANCEL_ESCALATE_AFTER_SENDS + 1):
+            _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+        self.assertIn("STILL RESTING", c.telemetry.messages[1])
+
+    def test_escalation_is_throttled(self):
+        c = self._blocked()
+        for _ in range(c.NEWS_CANCEL_ESCALATE_AFTER_SENDS + 4):
+            _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+
+    def test_escalation_re_arms_once_the_cancel_confirms(self):
+        """Control case for the throttle: a fresh stuck ticket must alert
+        afresh rather than be swallowed by a timer still running."""
+        c = self._blocked()
+        for _ in range(c.NEWS_CANCEL_ESCALATE_AFTER_SENDS + 1):
+            _run(c._sweep_news_blocked_pendings())
+        _broker_no_longer_reports(c, 111)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertIsNone(c._news_cancel_alert_at)
+
+    def test_a_cleared_window_stops_the_retry(self):
+        """Once the symbol is tradeable again we no longer want the order
+        gone: stop re-sending, and leave any late-landing cancel to the Sync
+        Guard rather than deleting a row we cannot prove is dead."""
+        news = _PerSymbolNews(["EURUSD"])
+        c = _sweep_controller([_pending(111, "EURUSD")], news)
+        _run(c._sweep_news_blocked_pendings())
+        news.blocked_symbols.clear()
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.bridge.commands), 1, c.bridge.commands)
+        self.assertEqual(c.state_manager.deleted, [])
+
+
+class NewsSweepLeavesFilledTicketsAlone(unittest.TestCase):
+    """RS023 MAJOR-1 (the RS022 MINOR-4 case). A limit that filled seconds ago
+    is STILL a PENDING row until the next heartbeat's adoption pass flips it,
+    and fills cluster on exactly the volatility this sweep reacts to. Cancelling
+    and deleting there strips the DB row off a LIVE position: TradeManager
+    never manages it (BE/partials/ratchet need initial_entry/initial_tp on the
+    row), the risk cap cannot count it, and every ordinary health check reports
+    it as fine -- the 2026-08-03 stopless-GBPJPY class."""
+
+    def _filled(self):
+        return _sweep_controller(
+            [_pending(111, "EURUSD")], _PerSymbolNews(["EURUSD"]),
+            resting=[], positions=[{"t": 111, "s": "EURUSD"}])
+
+    def test_ticket_that_filled_is_left_to_the_adoption_path(self):
+        c = self._filled()
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [])
+        self.assertEqual(c.state_manager.deleted, [])
+        self.assertEqual(
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [111])
+
+    def test_a_fill_after_a_cancel_was_sent_is_not_deleted_either(self):
+        """The dangerous ordering: cancel sent on tick 1, the limit fills
+        before it lands, so on tick 2 the ticket is absent from `orders` --
+        which the confirmation branch would otherwise read as proof."""
+        c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        c.current_pending_orders = []
+        c.current_open_positions = [{"t": 111, "s": "EURUSD"}]
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [])
+
+
+class NewsPullNoticeTellsTheTruth(unittest.TestCase):
+    """RS023 MAJOR-2. Three conditions reach the pull notice and only one of
+    them is a red-folder window: a gate fault and a stale calendar are feed
+    failures with no event and no end time. Asserting a window there
+    contradicts the `reason` printed one line above and sends the operator
+    looking for an event that does not exist -- in precisely the two cases
+    where a correct diagnosis matters most."""
+
+    def _notice(self, news):
+        """The pull notice itself -- a faulting gate also fires its own
+        (correct, and separately tested) fail-closed alarm."""
+        c = _sweep_controller([_pending(111, "EURUSD")], news)
+        _run(c._sweep_news_blocked_pendings())
+        pulls = [m for m in c.telemetry.messages if "News Pull" in m]
+        self.assertEqual(len(pulls), 1, c.telemetry.messages)
+        return pulls[0]
+
+    def test_a_real_event_names_the_window(self):
+        """Control case: the claim below must be absent for the RIGHT reason,
+        not because it was deleted from every path."""
+        msg = self._notice(_PerSymbolNews(["EURUSD"]))
+        self.assertIn("red-folder window", msg)
+        self.assertIn("re-signals", msg)
+
+    def test_a_gate_fault_claims_no_scheduled_event(self):
+        msg = self._notice(_StubNews(raise_exc=RuntimeError("feed exploded")))
+        self.assertNotIn("red-folder window", msg)
+        self.assertIn("no scheduled event", msg.lower())
+        self.assertIn("feed exploded", msg)
+
+    def test_a_stale_calendar_claims_no_scheduled_event(self):
+        msg = self._notice(_StaleCalendarNews())
+        self.assertNotIn("red-folder window", msg)
+        self.assertIn("no scheduled event", msg.lower())
+        self.assertIn("stale", msg)
+
+    def test_the_notice_does_not_assert_the_order_is_already_gone(self):
+        """CANCEL is fire-and-forget; the earlier wording announced the pull as
+        a completed fact (RS022 round-2 MINOR-3's lesson, inverted)."""
+        msg = self._notice(_PerSymbolNews(["EURUSD"]))
+        self.assertIn("confirmed only when the broker", msg)
+
+
+class NewsSweepCalendarCost(unittest.TestCase):
+    """RS023 MINOR-2: the verdict is per SYMBOL, not per row."""
+
+    def test_calendar_is_consulted_once_per_symbol_not_once_per_row(self):
+        news = _CountingNews(["EURUSD"])
+        c = _sweep_controller(
+            [_pending(111, "EURUSD"), _pending(222, "EURUSD"),
+             _pending(333, "GBPJPY")], news)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(sorted(news.calls), ["EURUSD", "GBPJPY"])
+
+    def test_every_row_on_a_blocked_symbol_is_still_cancelled(self):
+        """Control case: memoising the verdict must not memoise the ACTION."""
+        c = _sweep_controller(
+            [_pending(111, "EURUSD"), _pending(222, "EURUSD")],
+            _CountingNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands,
+                         [("CANCEL", {"ticket": 111}), ("CANCEL", {"ticket": 222})])
 
 
 def _run_method_node():

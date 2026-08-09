@@ -25,6 +25,12 @@ data/specs.json
 data/logs/*.log
 boot_crash.log
 data/journal/
+# Transient verification/timing logs dropped at the repo root by a session
+# (.S023_full_suite.log, _probe_timing.log ...). They are build output, not
+# source, and have twice been committed by accident -- keep them untracked.
+# (boot_crash.log above predates this and stays tracked; gitignore does not
+# retroactively untrack.)
+/*.log
 
 # --- Research lake (Parquet; frozen/ is kept in git) ---
 data/lake/**

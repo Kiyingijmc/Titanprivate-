@@ -95,6 +95,20 @@ class SystemController:
     # alternate clear/fault and spam the channel within a single close.
     NEWS_FAULT_ALERT_INTERVAL_S = 1800
     _news_fault_alert_at = None   # ts of the last gate-fault Telegram
+    # The news sweep's CANCEL is the same fire-and-forget PUSH the breaker
+    # sweep uses, so it gets the same verify-from-HEARTBEAT treatment and the
+    # same escalation thresholds (see _sweep_news_blocked_pendings). A cancel
+    # is only believed once the broker stops reporting the ticket in a
+    # heartbeat that is actually FRESH: after a restart inside a news window
+    # the DB still holds PENDING rows while `current_pending_orders` is an
+    # empty list nothing has published yet, and treating that emptiness as
+    # proof would delete every row on the second tick (RS023 CRITICAL-1).
+    NEWS_CANCEL_ESCALATE_AFTER_SENDS = 3
+    NEWS_CANCEL_ALERT_INTERVAL_S = 1800
+    NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S = 60
+    _news_cancel_sent = None      # ticket -> CANCELs sent, awaiting proof
+    _news_cancel_alert_at = None  # ts of the last stuck-cancel escalation
+    _news_cancel_send_warned = None  # tickets whose failed-send WARN was logged
     # Hysteresis band on the daily-DD breaker alarm, in percentage points of
     # the day anchor. The breaker's verdict is mark-to-market (floating P&L,
     # re-evaluated every 5s heartbeat), so a losing position parked ON the
@@ -653,12 +667,48 @@ class SystemController:
         Async because a fail-closed gate is a SILENT trading stop unless the
         fault reaches the operator (see _alert_news_gate_fault).
         """
+        blocked, reason, _kind = await self._news_verdict(symbol)
+        return blocked, reason
+
+    async def _news_verdict(self, symbol):
+        """(blocked, reason, kind) — _news_blocks_symbol plus WHY it blocked.
+
+        `kind` is 'event' (a real red-folder release), 'halt' (the calendar is
+        too stale to trust — no scheduled event is involved), 'fault' (the gate
+        itself raised) or None when nothing blocks. Callers that only decide
+        whether to trade want the 2-tuple; a caller that TELLS THE OPERATOR
+        what happened needs the third element, because two of the three
+        blocking paths are feed failures and describing them as "the symbol
+        entered a red-folder window" is simply false (RS023 MAJOR-2) — and it
+        is exactly in those two that the operator needs the right diagnosis.
+
+        The staleness branch is asked first rather than sniffed out of the
+        reason string: `check_symbol` already consults `is_globally_blocked`
+        first (manager.py:108-110), so this returns the same verdict and the
+        same text, only classified.
+        """
         try:
-            return self.news_manager.check_symbol(symbol)
+            halted, halt_reason = self._news_feed_halted()
+            if halted:
+                return True, halt_reason, 'halt'
+            blocked, reason = self.news_manager.check_symbol(symbol)
+            return blocked, reason, ('event' if blocked else None)
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Symbol gate failed for {symbol}: {exc}")
             await self._alert_news_gate_fault(symbol, exc)
-            return True, f"news gate fault, failing closed: {exc}"
+            return True, f"news gate fault, failing closed: {exc}", 'fault'
+
+    def _news_feed_halted(self):
+        """The calendar-too-stale global halt, or (False, None).
+
+        Tolerates a news manager without the method (test doubles, and any
+        future source that has no staleness notion): the classification
+        degrades to 'event', never to 'not blocked'.
+        """
+        fn = getattr(self.news_manager, 'is_globally_blocked', None)
+        if not callable(fn):
+            return False, None
+        return fn()
 
     async def _alert_news_gate_fault(self, symbol, exc):
         """Operator alarm when the news gate itself raises.
@@ -681,6 +731,15 @@ class SystemController:
             f"failure. Next alert in {self.NEWS_FAULT_ALERT_INTERVAL_S // 60} min "
             "at the earliest.", parse_mode="Markdown")
 
+    def _news_feed_is_fresh(self):
+        """True while EA traffic is recent enough that `current_pending_orders`
+        describes the broker's book NOW. Absence from a stale (or never
+        populated) list is not evidence a cancel landed."""
+        last = getattr(self, 'last_heartbeat_time', None)
+        if last is None:
+            return False
+        return (datetime.now() - last).total_seconds() <= self.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S
+
     async def _sweep_news_blocked_pendings(self):
         """Pull Titan's resting pendings when their symbol enters a blackout.
 
@@ -688,35 +747,176 @@ class SystemController:
         rests for 12 bars of the owning strategy's timeframe (up to 12h on H1 —
         _init_strategies), so an order placed on a clear calendar can sit right
         through a red-folder release and fill into it. Runs on the same 60 s
-        tick as _cleanup_ghost_orders and mirrors its CANCEL + delete_order
-        pattern, including its known limitation: CANCEL is fire-and-forget on
-        PUSH, so an EA-side reject (10018 market closed) leaves the order
-        resting while the row is gone. That is why the notice below tells the
-        operator what was pulled rather than asserting it is gone.
+        tick as _cleanup_ghost_orders.
+
+        It does NOT copy _cleanup_ghost_orders' CANCEL-then-delete_order: that
+        pattern was remediated out of the breaker sweep 200 lines below (RS022
+        MAJOR-1) and re-appeared here (RS023 CRITICAL-1). `CANCEL` is
+        fire-and-forget on PUSH, `send_command` returns False on a wire error,
+        and an EA-side reject (10018 market closed, 10027 AutoTrading off —
+        under which broker-side pendings STILL fill) never reaches Python at
+        all. Nothing can re-register a swept PENDING row (state_manager.py:233),
+        so deleting on the strength of the send leaves an order resting through
+        the very release this sweep exists to protect against — untracked,
+        uncancellable, and uncounted by the portfolio risk cap. Worse than no
+        sweep. And this one fires for ANY blocked symbol, including the
+        every-symbol verdicts a gate fault or a stale calendar produce, so that
+        mistake had whole-book blast radius.
+
+        So it follows _sweep_pendings_on_breaker_trip exactly: keep the row,
+        re-send the cancel on each tick while the symbol stays blocked, forget
+        the row only once a fresh heartbeat stops reporting the ticket, and
+        escalate to Telegram once a cancel has gone unconfirmed for
+        NEWS_CANCEL_ESCALATE_AFTER_SENDS sends. Tickets already reported as
+        POSITIONS are skipped: a limit that filled seconds ago is still a
+        PENDING row until the next heartbeat's adoption pass flips it
+        (:1530-1541), and cancelling/deleting it there would strip the DB row
+        off a live position — no TradeManager, no BE, no partials, invisible to
+        the cap (RS023 MAJOR-1, the RS022 MINOR-4 case).
 
         No re-placement is attempted on purpose: the owning strategy re-signals
         on its next candle close if the setup still qualifies once the window
         clears, and the send-time gate blocks it until then.
         """
-        for o in self.state_manager.get_pending_orders():
+        resting = {int(o['t']) for o in (getattr(self, 'current_pending_orders', None) or [])
+                   if 't' in o}
+        filled = {int(p['t']) for p in (getattr(self, 'current_open_positions', None) or [])
+                  if 't' in p}
+        fresh = self._news_feed_is_fresh()
+        sent = self._news_cancel_sent
+        if sent is None:
+            sent = self._news_cancel_sent = {}
+        verdicts = {}   # symbol -> verdict, so N rows on a pair walk the calendar ONCE
+        overdue, live_rows = [], set()
+
+        for o in (self.state_manager.get_pending_orders() or []):
             symbol = o.get('symbol')
             if not symbol:
                 continue  # nothing to check a calendar against
-            blocked, reason = await self._news_blocks_symbol(symbol)
-            if not blocked:
+            ticket = int(o['ticket_id'])
+            live_rows.add(ticket)
+            label = f"`#{ticket}` {symbol}"
+            if ticket in filled:
+                sent.pop(ticket, None)
+                continue  # already a position; not ours to cancel or delete
+            attempts = sent.get(ticket, 0)
+            if attempts and fresh and ticket not in resting:
+                # The broker no longer reports it resting: the cancel landed.
+                self.state_manager.delete_order(ticket)
+                sent.pop(ticket, None)
+                self._forget_news_cancel_warning(ticket)
+                self.logger.log_event(
+                    "RISK", "NEWS",
+                    f"News CANCEL for #{ticket} confirmed: the broker no longer "
+                    f"reports it resting; DB row removed.")
                 continue
-            ticket = o['ticket_id']
-            await self.bridge.send_command("CANCEL", {"ticket": ticket})
-            self.state_manager.delete_order(ticket)
-            self.logger.log_event(
-                "WARN", "NEWS",
-                f"Pulled resting order #{ticket} on {symbol}: {reason}")
-            await self.telemetry.send_message(
-                f"📰 **News Pull:** Cancelling resting {o.get('strategy', 'unknown')} "
-                f"order `#{ticket}` on `{symbol}`\nReason: `{reason}`\nNot a TTL "
-                "expiry — the symbol entered a red-folder window while the order "
-                "was still resting. The strategy re-signals after the window if "
-                "the setup still qualifies.", parse_mode="Markdown")
+            if symbol not in verdicts:
+                verdicts[symbol] = await self._news_verdict(symbol)
+            blocked, reason, kind = verdicts[symbol]
+            if not blocked:
+                if attempts:
+                    # Window cleared with the cancel still unproven. Stop
+                    # chasing it: we no longer want it gone, and if the cancel
+                    # does land late the row is left to the Sync Guard.
+                    sent.pop(ticket, None)
+                    self._forget_news_cancel_warning(ticket)
+                continue
+            if attempts >= self.NEWS_CANCEL_ESCALATE_AFTER_SENDS:
+                overdue.append(label)  # still resting despite repeated sends
+            if await self.bridge.send_command("CANCEL", {"ticket": ticket}) is False:
+                warned = self._news_cancel_send_warned
+                if warned is None:
+                    warned = self._news_cancel_send_warned = set()
+                if ticket not in warned:
+                    # One WARN per stuck ticket, not one per 60s tick.
+                    warned.add(ticket)
+                    self.logger.log_event(
+                        "WARN", "NEWS",
+                        f"News CANCEL for #{ticket} failed to send; DB row kept, "
+                        f"retrying on the next tick while {symbol} is blocked")
+                continue
+            sent[ticket] = attempts + 1
+            self._forget_news_cancel_warning(ticket)  # wire recovered
+            if attempts == 0:
+                self.logger.log_event(
+                    "WARN", "NEWS",
+                    f"Pulling resting order #{ticket} on {symbol}: {reason}")
+                await self._announce_news_pull(o, ticket, symbol, reason, kind)
+            elif attempts == 1:
+                self.logger.log_event(
+                    "WARN", "NEWS",
+                    f"News CANCEL for #{ticket} did not take (still resting at "
+                    f"the broker); re-sending while {symbol} is blocked")
+        for ticket in [t for t in sent if t not in live_rows]:
+            # The row went away by some other route (the TTL cleaner, the Sync
+            # Guard, adoption): drop the attempt counter with it so this dict
+            # cannot accumulate over a multi-day run.
+            sent.pop(ticket, None)
+            self._forget_news_cancel_warning(ticket)
+        await self._escalate_stuck_news_cancels(overdue)
+
+    def _forget_news_cancel_warning(self, ticket):
+        warned = self._news_cancel_send_warned
+        if warned:
+            warned.discard(ticket)  # a new outage re-warns
+
+    async def _announce_news_pull(self, row, ticket, symbol, reason, kind):
+        """The one-per-ticket operator notice, edge-triggered on the FIRST
+        cancel send (the row now survives an unconfirmed cancel, so a message
+        per tick would be a message every 60s until the EA recovered).
+
+        The explanatory sentence branches on `kind`: only a real blocking event
+        is a red-folder window the strategy can re-signal after. A gate fault
+        or a stale calendar has no window and no end time — saying otherwise
+        contradicts the `reason` printed one line above it and sends the
+        operator looking for an event that does not exist (RS023 MAJOR-2).
+        """
+        if kind == 'event':
+            why = ("Not a TTL expiry — the symbol entered a red-folder window "
+                   "while the order was still resting. The strategy re-signals "
+                   "after the window if the setup still qualifies.")
+        else:
+            why = ("Not a TTL expiry, and **no scheduled event** — the news "
+                   "gate itself could not clear this symbol, so it is failing "
+                   "**closed**. There is no window to wait out: it clears when "
+                   "the calendar feed does.")
+        await self.telemetry.send_message(
+            f"📰 **News Pull:** Cancelling resting {row.get('strategy', 'unknown')} "
+            f"order `#{ticket}` on `{symbol}`\nReason: `{reason}`\n{why}\n"
+            "CANCEL is fire-and-forget: the pull is confirmed only when the "
+            "broker stops reporting the order, and you will be alerted if it "
+            "does not take.", parse_mode="Markdown")
+
+    async def _escalate_stuck_news_cancels(self, overdue):
+        """Correct the pull notice once a cancel is overdue.
+
+        Same failure and same shape as _escalate_stuck_cancels: the operator
+        was told an order is being cancelled, and an EA that keeps refusing
+        leaves it resting into the release. Throttled to one Telegram per
+        NEWS_CANCEL_ALERT_INTERVAL_S while anything is overdue, re-armed as
+        soon as nothing is.
+        """
+        if not overdue:
+            self._news_cancel_alert_at = None
+            return
+        now = datetime.now().timestamp()
+        last = self._news_cancel_alert_at
+        if last is not None and (now - last) < self.NEWS_CANCEL_ALERT_INTERVAL_S:
+            return
+        self._news_cancel_alert_at = now
+        names = ", ".join(overdue)
+        self.logger.log_event(
+            "WARN", "NEWS",
+            f"News cancel NOT confirmed for {names}: still resting at the broker "
+            f"after {self.NEWS_CANCEL_ESCALATE_AFTER_SENDS}+ CANCELs; escalating "
+            f"to Telegram.")
+        await self.telemetry.send_message(
+            "🚨 **News cancel NOT confirmed**\nThese orders are **STILL RESTING** "
+            f"at the broker despite repeated CANCELs: {names}\nThe earlier "
+            "\"News Pull\" is not yet true — they can still fill into the "
+            "release. Likely an EA-side reject (AutoTrading off, market closed): "
+            "check the MT5 Experts log. Retrying every tick while the symbol "
+            "stays blocked.", parse_mode="Markdown")
 
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
         news_blocked, news_reason = await self._news_blocks_symbol(symbol)

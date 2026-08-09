@@ -176,8 +176,14 @@ def _controller(risk, pending=None, bridge=None):
     c.current_open_positions = []
     c.current_pending_orders = []
     c.live_prices = {}
-    c._news_blocks_symbol = lambda s: (False, "")
+    c._news_blocks_symbol = _never_blocks
     return c
+
+
+async def _never_blocks(symbol):
+    """Stand-in for the news gate. Async because the real one fails CLOSED and
+    may Telegram the fault (see _news_blocks_symbol)."""
+    return False, ""
 
 
 def _heartbeat(equity=9600.0, orders=None, pos=None):

@@ -22,6 +22,12 @@ def run(coro):
     return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
 
 
+async def _never_blocks(symbol):
+    """Stand-in for the news gate. Async because the real one fails CLOSED and
+    may Telegram the fault (see _news_blocks_symbol)."""
+    return False, ""
+
+
 class RecordingLogger:
     def __init__(self):
         self.events = []
@@ -47,7 +53,7 @@ class TestZeroLotSkipIsLogged(unittest.TestCase):
         c.logger = RecordingLogger()
         c.risk_manager = ZeroLotRisk()
         c.live_prices = {}
-        c._news_blocks_symbol = lambda s: (False, "")
+        c._news_blocks_symbol = _never_blocks
         decision = {"signal": "SELL", "type": "MARKET",
                     "price": 115000.0, "sl": 115700.0, "tp": 113600.0}
         run(c._execute_signal("BTCUSD", decision, "Gyroscope", "NEUTRAL", grade="C"))

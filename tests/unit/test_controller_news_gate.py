@@ -40,6 +40,63 @@ class _StubNews:
         return self.blocked, self.reason
 
 
+class _PerSymbolNews:
+    """Blocks only the named symbols, so a sweep test can carry a control row."""
+
+    def __init__(self, blocked_symbols, reason="Core PCE in 20m"):
+        self.blocked_symbols = set(blocked_symbols)
+        self.reason = reason
+
+    def check_symbol(self, symbol, now=None):
+        if symbol in self.blocked_symbols:
+            return True, self.reason
+        return False, None
+
+
+class _SweepBridge:
+    """FakeBridge only speaks the reliable REQ path; the sweep uses PUSH."""
+
+    def __init__(self):
+        self.reliable = []
+        self.commands = []
+
+    async def send_order_reliable(self, payload, timeout=2500):
+        self.reliable.append(dict(payload))
+        return True
+
+    async def send_command(self, cmd, payload=None):
+        self.commands.append((cmd, dict(payload or {})))
+        return True
+
+
+class _SweepStateManager:
+    """Only the surface the pending sweep touches."""
+
+    def __init__(self, rows):
+        self.rows = [dict(r) for r in rows]
+        self.deleted = []
+
+    def get_pending_orders(self):
+        return [dict(r) for r in self.rows]
+
+    def delete_order(self, ticket):
+        self.deleted.append(ticket)
+        self.rows = [r for r in self.rows if r['ticket_id'] != ticket]
+
+
+def _pending(ticket, symbol, strategy="SilverBullet"):
+    return {"ticket_id": ticket, "symbol": symbol, "strategy": strategy,
+            "order_type": "LIMIT", "time_placed": 0.0, "status": "PENDING"}
+
+
+def _sweep_controller(rows, news):
+    c = _controller([])
+    c.bridge = _SweepBridge()
+    c.state_manager = _SweepStateManager(rows)
+    c.news_manager = news
+    return c
+
+
 class _StubLogger:
     def log_event(self, *args, **kwargs):
         pass
@@ -81,8 +138,8 @@ class ControllerWiring(unittest.TestCase):
 
 
 class ExecuteSignalNewsGate(unittest.TestCase):
-    """The production invariant: a blocked symbol sends no order, and a news
-    fault never stops trading. Reuses test_risk_manager_exposure_cap's
+    """The production invariant: a blocked symbol sends no order, and a gate
+    that cannot answer blocks too. Reuses test_risk_manager_exposure_cap's
     object.__new__(SystemController) + FakeBridge harness."""
 
     def test_blocked_symbol_sends_no_order(self):
@@ -101,13 +158,142 @@ class ExecuteSignalNewsGate(unittest.TestCase):
         _run(c._execute_signal("EURUSD", DECISION, "SilverBullet", "BULLISH"))
         self.assertEqual(len(c.bridge.reliable), 1)
 
-    def test_a_news_fault_fails_open_and_still_trades(self):
-        """Pins the documented contract: a news fault must not crash or stop
-        the trade path -- it degrades to 'not blocked'."""
+    def test_a_news_fault_fails_closed_and_sends_no_order(self):
+        """Replaces test_a_news_fault_fails_open_and_still_trades, which pinned
+        the OLD contract (a fault degraded to 'not blocked'). A gate that
+        cannot answer must block: a broken gate was indistinguishable from a
+        quiet calendar and let signals through a red-folder release
+        (audit-2026-08-07 D11). The fault must not crash the trade path
+        either -- _execute_signal still returns normally."""
         c = _controller([])
         c.news_manager = _StubNews(raise_exc=RuntimeError("feed exploded"))
         _run(c._execute_signal("EURUSD", DECISION, "SilverBullet", "BULLISH"))
-        self.assertEqual(len(c.bridge.reliable), 1)
+        self.assertEqual(c.bridge.reliable, [])
+        self.assertEqual(c._reserved_risk, {})
+        self.assertEqual(c.pending_signal_meta, {})
+
+    def test_a_news_fault_returns_a_reason_naming_the_fault(self):
+        """A fail-closed block must be distinguishable from a real release --
+        otherwise the skip log reads as 'Core PCE' when nothing is scheduled."""
+        c = _controller([])
+        c.news_manager = _StubNews(raise_exc=RuntimeError("feed exploded"))
+        blocked, reason = _run(c._news_blocks_symbol("EURUSD"))
+        self.assertTrue(blocked)
+        self.assertIn("fault", reason.lower())
+        self.assertIn("feed exploded", reason)
+
+
+class NewsGateFaultAlert(unittest.TestCase):
+    """A fail-closed gate is a SILENT trading stop unless the fault is
+    announced -- the same failure mode _alert_uncomputable_book exists for."""
+
+    def _faulting(self):
+        c = _controller([])
+        c.news_manager = _StubNews(raise_exc=RuntimeError("feed exploded"))
+        return c
+
+    def test_gate_fault_telegrams_the_operator(self):
+        c = self._faulting()
+        _run(c._news_blocks_symbol("EURUSD"))
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+        self.assertIn("feed exploded", c.telemetry.messages[0])
+
+    def test_alert_is_distinct_from_the_per_signal_skip_log(self):
+        """The old behaviour was a WARN log line only. Keep the log AND add
+        the Telegram, so grepping the audit log still shows the fault."""
+        c = self._faulting()
+        _run(c._news_blocks_symbol("EURUSD"))
+        self.assertTrue(any(e[0] == "WARN" and e[1] == "NEWS" for e in c.logger.events),
+                        c.logger.events)
+
+    def test_repeat_faults_are_throttled_within_the_window(self):
+        """12 symbols x every candle close would otherwise spam the operator
+        off the channel, exactly as DD_CANCEL_ALERT_INTERVAL_S prevents."""
+        c = self._faulting()
+        for symbol in ("EURUSD", "GBPJPY", "XAUUSD", "EURUSD"):
+            _run(c._news_blocks_symbol(symbol))
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+
+    def test_alert_re_arms_once_the_window_elapses(self):
+        """Control case for the throttle: without it, a permanently faulting
+        gate would alert once at boot and then stay silent forever."""
+        c = self._faulting()
+        _run(c._news_blocks_symbol("EURUSD"))
+        c._news_fault_alert_at -= (c.NEWS_FAULT_ALERT_INTERVAL_S + 1)
+        _run(c._news_blocks_symbol("EURUSD"))
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+
+    def test_a_healthy_gate_alerts_nothing(self):
+        c = _controller([])
+        c.news_manager = _StubNews(blocked=True, reason="Core PCE in 20m")
+        _run(c._news_blocks_symbol("EURUSD"))
+        self.assertEqual(c.telemetry.messages, [])
+
+
+class NewsSweepOfRestingPendings(unittest.TestCase):
+    """The send-time gate runs ONCE, at placement. A LIMIT rests for 12 bars
+    of its strategy's timeframe (up to 12h on H1), so an order placed on a
+    clear calendar can sit through a later red-folder release and fill into
+    it. The sweep pulls it first."""
+
+    def test_blocked_symbols_pending_is_cancelled_and_deleted(self):
+        c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [("CANCEL", {"ticket": 111})])
+        self.assertEqual(c.state_manager.deleted, [111])
+        self.assertEqual(c.state_manager.get_pending_orders(), [])
+
+    def test_unaffected_symbols_pending_is_left_untouched(self):
+        """Control case: without it, a sweep that cancelled EVERY pending row
+        would pass the test above."""
+        c = _sweep_controller(
+            [_pending(111, "EURUSD"), _pending(222, "GBPJPY")],
+            _PerSymbolNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [111])
+        self.assertEqual(
+            [r["ticket_id"] for r in c.state_manager.get_pending_orders()], [222])
+
+    def test_quiet_calendar_cancels_nothing(self):
+        c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews([]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [])
+        self.assertEqual(c.state_manager.deleted, [])
+
+    def test_operator_notice_is_worded_apart_from_the_ttl_auto_clean(self):
+        """A news-driven pull and a TTL expiry must not read the same in
+        Telegram -- one means 'the market got dangerous', the other means
+        'the setup went stale'."""
+        c = _sweep_controller([_pending(111, "EURUSD")], _PerSymbolNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(len(c.telemetry.messages), 1, c.telemetry.messages)
+        msg = c.telemetry.messages[0]
+        self.assertNotIn("Auto-Clean", msg)
+        self.assertIn("#111", msg)
+        self.assertIn("EURUSD", msg)
+        self.assertIn("Core PCE", msg)
+
+    def test_gate_fault_pulls_the_book(self):
+        """Fail-closed is one contract, not two: if the gate cannot say a
+        resting order is safe, the order does not rest through the unknown."""
+        c = _sweep_controller([_pending(111, "EURUSD")],
+                              _StubNews(raise_exc=RuntimeError("feed exploded")))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [("CANCEL", {"ticket": 111})])
+
+    def test_rows_without_a_symbol_are_skipped_not_crashed(self):
+        row = _pending(111, "EURUSD")
+        row.pop("symbol")
+        c = _sweep_controller([row], _PerSymbolNews(["EURUSD"]))
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.bridge.commands, [])
+
+    def test_sweep_is_called_from_run_and_is_locally_guarded(self):
+        """Wiring guard: the sweep is dead code unless run() calls it, and it
+        reaches the news feed -- so like every other news call site in the
+        loop it must be try/except'd short of the loop's own re-raise."""
+        self.assertTrue(
+            _call_site_is_guarded(_run_method_node(), "_sweep_news_blocked_pendings"))
 
 
 def _run_method_node():

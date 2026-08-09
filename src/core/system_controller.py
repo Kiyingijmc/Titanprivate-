@@ -86,6 +86,15 @@ class SystemController:
     RESERVED_RISK_TTL_S = 300
     # Throttle on the "total risk un-computable, everything is blocked" alarm.
     UNCOMPUTABLE_ALERT_INTERVAL_S = 1800
+    # Throttle on the "the per-symbol news gate is itself faulting" alarm. The
+    # gate fails CLOSED (see _news_blocks_symbol), so a persistent fault is a
+    # silent trading stop -- and it re-raises for every symbol on every candle
+    # close, so it needs the same time throttle UNCOMPUTABLE_ALERT_INTERVAL_S
+    # puts on _alert_uncomputable_book. Deliberately NOT re-armed by a
+    # successful check: with 12 symbols an intermittent fault would otherwise
+    # alternate clear/fault and spam the channel within a single close.
+    NEWS_FAULT_ALERT_INTERVAL_S = 1800
+    _news_fault_alert_at = None   # ts of the last gate-fault Telegram
     # Hysteresis band on the daily-DD breaker alarm, in percentage points of
     # the day anchor. The breaker's verdict is mark-to-market (floating P&L,
     # re-evaluated every 5s heartbeat), so a losing position parked ON the
@@ -545,6 +554,14 @@ class SystemController:
                 # --- E. GHOST CLEANUP ---
                 if now_dt.second == 0 and now_dt.microsecond < 10000:
                     await self._cleanup_ghost_orders()
+                    # TTL first: an expired row is already gone and needs no
+                    # calendar lookup. Guarded locally like every other news
+                    # call site in this loop — the loop's own `except` re-raises.
+                    try:
+                        await self._sweep_news_blocked_pendings()
+                    except Exception as e:
+                        self.logger.log_event(
+                            "WARN", "NEWS", f"News pending sweep failed: {e}")
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
@@ -621,18 +638,88 @@ class SystemController:
             self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
-    def _news_blocks_symbol(self, symbol):
-        """Per-symbol red-folder gate. Never raises: a news fault must not
-        crash the trade path, so an internal error degrades to 'not blocked'
-        while the global stale-cache guard remains in force."""
+    async def _news_blocks_symbol(self, symbol):
+        """Per-symbol red-folder gate. Never raises, and fails CLOSED.
+
+        An internal fault used to degrade to 'not blocked', which made a broken
+        gate indistinguishable from a quiet calendar and let graded signals
+        through a red-folder release unchecked (audit-2026-08-07 D11). A gate
+        that cannot answer must block: the cost of failing closed is a missed
+        setup the strategy re-signals later, the cost of failing open is
+        entering INTO the release. The returned reason names the fault so the
+        skip log and the sweep's Telegram can never read as a scheduled event
+        that does not exist.
+
+        Async because a fail-closed gate is a SILENT trading stop unless the
+        fault reaches the operator (see _alert_news_gate_fault).
+        """
         try:
             return self.news_manager.check_symbol(symbol)
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Symbol gate failed for {symbol}: {exc}")
-            return False, None
+            await self._alert_news_gate_fault(symbol, exc)
+            return True, f"news gate fault, failing closed: {exc}"
+
+    async def _alert_news_gate_fault(self, symbol, exc):
+        """Operator alarm when the news gate itself raises.
+
+        Same shape and same reasoning as _alert_uncomputable_book: a fail-safe
+        that stops trading has to be louder than the thing it is protecting
+        against, or an unattended forward test cannot tell a blocked bot from a
+        quiet market. Throttled to one Telegram per NEWS_FAULT_ALERT_INTERVAL_S.
+        """
+        now = datetime.now().timestamp()
+        last = self._news_fault_alert_at
+        if last is not None and (now - last) < self.NEWS_FAULT_ALERT_INTERVAL_S:
+            return
+        self._news_fault_alert_at = now
+        await self.telemetry.send_message(
+            "📵 **News Gate Faulted**\nThe per-symbol red-folder check raised on "
+            f"`{symbol}`, so it is failing **closed**: affected symbols will not "
+            "trade and Titan's resting pending orders are being pulled until it "
+            f"clears.\nError: `{exc}`\nUsual cause: a calendar fetch or parse "
+            f"failure. Next alert in {self.NEWS_FAULT_ALERT_INTERVAL_S // 60} min "
+            "at the earliest.", parse_mode="Markdown")
+
+    async def _sweep_news_blocked_pendings(self):
+        """Pull Titan's resting pendings when their symbol enters a blackout.
+
+        The gate in _execute_signal runs ONCE, at send time. A LIMIT/STOP then
+        rests for 12 bars of the owning strategy's timeframe (up to 12h on H1 —
+        _init_strategies), so an order placed on a clear calendar can sit right
+        through a red-folder release and fill into it. Runs on the same 60 s
+        tick as _cleanup_ghost_orders and mirrors its CANCEL + delete_order
+        pattern, including its known limitation: CANCEL is fire-and-forget on
+        PUSH, so an EA-side reject (10018 market closed) leaves the order
+        resting while the row is gone. That is why the notice below tells the
+        operator what was pulled rather than asserting it is gone.
+
+        No re-placement is attempted on purpose: the owning strategy re-signals
+        on its next candle close if the setup still qualifies once the window
+        clears, and the send-time gate blocks it until then.
+        """
+        for o in self.state_manager.get_pending_orders():
+            symbol = o.get('symbol')
+            if not symbol:
+                continue  # nothing to check a calendar against
+            blocked, reason = await self._news_blocks_symbol(symbol)
+            if not blocked:
+                continue
+            ticket = o['ticket_id']
+            await self.bridge.send_command("CANCEL", {"ticket": ticket})
+            self.state_manager.delete_order(ticket)
+            self.logger.log_event(
+                "WARN", "NEWS",
+                f"Pulled resting order #{ticket} on {symbol}: {reason}")
+            await self.telemetry.send_message(
+                f"📰 **News Pull:** Cancelling resting {o.get('strategy', 'unknown')} "
+                f"order `#{ticket}` on `{symbol}`\nReason: `{reason}`\nNot a TTL "
+                "expiry — the symbol entered a red-folder window while the order "
+                "was still resting. The strategy re-signals after the window if "
+                "the setup still qualifies.", parse_mode="Markdown")
 
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
-        news_blocked, news_reason = self._news_blocks_symbol(symbol)
+        news_blocked, news_reason = await self._news_blocks_symbol(symbol)
         if news_blocked:
             self.logger.log_event("INFO", "NEWS", f"{symbol} signal skipped: {news_reason}")
             return

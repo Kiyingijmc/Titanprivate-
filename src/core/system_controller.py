@@ -86,6 +86,23 @@ class SystemController:
     RESERVED_RISK_TTL_S = 300
     # Throttle on the "total risk un-computable, everything is blocked" alarm.
     UNCOMPUTABLE_ALERT_INTERVAL_S = 1800
+    # Hysteresis band on the daily-DD breaker alarm, in percentage points of
+    # the day anchor. The breaker's verdict is mark-to-market (floating P&L,
+    # re-evaluated every 5s heartbeat), so a losing position parked ON the
+    # -max_dd line flips it True/False indefinitely. Re-arming on the bare
+    # crossing therefore made every flip a fresh "trip": a Telegram plus a
+    # sweep, up to ~12/minute during the worst minutes of a day (RS022
+    # MAJOR-2). Equity must climb clear of the trip line by this much before
+    # the alarm re-arms.
+    DD_BREAKER_REARM_MARGIN_PCT = 0.25
+
+    # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
+    # defaults rather than __init__ assignments: instance writes shadow them,
+    # every read is total without a defensive getattr, and a test can pin the
+    # disarmed default without constructing a whole controller (RS022
+    # MINOR-5 -- the __init__ line these replace was uncovered).
+    _dd_breaker_tripped = False   # armed while healthy; set on the trip
+    _dd_breaker_cancel_sent = None  # ticket -> CANCELs sent, awaiting proof
 
     def __init__(self):
         # 1. Path Robustness
@@ -179,11 +196,6 @@ class SystemController:
         # trade, or age out after RESERVED_RISK_TTL_S.
         self._reserved_risk = {}
         self._uncomputable_alert_at = None
-        # One-shot latch for the daily-DD breaker alarm (see _check_dd_breaker):
-        # armed while the breaker is healthy, set on the True->False trip so the
-        # alert + pending sweep fire exactly once per trip, cleared again the
-        # moment check_can_trade recovers (intraday, or on the day's anchor roll).
-        self._dd_breaker_tripped = False
 
         state_db_path = self.root_dir / "data/db/trade_state.db"
         self.state_manager = StateManager(str(state_db_path))
@@ -546,9 +558,15 @@ class SystemController:
                 # the rollover/reset wrote the OLD day's anchor under the NEW
                 # day's key on the first iteration after the boundary -- a real
                 # wrong-day row observed live on 2026-08-01 23:45:00.748.
-                # Kept out of the HEARTBEAT branch on purpose: this is periodic
-                # bookkeeping like the Sync Guard and ghost cleanup above, and
-                # _process_incoming_data must stay pure data-routing.
+                # Kept out of the HEARTBEAT branch on purpose: this is
+                # CLOCK-driven bookkeeping, like the Sync Guard and ghost
+                # cleanup above, and it belongs on the loop's cadence rather
+                # than on whatever rate the EA happens to publish at. The rule
+                # is about cadence, not about which subsystems may run there:
+                # a reaction that must fire the instant an EA message changes
+                # the picture — _check_dd_breaker and its pending sweep, which
+                # need the equity and the book from that very message — does
+                # belong in the HEARTBEAT branch (RS022 MINOR-6).
                 self._persist_daily_anchor(now_uganda)
 
                 # --- G. PULSE SYNC ---
@@ -640,11 +658,20 @@ class SystemController:
             # implement check_can_trade, and those are never breaker trips.
             can_trade_fn = getattr(self.risk_manager, 'check_can_trade', None)
             if callable(can_trade_fn) and not can_trade_fn():
+                # State the ACTUAL recovery condition. check_can_trade clears
+                # as soon as pnl_pct > -max_dd, i.e. equity back above the
+                # day-loss line it tripped on -- NOT back above the anchor.
+                # Overstating the bar by the full max_dd% both misinforms the
+                # operator and hides how easily the verdict flips (RS022
+                # MINOR-3/MAJOR-2).
+                limit = getattr(self.risk_manager, 'max_dd', 0) or 0
+                line = f"-{limit}% day-loss line" if limit else "day-loss line"
                 self.logger.log_event(
                     "RISK", "BREAKER",
                     f"{symbol} {name} signal skipped: lot=0 "
                     f"(DAILY DRAWDOWN BREAKER TRIPPED — max-loss day; no new "
-                    f"entries until equity recovers above the anchor or the day rolls)")
+                    f"entries until equity recovers back above the {line} or "
+                    f"the day's anchor rolls)")
             else:
                 self.logger.log_event(
                     "RISK", "SIZING",
@@ -784,8 +811,94 @@ class SystemController:
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
 
-    async def _check_dd_breaker(self):
-        """Make a tripped daily-drawdown breaker loud, once per trip.
+    def _dd_breaker_pnl(self, rm):
+        """(equity, anchor, pnl_pct) on the SAME anchor check_can_trade uses
+        (day_start_equity, else starting_balance — risk_manager.py:249), so the
+        number quoted in the alert can never disagree with the verdict."""
+        equity = float(getattr(rm, 'current_equity', 0.0) or 0.0)
+        anchor = float(getattr(rm, 'day_start_equity', 0.0) or 0.0)
+        if anchor <= 0:
+            anchor = float(getattr(rm, 'starting_balance', 0.0) or 0.0)
+        pnl_pct = ((equity - anchor) / anchor * 100.0) if anchor > 0 else 0.0
+        return equity, anchor, pnl_pct
+
+    def _dd_breaker_rearmed(self, rm):
+        """True once equity has climbed CLEAR of the trip line, not merely
+        back across it — see DD_BREAKER_REARM_MARGIN_PCT for why the bare
+        crossing is not enough. A missing/zero max_dd (fixture risk managers,
+        or a limit that is off) leaves no meaningful band, so the breaker's
+        own verdict is the only gate."""
+        max_dd = float(getattr(rm, 'max_dd', 0) or 0)
+        if max_dd <= 0:
+            return True
+        margin = min(self.DD_BREAKER_REARM_MARGIN_PCT, max_dd * 0.5)
+        return self._dd_breaker_pnl(rm)[2] > -(max_dd - margin)
+
+    async def _sweep_pendings_on_breaker_trip(self, broker_orders, broker_positions):
+        """Pull every Titan-placed resting order while the breaker is tripped.
+
+        Returns (requested, stuck) for the trip alert's body: the tickets whose
+        FIRST cancel went out on this pass, and the ones whose cancel could not
+        even be put on the wire.
+
+        Deleting the DB row on the strength of the send alone loses orders
+        (RS022 MAJOR-1): `CANCEL` is fire-and-forget on PUSH, so an EA-side
+        rejection (retcode 10018, market closed) never reaches Python, and
+        `ZMQBridge.send_command` itself returns False and swallows the
+        exception on a wire error. Nothing can re-register a swept PENDING row
+        (state_manager.py:233), so a still-live order whose row was deleted
+        becomes exactly the untracked pending the portfolio cap is documented
+        as blind to — worse than before the sweep existed.
+
+        So this follows the project's verify-from-HEARTBEAT convention: keep
+        the row, re-send the cancel on every tripped heartbeat, and only forget
+        the row once the broker stops reporting the ticket in the heartbeat's
+        `orders` list. Tickets that appear in `pos` filled before the cancel
+        landed — they belong to the adoption/backfill path below, and
+        cancelling or deleting them there would strip the row of a LIVE
+        position (RS022 MINOR-4).
+
+        Manually-placed MT5 pendings have no DB row and cannot be swept from
+        here (known gap: it would take an EA change to enumerate them).
+        """
+        resting = {int(o['t']) for o in (broker_orders or []) if 't' in o}
+        filled = {int(p['t']) for p in (broker_positions or []) if 't' in p}
+        sent = self._dd_breaker_cancel_sent
+        if sent is None:
+            sent = self._dd_breaker_cancel_sent = {}
+
+        requested, stuck = [], []
+        for o in (self.state_manager.get_pending_orders() or []):
+            ticket = int(o['ticket_id'])
+            label = f"`#{ticket}` {o.get('symbol', '?')}"
+            if ticket in filled:
+                continue  # already a position; not ours to cancel or delete
+            attempts = sent.get(ticket, 0)
+            if attempts and ticket not in resting:
+                # The broker no longer reports it resting: the cancel landed.
+                self.state_manager.delete_order(ticket)
+                sent.pop(ticket, None)
+                continue
+            if await self.bridge.send_command("CANCEL", {"ticket": ticket}) is False:
+                stuck.append(label)
+                self.logger.log_event(
+                    "WARN", "BREAKER",
+                    f"CANCEL for #{ticket} failed to send; DB row kept, "
+                    f"retrying on the next heartbeat while the breaker is tripped")
+                continue
+            sent[ticket] = attempts + 1
+            if attempts == 0:
+                requested.append(label)
+            elif attempts == 1:
+                # One WARN per stuck ticket, not one per 5s heartbeat.
+                self.logger.log_event(
+                    "WARN", "BREAKER",
+                    f"CANCEL for #{ticket} did not take (still resting at the "
+                    f"broker); re-sending every heartbeat until it clears")
+        return requested, stuck
+
+    async def _check_dd_breaker(self, broker_orders=None, broker_positions=None):
+        """Make a tripped daily-drawdown breaker loud, and keep it enforced.
 
         `RiskManager.check_can_trade()` is the 3% max-loss-day hard breaker,
         but its only observable effect was `calculate_lot_size` returning 0.0
@@ -799,50 +912,66 @@ class SystemController:
            trip can still fill afterwards, adding exposure on exactly the day
            risk should be shrinking. So the trip cancels them.
 
-        Latched on `_dd_breaker_tripped` (one alert + one sweep per trip),
-        re-armed as soon as the breaker clears — intraday recovery above the
-        anchor, or a fresh day via roll_daily_anchor — so a later trip is
-        announced again. Same shape as `_alert_uncomputable_book`'s re-arm,
-        but a boolean rather than a time throttle: a max-loss day is a single
-        discrete event, not an ongoing condition to re-nag about.
+        The ALERT is one-shot per trip (`_dd_breaker_tripped`). The SWEEP is
+        not: it re-runs on every tripped heartbeat until the broker confirms
+        each cancel, because a single fire-and-forget attempt is not proof
+        (see _sweep_pendings_on_breaker_trip).
+
+        Re-arming needs a genuine recovery — equity back above the day-loss
+        line by DD_BREAKER_REARM_MARGIN_PCT, whether intraday or via a fresh
+        anchor from roll_daily_anchor — so a later trip is announced again but
+        equity oscillating on the line is not re-announced. A boolean latch
+        plus that band is used rather than `_alert_uncomputable_book`'s time
+        throttle because the two failures differ: an un-computable book is an
+        ongoing outage worth re-nagging about on a timer, while a second
+        max-loss trip after a real recovery is a new event that must not be
+        swallowed by a timer that happens to still be running.
         """
         rm = self.risk_manager
         can_trade_fn = getattr(rm, 'check_can_trade', None)
         if not callable(can_trade_fn):
             return
         if can_trade_fn():
-            self._dd_breaker_tripped = False  # healthy: re-arm
+            if self._dd_breaker_tripped and self._dd_breaker_rearmed(rm):
+                self._dd_breaker_tripped = False
+                # Anything still un-confirmed is left to the Sync Guard: with
+                # the breaker clear we no longer want these cancelled.
+                self._dd_breaker_cancel_sent = None
+                equity, anchor, pnl_pct = self._dd_breaker_pnl(rm)
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"Daily drawdown breaker RE-ARMED: equity ${equity:,.2f} vs "
+                    f"anchor ${anchor:,.2f} ({pnl_pct:+.2f}%), clear of the "
+                    f"day-loss line by the re-arm margin.")
             return
-        if getattr(self, '_dd_breaker_tripped', False):
-            return  # already announced this trip
+
+        requested, stuck = await self._sweep_pendings_on_breaker_trip(
+            broker_orders, broker_positions)
+        if self._dd_breaker_tripped:
+            return  # already announced this trip; the sweep above still ran
         self._dd_breaker_tripped = True
 
-        # Pull every Titan-placed resting order. Manually-placed MT5 pendings
-        # have no DB row and cannot be swept from here (known gap: it would
-        # take an EA change to enumerate them).
-        cancelled = []
-        for o in (self.state_manager.get_pending_orders() or []):
-            ticket = o['ticket_id']
-            await self.bridge.send_command("CANCEL", {"ticket": ticket})
-            self.state_manager.delete_order(ticket)
-            cancelled.append(f"`#{ticket}` {o.get('symbol', '?')}")
-
-        equity = float(getattr(rm, 'current_equity', 0.0) or 0.0)
-        anchor = float(getattr(rm, 'day_start_equity', 0.0) or 0.0)
-        if anchor <= 0:
-            anchor = float(getattr(rm, 'starting_balance', 0.0) or 0.0)
-        pnl_pct = ((equity - anchor) / anchor * 100.0) if anchor > 0 else 0.0
-        pulled = ("\nCancelled resting orders: " + ", ".join(cancelled)
-                  if cancelled else "\nNo resting Titan orders to cancel.")
+        equity, anchor, pnl_pct = self._dd_breaker_pnl(rm)
+        pulled = ""
+        if requested:
+            pulled += "\nCancelling resting orders: " + ", ".join(requested)
+        if stuck:
+            # Never report a cancel that never left the process as a pull.
+            pulled += ("\n⚠️ CANCEL could not be sent for: " + ", ".join(stuck)
+                       + " — retrying every heartbeat while tripped.")
+        if not pulled:
+            pulled = "\nNo resting Titan orders to cancel."
 
         self.logger.log_event(
             "RISK", "BREAKER",
             f"DAILY DRAWDOWN BREAKER TRIPPED: equity ${equity:,.2f} vs anchor "
-            f"${anchor:,.2f} ({pnl_pct:+.2f}%); cancelled {len(cancelled)} "
-            f"resting order(s); no new entries until it clears.")
+            f"${anchor:,.2f} ({pnl_pct:+.2f}%); cancelling {len(requested)} "
+            f"resting order(s) (confirmed against later heartbeats), "
+            f"{len(stuck)} un-sent; no new entries until it clears.")
         await self.telemetry.send_message(
             "🛑 **Daily Drawdown Breaker TRIPPED**\nNo new entries for the rest "
-            f"of the day (or until equity recovers).\nEquity: `${equity:,.2f}` vs "
+            f"of the day (or until equity recovers above the day-loss line)."
+            f"\nEquity: `${equity:,.2f}` vs "
             f"day anchor `${anchor:,.2f}` (`{pnl_pct:+.2f}%`, limit "
             f"`-{getattr(rm, 'max_dd', 0)}%`).{pulled}\nOpen positions are left "
             "under normal trade management.", parse_mode="Markdown")
@@ -1024,8 +1153,6 @@ class SystemController:
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
                 self.equity_recorder.record(bal, eq)
-                # Equity just moved: the breaker's verdict may have flipped.
-                await self._check_dd_breaker()
 
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
@@ -1051,6 +1178,16 @@ class SystemController:
                         self.state_manager.backfill_position_state(
                             tid, entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
                         )
+
+            # Equity just moved: the breaker's verdict may have flipped. Runs
+            # LAST in this branch on purpose — the sweep must see the book
+            # state THIS message carries and the PENDING->ACTIVE flips the
+            # adoption loop just applied, or a limit that filled on the same
+            # heartbeat as the trip is still a PENDING row and gets a doomed
+            # CANCEL plus a deleted row (RS022 MINOR-4).
+            if eq > 0:
+                await self._check_dd_breaker(
+                    self.current_pending_orders, self.current_open_positions)
 
     async def _cleanup_ghost_orders(self):
         pending = self.state_manager.get_pending_orders()

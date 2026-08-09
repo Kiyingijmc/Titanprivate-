@@ -161,7 +161,11 @@ class ForexFactoryCsvSource:
         events = await self._fetch_one(self.url)     # rule 1: propagates
         this_rows = self.last_rows_seen
         if this_rows and not events:                 # rule 2
-            self.next_week_ok = True
+            # next week is NOT attempted on this path -- leave next_week_ok
+            # untouched. It must keep reflecting the last cycle that actually
+            # completed a next-week attempt (spec §3.2: "most recent completed
+            # refresh attempt"). Forcing it True here would assert reachability
+            # with zero evidence and could silently erase a real prior failure.
             return events
         try:
             upcoming = await self._fetch_one(self.next_url)

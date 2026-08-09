@@ -106,6 +106,23 @@ class ThisWeekGovernsFailure(unittest.TestCase):
         _run(src.fetch())
         self.assertEqual(src.last_rows_seen, 1)
 
+    def test_a_broken_this_week_does_not_clear_a_known_next_week_failure(self):
+        # One long-lived source, two sequential cycles (as the periodic
+        # update_calendar() caller would run it).
+        src = _source({THIS_URL: THIS_CSV}, failures=(NEXT_URL,))
+        events_1 = _run(src.fetch())
+        self.assertTrue(events_1)
+        self.assertFalse(src.next_week_ok, "cycle 1: next week is genuinely down")
+
+        # Cycle 2: thisweek now drifts (rule 2). Next week is never attempted
+        # on this path, so the flag from cycle 1 must survive untouched --
+        # NOT be reset to True with zero new evidence.
+        src._get = _router({THIS_URL: DRIFTED, NEXT_URL: NEXT_CSV})
+        events_2 = _run(src.fetch())
+        self.assertEqual(events_2, [])
+        self.assertFalse(src.next_week_ok,
+                          "rule 2 must not clear a known prior next-week failure")
+
 
 class FreshnessIsolation(unittest.TestCase):
     """End-to-end: a broken this-week must never stamp the cache fresh."""

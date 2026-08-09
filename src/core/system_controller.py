@@ -95,6 +95,17 @@ class SystemController:
     # MAJOR-2). Equity must climb clear of the trip line by this much before
     # the alarm re-arms.
     DD_BREAKER_REARM_MARGIN_PCT = 0.25
+    # CANCEL is fire-and-forget on PUSH, so an EA-side refusal (retcode 10018
+    # market closed, 10027 AutoTrading disabled -- under which broker-side
+    # pendings STILL fill) is visible only as the ticket surviving in later
+    # heartbeats' `orders` -- while the trip Telegram has already told the
+    # operator the order is being pulled. Once a cancel has gone unconfirmed
+    # for this many successful sends, escalate: Telegram the operator that the
+    # order is STILL RESTING, throttled to one message per
+    # DD_CANCEL_ALERT_INTERVAL_S the same way UNCOMPUTABLE_ALERT_INTERVAL_S
+    # throttles _alert_uncomputable_book (RS022 round-2 MAJOR-1).
+    DD_CANCEL_ESCALATE_AFTER_SENDS = 3
+    DD_CANCEL_ALERT_INTERVAL_S = 1800
 
     # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
     # defaults rather than __init__ assignments: instance writes shadow them,
@@ -103,6 +114,8 @@ class SystemController:
     # MINOR-5 -- the __init__ line these replace was uncovered).
     _dd_breaker_tripped = False   # armed while healthy; set on the trip
     _dd_breaker_cancel_sent = None  # ticket -> CANCELs sent, awaiting proof
+    _dd_cancel_alert_at = None    # ts of the last stuck-cancel escalation
+    _dd_cancel_send_warned = None  # tickets whose failed-send WARN was logged
 
     def __init__(self):
         # 1. Path Robustness
@@ -867,7 +880,7 @@ class SystemController:
         if sent is None:
             sent = self._dd_breaker_cancel_sent = {}
 
-        requested, stuck = [], []
+        requested, stuck, overdue = [], [], []
         for o in (self.state_manager.get_pending_orders() or []):
             ticket = int(o['ticket_id'])
             label = f"`#{ticket}` {o.get('symbol', '?')}"
@@ -878,15 +891,36 @@ class SystemController:
                 # The broker no longer reports it resting: the cancel landed.
                 self.state_manager.delete_order(ticket)
                 sent.pop(ticket, None)
+                # The only DB-row remover in this file that said nothing
+                # (RS022 round-2 MINOR-3): the operator was told "Cancelling"
+                # and never told it completed, and nothing tied the vanished
+                # row back to this sweep.
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"CANCEL for #{ticket} confirmed: the broker no longer "
+                    f"reports it resting; DB row removed.")
                 continue
+            if attempts >= self.DD_CANCEL_ESCALATE_AFTER_SENDS:
+                overdue.append(label)  # still resting despite repeated sends
             if await self.bridge.send_command("CANCEL", {"ticket": ticket}) is False:
                 stuck.append(label)
-                self.logger.log_event(
-                    "WARN", "BREAKER",
-                    f"CANCEL for #{ticket} failed to send; DB row kept, "
-                    f"retrying on the next heartbeat while the breaker is tripped")
+                warned = self._dd_cancel_send_warned
+                if warned is None:
+                    warned = self._dd_cancel_send_warned = set()
+                if ticket not in warned:
+                    # One WARN per stuck ticket, not one per 5s heartbeat
+                    # (RS022 round-2 MINOR-2 -- same intent as the refused
+                    # branch below).
+                    warned.add(ticket)
+                    self.logger.log_event(
+                        "WARN", "BREAKER",
+                        f"CANCEL for #{ticket} failed to send; DB row kept, "
+                        f"retrying on the next heartbeat while the breaker is tripped")
                 continue
             sent[ticket] = attempts + 1
+            warned = self._dd_cancel_send_warned
+            if warned:
+                warned.discard(ticket)  # wire recovered; a new outage re-warns
             if attempts == 0:
                 requested.append(label)
             elif attempts == 1:
@@ -895,7 +929,42 @@ class SystemController:
                     "WARN", "BREAKER",
                     f"CANCEL for #{ticket} did not take (still resting at the "
                     f"broker); re-sending every heartbeat until it clears")
+        await self._escalate_stuck_cancels(overdue)
         return requested, stuck
+
+    async def _escalate_stuck_cancels(self, overdue):
+        """Correct the trip Telegram's pull claim once a cancel is overdue.
+
+        The trip alert says "Cancelling resting orders: ..."; an EA that keeps
+        refusing (AutoTrading disabled is the sharp case -- broker-side
+        pendings fill regardless) leaves those orders live on a max-loss day
+        with the operator believing otherwise (RS022 round-2 MAJOR-1).
+        Throttled exactly like _alert_uncomputable_book: one Telegram per
+        DD_CANCEL_ALERT_INTERVAL_S while anything is overdue, re-armed as soon
+        as nothing is (so a fresh stuck ticket alerts afresh).
+        """
+        if not overdue:
+            self._dd_cancel_alert_at = None
+            return
+        now = datetime.now().timestamp()
+        last = self._dd_cancel_alert_at
+        if last is not None and (now - last) < self.DD_CANCEL_ALERT_INTERVAL_S:
+            return
+        self._dd_cancel_alert_at = now
+        names = ", ".join(overdue)
+        self.logger.log_event(
+            "WARN", "BREAKER",
+            f"Breaker cancel NOT confirmed for {names}: still resting at the "
+            f"broker after {self.DD_CANCEL_ESCALATE_AFTER_SENDS}+ CANCELs; "
+            f"escalating to Telegram.")
+        await self.telemetry.send_message(
+            "🚨 **Breaker cancel NOT confirmed**\nThese orders are **STILL "
+            f"RESTING** at the broker despite repeated CANCELs: {names}\n"
+            "The earlier \"Cancelling resting orders\" is not yet true — they "
+            "can still fill on a max-loss day. Likely an EA-side reject "
+            "(AutoTrading off, market closed): check the MT5 Experts log. "
+            "Retrying every heartbeat while the breaker is tripped.",
+            parse_mode="Markdown")
 
     async def _check_dd_breaker(self, broker_orders=None, broker_positions=None):
         """Make a tripped daily-drawdown breaker loud, and keep it enforced.
@@ -937,12 +1006,25 @@ class SystemController:
                 # Anything still un-confirmed is left to the Sync Guard: with
                 # the breaker clear we no longer want these cancelled.
                 self._dd_breaker_cancel_sent = None
+                self._dd_cancel_alert_at = None
+                self._dd_cancel_send_warned = None
                 equity, anchor, pnl_pct = self._dd_breaker_pnl(rm)
                 self.logger.log_event(
                     "RISK", "BREAKER",
                     f"Daily drawdown breaker RE-ARMED: equity ${equity:,.2f} vs "
                     f"anchor ${anchor:,.2f} ({pnl_pct:+.2f}%), clear of the "
                     f"day-loss line by the re-arm margin.")
+                # The trip Telegram made a standing claim ("no new entries");
+                # retract it, or the operator has no way short of tailing the
+                # log to know the bot resumed taking risk (RS022 round-2
+                # MINOR-4). One message per recovery: this branch runs exactly
+                # once per trip, gated by the same latch as the trip alert.
+                await self.telemetry.send_message(
+                    "✅ **Daily Drawdown Breaker RE-ARMED**\nEquity is back "
+                    f"clear of the day-loss line: `${equity:,.2f}` vs day "
+                    f"anchor `${anchor:,.2f}` (`{pnl_pct:+.2f}%`).\nThe "
+                    "earlier \"no new entries\" halt is lifted — new entries "
+                    "are allowed again.", parse_mode="Markdown")
             return
 
         requested, stuck = await self._sweep_pendings_on_breaker_trip(

@@ -346,13 +346,15 @@ class TestReArmHysteresis(unittest.TestCase):
         risk.can_trade = True  # intraday recovery, or a fresh day's anchor roll
         risk.current_equity = 9800.0  # -2.00%, clear of the -2.75% re-arm line
         _run(c._process_incoming_data(_heartbeat(9800.0, orders=[])))
-        self.assertEqual(len(c.telemetry.messages), 1)
+        # The recovery itself is announced (RS022 round-2 MINOR-4).
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+        self.assertIn("RE-ARMED", c.telemetry.messages[1])
 
         risk.can_trade = False
         c.state_manager.pending = [_pending(333, "GBPJPY")]
         _run(c._process_incoming_data(_heartbeat(9500.0, orders=[_resting(333)])))
-        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
-        self.assertIn("333", c.telemetry.messages[1])
+        self.assertEqual(len(c.telemetry.messages), 3, c.telemetry.messages)
+        self.assertIn("333", c.telemetry.messages[2])
         self.assertEqual(c.bridge.cancels(), [111, 333])
 
     def test_oscillating_equity_across_the_line_alerts_once(self):
@@ -380,8 +382,108 @@ class TestReArmHysteresis(unittest.TestCase):
 
         _run(c._process_incoming_data(_heartbeat(9750.0)))   # -2.50%: clear
         self.assertIn("RE-ARMED", c.logger.joined())
+        # ...announced to the operator too (RS022 round-2 MINOR-4).
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
 
         _run(c._process_incoming_data(_heartbeat(9680.0)))   # -3.20%: trip 2
+        self.assertEqual(len(c.telemetry.messages), 3, c.telemetry.messages)
+
+
+class TestStuckCancelEscalates(unittest.TestCase):
+    def test_refused_cancel_escalates_with_a_second_telegram_naming_the_ticket(self):
+        """RS022 round-2 MAJOR-1: CANCEL is fire-and-forget, so an EA-side
+        refusal (10027 AutoTrading disabled -- under which broker-side pendings
+        STILL fill) is visible only as the ticket surviving in the heartbeat's
+        `orders`. The trip Telegram claimed the order was being pulled; once
+        the cancel has gone unconfirmed for DD_CANCEL_ESCALATE_AFTER_SENDS
+        sends, the operator must be told that claim is not yet true."""
+        risk = ScriptedRisk(can_trade=False, equity=9600.0)
+        c = _controller(risk, pending=[_pending(111, "EURUSD")])
+        book = [_resting(111)]
+
+        n = SystemController.DD_CANCEL_ESCALATE_AFTER_SENDS
+        for _ in range(n + 1):
+            _run(c._process_incoming_data(_heartbeat(9600.0, orders=book)))
+
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+        second = c.telemetry.messages[1]
+        self.assertIn("111", second, second)
+        self.assertIn("EURUSD", second, second)
+        self.assertIn("STILL RESTING", second, second)
+        self.assertIn("not", second.lower(), second)  # corrects the pull claim
+
+    def test_continued_refusal_does_not_spam(self):
+        """The escalation is throttled like _alert_uncomputable_book: one
+        Telegram per DD_CANCEL_ALERT_INTERVAL_S, however long the broker
+        keeps refusing."""
+        risk = ScriptedRisk(can_trade=False, equity=9600.0)
+        c = _controller(risk, pending=[_pending(111, "EURUSD")])
+        book = [_resting(111)]
+
+        for _ in range(30):
+            _run(c._process_incoming_data(_heartbeat(9600.0, orders=book)))
+
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+        # ...while the CANCEL itself is still re-pushed on every heartbeat.
+        self.assertEqual(len(c.bridge.cancels()), 30)
+
+
+class TestFailedSendWarnIsThrottled(unittest.TestCase):
+    def test_failed_send_warn_is_logged_once_per_stuck_ticket(self):
+        """RS022 round-2 MINOR-2: the un-sent branch logged a WARN on EVERY
+        tripped heartbeat (720/hour), while its sibling three lines below is
+        deliberately one per stuck ticket."""
+        risk = ScriptedRisk(can_trade=False, equity=9600.0)
+        dead = FakeBridge(ok=False)
+        c = _controller(risk, pending=[_pending(111, "EURUSD")], bridge=dead)
+        book = [_resting(111)]
+
+        for _ in range(5):
+            _run(c._process_incoming_data(_heartbeat(9600.0, orders=book)))
+
+        warns = [m for _, _, m in c.logger.events if "failed to send" in m]
+        self.assertEqual(len(warns), 1, c.logger.events)
+        # The retry itself must not have been throttled away with the WARN.
+        self.assertEqual(len(dead.commands), 5)
+
+
+class TestConfirmedPullIsLogged(unittest.TestCase):
+    def test_confirmed_cancel_logs_the_row_removal(self):
+        """RS022 round-2 MINOR-3: the success path was the one thing left
+        un-observable -- the row vanished with no trace of WHAT removed it."""
+        risk = ScriptedRisk(can_trade=False, equity=9600.0)
+        c = _controller(risk, pending=[_pending(111, "EURUSD")])
+
+        _run(c._process_incoming_data(_heartbeat(9600.0, orders=[_resting(111)])))
+        _run(c._process_incoming_data(_heartbeat(9590.0, orders=[])))
+
+        self.assertEqual(c.state_manager.deleted, [111])
+        confirmed = [m for _, _, m in c.logger.events
+                     if "confirmed" in m and "111" in m]
+        self.assertEqual(len(confirmed), 1, c.logger.events)
+
+
+class TestReArmIsTelegrammed(unittest.TestCase):
+    def test_rearm_sends_one_telegram_retracting_the_halt(self):
+        """RS022 round-2 MINOR-4: the trip Telegram makes a standing claim
+        ("no new entries"); the re-arm must retract it, once per recovery."""
+        risk = ScriptedRisk(can_trade=False, equity=9600.0)
+        c = _controller(risk, pending=[])
+
+        _run(c._process_incoming_data(_heartbeat(9600.0)))
+        self.assertEqual(len(c.telemetry.messages), 1)
+
+        risk.can_trade = True
+        risk.current_equity = 9800.0  # -2.00%, clear of the -2.75% re-arm line
+        _run(c._process_incoming_data(_heartbeat(9800.0)))
+        self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
+        rearm = c.telemetry.messages[1]
+        self.assertIn("RE-ARMED", rearm, rearm)
+        self.assertIn("new entries", rearm.lower(), rearm)
+
+        # Staying healthy is silent: one message per recovery, not per beat.
+        _run(c._process_incoming_data(_heartbeat(9810.0)))
+        _run(c._process_incoming_data(_heartbeat(9820.0)))
         self.assertEqual(len(c.telemetry.messages), 2, c.telemetry.messages)
 
 

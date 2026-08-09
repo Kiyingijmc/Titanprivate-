@@ -135,6 +135,10 @@ def _sweep_controller(rows, news, resting=None, positions=None, send_ok=True):
     c.current_pending_orders = (
         [{"t": r["ticket_id"]} for r in rows] if resting is None else resting)
     c.last_heartbeat_time = datetime.now()   # a live EA feed
+    # The sweep certifies the BOOK, not generic traffic: only a HEARTBEAT
+    # rewrites `current_pending_orders`, so freshness rides its own stamp
+    # (RS023 R2-MINOR-1).
+    c.last_book_snapshot_at = datetime.now()
     return c
 
 
@@ -417,8 +421,24 @@ class NewsCancelIsVerifiedNotAssumed(unittest.TestCase):
         c = self._blocked()
         _run(c._sweep_news_blocked_pendings())
         c.current_pending_orders = []
-        c.last_heartbeat_time = datetime.now() - timedelta(
+        c.last_book_snapshot_at = datetime.now() - timedelta(
             seconds=c.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S + 5)
+        _run(c._sweep_news_blocked_pendings())
+        self.assertEqual(c.state_manager.deleted, [])
+
+    def test_a_tick_does_not_refresh_the_book_snapshot(self):
+        """RS023 R2-MINOR-1: only a HEARTBEAT rewrites `current_pending_orders`,
+        so only a HEARTBEAT may certify it fresh. A TICK routed through the real
+        dispatcher bumps the generic `last_heartbeat_time` — if the guard reads
+        that, a heartbeat-specific stall with ticks still flowing deletes the DB
+        row of an order that is still resting at the broker."""
+        c = self._blocked()
+        _run(c._sweep_news_blocked_pendings())
+        c.current_pending_orders = []          # stale: no heartbeat wrote this
+        c.last_book_snapshot_at = datetime.now() - timedelta(
+            seconds=c.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S + 5)
+        c.state = controller_module.BotState.PAUSED  # ticks route, no candles
+        _run(c._process_incoming_data({"type": "TICK", "s": "EURUSD", "b": 1.1}))
         _run(c._sweep_news_blocked_pendings())
         self.assertEqual(c.state_manager.deleted, [])
 

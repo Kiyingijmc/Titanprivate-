@@ -159,8 +159,13 @@ class SystemController:
         self.telemetry.register_controller(self)
         self.bridge = None
         self.last_heartbeat_time = datetime.now()
-        
-        self.market_data = {} 
+        # Stamped ONLY by the HEARTBEAT branch, beside its write of
+        # current_pending_orders/positions. last_heartbeat_time is bumped by
+        # every EA message (and fabricated by _reboot_terminal), so it cannot
+        # certify the book snapshot (RS023 R2-MINOR-1). None = never synced.
+        self.last_book_snapshot_at = None
+
+        self.market_data = {}
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
@@ -732,10 +737,14 @@ class SystemController:
             "at the earliest.", parse_mode="Markdown")
 
     def _news_feed_is_fresh(self):
-        """True while EA traffic is recent enough that `current_pending_orders`
-        describes the broker's book NOW. Absence from a stale (or never
-        populated) list is not evidence a cancel landed."""
-        last = getattr(self, 'last_heartbeat_time', None)
+        """True while a HEARTBEAT recently rewrote `current_pending_orders`, so
+        the list describes the broker's book NOW. Reads the HEARTBEAT-only
+        stamp, not `last_heartbeat_time`: that one is bumped by every message
+        type and fabricated by `_reboot_terminal`, so ticks flowing through a
+        heartbeat-specific stall would certify a stale book (RS023 R2-MINOR-1).
+        Absence from a stale (or never populated) list is not evidence a
+        cancel landed."""
+        last = getattr(self, 'last_book_snapshot_at', None)
         if last is None:
             return False
         return (datetime.now() - last).total_seconds() <= self.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S
@@ -1525,6 +1534,9 @@ class SystemController:
 
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
+            # The one place the broker book is rewritten — the only event
+            # allowed to certify it fresh (RS023 R2-MINOR-1).
+            self.last_book_snapshot_at = datetime.now()
             self._publish(HeartbeatReceived(
                 balance=bal, equity=eq,
                 n_positions=len(self.current_open_positions),

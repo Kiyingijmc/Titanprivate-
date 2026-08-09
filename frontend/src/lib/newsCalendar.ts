@@ -9,6 +9,10 @@ export const HORIZONS: { id: Horizon; label: string }[] = [
   { id: "7d", label: "7d" }, { id: "all", label: "All" },
 ];
 
+/** Single source of display labels for Impact — consumed by ImpactChip and
+ *  CalendarFilters so the map is defined once, not duplicated per-component. */
+export const IMPACT_LABEL: Record<Impact, string> = { HIGH: "High", MEDIUM: "Med", LOW: "Low" };
+
 export interface CalendarFilterState {
   impacts: Impact[];
   affectsMyBookOnly: boolean;

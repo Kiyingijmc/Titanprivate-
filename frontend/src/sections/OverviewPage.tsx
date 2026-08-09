@@ -11,6 +11,7 @@ import { MarketSessions } from "@/components/market/MarketSessions";
 import { LocalityClock } from "@/components/market/LocalityClock";
 import { DollarBias } from "@/components/market/DollarBias";
 import { NewsPanel } from "@/components/market/NewsPanel";
+import { CalendarExpanded } from "@/components/market/CalendarExpanded";
 import { Badge } from "@/components/ui/badge";
 import { SideChip } from "@/components/SideChip";
 import { useController } from "@/context/ControllerContext";
@@ -354,9 +355,11 @@ export default function OverviewPage() {
         title="Economic Calendar"
         triggerLabel="Maximize Economic Calendar"
       >
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <NewsPanel data={snapshot?.news} hideHeader />
-        </div>
+        <CalendarExpanded
+          open={maximized === "news"}
+          api={api}
+          positions={snapshot?.positions}
+        />
       </MaximizedDialog>
     </div>
   );

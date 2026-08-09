@@ -64,6 +64,12 @@ function fakeApi(): Api {
     postCommand: vi.fn().mockResolvedValue({ status: "ok" }),
     patchSetting: vi.fn(),
     registryAction: vi.fn(),
+    // The expanded calendar dialog (Task 7) only fetches while open, but any
+    // test that opens it needs a resolved payload rather than a bare mock —
+    // an unmocked call rejects synchronously with a TypeError, which the hook
+    // swallows into its `unavailable` state and would silently mask a real
+    // wiring bug behind a state the test isn't asserting on.
+    getNewsCalendar: vi.fn().mockResolvedValue({ status: "ok", cache_age_min: 5, horizon_truncated: false, events: [] }),
   } as unknown as Api;
 }
 
@@ -721,13 +727,19 @@ describe("equity maximize", () => {
 });
 
 describe("news maximize", () => {
-  it("keeps exactly one news panel when maximized", async () => {
+  // Task 7: the dialog body is now CalendarExpanded, not a second NewsPanel —
+  // the collapsed card unmounts behind a placeholder while maximized (see the
+  // `maximized === "news"` branch above), so `news-panel` shouldn't appear at
+  // all, and the calendar's own filter bar (rendered synchronously, ahead of
+  // the fetch) should appear exactly once.
+  it("keeps exactly one calendar body when maximized", async () => {
     renderOverview({ snapshot: makeSnapshot({ news: { status: "ok", cache_age_min: 5, next: null, blocked_symbols: {} } }) });
 
     await userEvent.click(screen.getByRole("button", { name: "Maximize Economic Calendar" }));
 
     expect(await screen.findByRole("dialog", { name: "Economic Calendar" })).toBeInTheDocument();
-    expect(screen.getAllByTestId("news-panel")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "High" })).toHaveLength(1);
+    expect(screen.queryAllByTestId("news-panel")).toHaveLength(0);
   });
 
   // Only one dialog can exist because `maximized` is a single value, so this

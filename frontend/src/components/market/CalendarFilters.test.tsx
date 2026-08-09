@@ -28,6 +28,14 @@ describe("CalendarFilters", () => {
       expect.objectContaining({ impacts: ["HIGH", "MEDIUM", "LOW"] }));
   });
 
+  it("inserts a re-added impact in canonical order, not at the end", async () => {
+    const onChange = vi.fn();
+    render(<CalendarFilters value={{ ...DEFAULT_FILTERS, impacts: ["MEDIUM"] }} onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: "High" }));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ impacts: ["HIGH", "MEDIUM"] }));
+  });
+
   it("toggles the affects-my-book filter", async () => {
     const onChange = vi.fn();
     render(<CalendarFilters value={DEFAULT_FILTERS} onChange={onChange} />);

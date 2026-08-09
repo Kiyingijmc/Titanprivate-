@@ -18,6 +18,7 @@ from .commands import execute_command
 from .equity_view import equity_series
 from .registry_view import execute_registry_action, registry_report
 from .state_view import build_snapshot, history_rows
+from .news_view import build_calendar
 
 _LOG = logging.getLogger(__name__)
 _WS_AUTH_TIMEOUT_S = 3.0
@@ -83,6 +84,12 @@ def create_app(controller, settings_store, bridge, dist_dir: Path | None = None)
         finally:
             if owned:
                 conn.close()
+
+    @app.get("/api/news/calendar", dependencies=read)
+    def get_news_calendar():
+        # Separate from /api/state on purpose (spec §3.3): the 2s snapshot poll
+        # must not carry a payload that only changes hourly.
+        return build_calendar(controller)
 
     @app.post("/api/command", dependencies=write)
     async def post_command(payload: dict, request: Request):

@@ -8,8 +8,12 @@
 # STATUS: PRODUCTION READY
 # ==============================================================================
 
+import logging
+
 import pandas as pd
 import numpy as np
+
+_LOG = logging.getLogger(__name__)
 
 class LiquidityEngine:
     """
@@ -65,6 +69,13 @@ class LiquidityEngine:
             }
 
         except Exception as e:
-            # Return empty if calculation fails preventing BiasEngine crash
-            # print(f"[LIQ ERROR] {e}") 
+            # Return empty if calculation fails preventing BiasEngine crash.
+            # An empty dict is indistinguishable from the two legitimate
+            # empty returns above (short history, flat range), so a real
+            # calculation fault used to vanish entirely - the only trace was
+            # a commented-out print (audit 2026-08-07 D7). Behaviour is
+            # unchanged; the fault is now visible in the log stream.
+            _LOG.warning(
+                "LiquidityEngine.get_pd_arrays failed (%s: %s) - returning no "
+                "PD arrays.", type(e).__name__, e)
             return {}

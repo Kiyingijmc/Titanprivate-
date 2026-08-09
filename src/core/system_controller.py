@@ -129,6 +129,15 @@ class SystemController:
     # throttles _alert_uncomputable_book (RS022 round-2 MAJOR-1).
     DD_CANCEL_ESCALATE_AFTER_SENDS = 3
     DD_CANCEL_ALERT_INTERVAL_S = 1800
+    # Throttle on the "a strategy raised on this bar" alarm. A strategy that
+    # faults on malformed data usually faults on EVERY close until the data
+    # heals, so the alert is keyed (strategy, symbol) and time-throttled the
+    # same way UNCOMPUTABLE_ALERT_INTERVAL_S throttles
+    # _alert_uncomputable_book -- per PAIR, because a fault confined to one
+    # symbol's feed is a different diagnosis from a strategy that is broken
+    # everywhere, and collapsing them to one global timer would hide that.
+    STRATEGY_FAULT_ALERT_INTERVAL_S = 1800
+    _strategy_fault_alert_at = None   # (strategy, symbol) -> ts of last alert
 
     # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
     # defaults rather than __init__ assignments: instance writes shadow them,
@@ -1120,6 +1129,43 @@ class SystemController:
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
 
+    async def _alert_strategy_fault(self, strategy_name, symbol, exc):
+        """Operator alarm when one strategy raises on one symbol's close.
+
+        WARN, not FATAL: the exception is contained in _run_strategies, so
+        the bot -- and in particular in-trade management for every open
+        position -- keeps running. What the operator loses is that one
+        strategy on that one symbol, silently, which is why this is louder
+        than the audit-log line alone. Throttled per (strategy, symbol) so a
+        strategy broken for a whole session costs one Telegram per
+        STRATEGY_FAULT_ALERT_INTERVAL_S per pair rather than one per bar.
+        """
+        telemetry = getattr(self, 'telemetry', None)
+        if telemetry is None:
+            return  # __new__-built fixtures have no telemetry
+        now = datetime.now().timestamp()
+        sent = self._strategy_fault_alert_at
+        if sent is None:
+            # Instance dict shadowing the class default, so two controllers
+            # in one process never share a throttle.
+            sent = self._strategy_fault_alert_at = {}
+        key = (strategy_name, symbol)
+        last = sent.get(key)
+        if last is not None and (now - last) < self.STRATEGY_FAULT_ALERT_INTERVAL_S:
+            return
+        sent[key] = now
+        # The detail is an arbitrary exception string going into a Markdown
+        # code span: a stray backtick or newline would break the span and
+        # Telegram would reject the whole message with a 400 that
+        # send_message (fire-and-forget) never surfaces.
+        detail = f"{type(exc).__name__}: {exc}"[:200].replace("`", "'")
+        detail = " ".join(detail.split())
+        await telemetry.send_message(
+            f"⚠️ **Strategy Fault**\n`{strategy_name}` raised on `{symbol}` and "
+            f"was skipped for this bar.\nError: `{detail}`\nThe rest of the bot "
+            "(other strategies, other symbols, trade management) is still "
+            "running.", parse_mode="Markdown")
+
     def _dd_breaker_pnl(self, rm):
         """(equity, anchor, pnl_pct) on the SAME anchor check_can_trade uses
         (day_start_equity, else starting_balance — risk_manager.py:249), so the
@@ -1693,7 +1739,25 @@ class SystemController:
         pending_meta = {}
 
         for strat in active:
-            decision = await strat.on_new_candle(enriched_df, context=ctx)
+            try:
+                decision = await strat.on_new_candle(enriched_df, context=ctx)
+            except Exception as e:
+                # Containment (audit 2026-08-07 D6). Uncaught, ONE malformed
+                # bar in ONE strategy on ONE symbol reaches the main loop's
+                # top-level handler, which Telegrams FATAL SYSTEM CRASH and
+                # re-raises -- killing the whole async loop, and with it
+                # in-trade management (BE, partials, trail) for every open
+                # position on every other symbol. The blast radius must be
+                # this strategy, this symbol, this bar: journal it, alert the
+                # operator (throttled), and let the rest of `active` run.
+                self.logger.log_event(
+                    "ERROR", strat.name,
+                    f"{symbol} on_new_candle raised {type(e).__name__}: {e} "
+                    "-- strategy skipped for this bar",
+                    payload={'symbol': symbol, 'timeframe': tf,
+                             'error_type': type(e).__name__, 'error': str(e)})
+                await self._alert_strategy_fault(strat.name, symbol, e)
+                continue
             if decision:
                 # v15.3 (Plan 07): the HTF filter is manifest-driven. Absent
                 # attribute == honors (registry-less fixtures/parity harness

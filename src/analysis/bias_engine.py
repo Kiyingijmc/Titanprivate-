@@ -8,8 +8,12 @@
 # STATUS: PRODUCTION READY
 # ==============================================================================
 
+import logging
+
 from src.analysis.market_structure import MarketStructure
 from src.analysis.liquidity import LiquidityEngine
+
+_LOG = logging.getLogger(__name__)
 
 class BiasEngine:
     """
@@ -64,6 +68,15 @@ class BiasEngine:
             return bias_str, liquidity_levels
 
         except Exception as e:
-            # Fallback for safety - do not crash the bot on Context Error
-            # print(f"[BIAS ERROR] {e}")
+            # Fallback for safety - do not crash the bot on Context Error.
+            # The fallback is NOT neutral in effect: "NEUTRAL" disables the
+            # HTF filter, so the controller then lets BOTH directions
+            # through. A persistent H1 data fault therefore degrades the
+            # bias filter silently, and the only trace used to be a
+            # commented-out print (audit 2026-08-07 D7). Log it: the
+            # behaviour is unchanged, the fault is now visible.
+            _LOG.warning(
+                "BiasEngine.get_bias_context failed (%s: %s) - degrading to "
+                "NEUTRAL; the HTF bias filter is not filtering.",
+                type(e).__name__, e)
             return "NEUTRAL", {}

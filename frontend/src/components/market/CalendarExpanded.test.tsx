@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { CalendarExpanded } from "./CalendarExpanded";
+import { dayFormatter } from "./CalendarTable";
 import type { NewsCalendar, Position } from "@/lib/types";
 
 const soon = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
@@ -53,11 +54,37 @@ describe("CalendarExpanded", () => {
     expect(screen.queryByTestId("calendar-no-match")).not.toBeInTheDocument();
   });
 
-  it("warns when the horizon is truncated", async () => {
+  // The three outcomes that can put a near-empty body on screen must be
+  // mutually distinguishable — a healthy feed with nothing scheduled must
+  // not read as "you filtered something out" (calendar-no-match) or as a
+  // dead feed (calendar-unavailable). Asserted in all three directions: a
+  // one-sided assertion would pass even if two states rendered together.
+  it("shows a genuinely quiet week distinctly from filtered-to-zero and a dead feed", async () => {
+    const payload: NewsCalendar = { status: "ok", horizon_truncated: false, events: [] };
+    render(<CalendarExpanded open api={apiFor(payload)} positions={[]} />);
+    await waitFor(() => expect(screen.getByTestId("calendar-empty-window")).toBeInTheDocument());
+    expect(screen.queryByTestId("calendar-no-match")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("calendar-unavailable")).not.toBeInTheDocument();
+    // Nothing to reset — offering the control would be the same misleading
+    // implication this state exists to avoid.
+    expect(screen.queryByRole("button", { name: "Reset filters" })).not.toBeInTheDocument();
+  });
+
+  it("warns when the horizon is truncated, naming the date it stops at", async () => {
     const payload: NewsCalendar = { ...OK, horizon_truncated: true };
+    const latestMs = Math.max(...payload.events.map(e => Date.parse(e.when_utc)));
+    const expectedDate = dayFormatter.format(new Date(latestMs));
     render(<CalendarExpanded open api={apiFor(payload)} positions={[]} />);
     await waitFor(() => expect(screen.getByTestId("calendar-truncated")).toBeInTheDocument());
-    expect(screen.getByText(/Next week's calendar is unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(`Next week's calendar is unavailable — showing through ${expectedDate}.`)).toBeInTheDocument();
+  });
+
+  it("warns about truncation without a date when no events exist to derive one from", async () => {
+    const payload: NewsCalendar = { status: "ok", horizon_truncated: true, events: [] };
+    render(<CalendarExpanded open api={apiFor(payload)} positions={[]} />);
+    await waitFor(() => expect(screen.getByTestId("calendar-truncated")).toBeInTheDocument());
+    expect(screen.getByText("Next week's calendar is unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText(/showing through/)).not.toBeInTheDocument();
   });
 
   it("shows no truncation warning when the horizon is whole", async () => {

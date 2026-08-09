@@ -4,7 +4,10 @@ import { cn } from "@/lib/utils";
 
 const MAX_CHIPS = 2;
 
-const dayFormatter = new Intl.DateTimeFormat("en-GB", {
+// Exported so CalendarExpanded's truncation banner can name the horizon's
+// last known date with the SAME format as the day headers below it — one
+// date format for the whole feature, not two that could drift apart.
+export const dayFormatter = new Intl.DateTimeFormat("en-GB", {
   weekday: "long", day: "numeric", month: "long", timeZone: "UTC",
 });
 const timeFormatter = new Intl.DateTimeFormat("en-GB", {

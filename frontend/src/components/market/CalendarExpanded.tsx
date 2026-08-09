@@ -1,11 +1,24 @@
 import { useMemo, useState } from "react";
 import { CalendarFilters } from "./CalendarFilters";
-import { CalendarTable } from "./CalendarTable";
+import { CalendarTable, dayFormatter } from "./CalendarTable";
 import { buildCalendarView, DEFAULT_FILTERS, type CalendarFilterState }
   from "@/lib/newsCalendar";
 import { useNewsCalendar } from "@/lib/useNewsCalendar";
 import type { Api } from "@/lib/api";
 import type { Position } from "@/lib/types";
+
+/** The latest `when_utc` across the raw (pre-filter) payload, or null if
+ *  there is nothing to derive one from. Pre-filter on purpose: the horizon
+ *  truncation note describes the underlying FEED's reach, not what's left
+ *  after the operator's own filters narrow it. */
+function latestEventMs(events: { when_utc: string }[]): number | null {
+  let max = -Infinity;
+  for (const e of events) {
+    const at = Date.parse(e.when_utc);
+    if (Number.isFinite(at) && at > max) max = at;
+  }
+  return Number.isFinite(max) ? max : null;
+}
 
 function EmptyState({ testId, title, hint, action }:
     { testId: string; title: string; hint: string; action?: React.ReactNode }) {
@@ -22,11 +35,14 @@ function EmptyState({ testId, title, hint, action }:
 /**
  * The maximized Economic Calendar body (spec §4).
  *
- * Two of the states here exist purely because they would otherwise be
- * indistinguishable from good news: a truncated horizon and a filter that
- * matched nothing both render an almost-empty table, and "nothing is
- * scheduled" is the one conclusion an economic calendar must never invite by
- * accident.
+ * Three near-empty outcomes must stay visibly distinct, because each one
+ * would otherwise misattribute blame or imply "nothing is scheduled" by
+ * accident: a dead feed (calendar-unavailable), a genuinely quiet week where
+ * the healthy feed itself returned zero events (calendar-empty-window — no
+ * Reset control, since there is nothing to reset), and an over-narrow filter
+ * hiding events that do exist (calendar-no-match, with a Reset). The
+ * empty-window check runs on the PRE-filter event count so a quiet week can
+ * never be reported as a filtering artifact.
  */
 export function CalendarExpanded({ open, api, positions }: {
   open: boolean;
@@ -45,7 +61,9 @@ export function CalendarExpanded({ open, api, positions }: {
     [data, filters, held]);
 
   const unavailable = !data || data.status === "unavailable";
+  const sourceCount = data?.events?.length ?? 0;
   const rowCount = groups.reduce((n, g) => n + g.rows.length, 0);
+  const truncatedAtMs = data?.horizon_truncated ? latestEventMs(data.events ?? []) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -68,6 +86,11 @@ export function CalendarExpanded({ open, api, positions }: {
             testId="calendar-unavailable"
             title="Economic calendar unavailable"
             hint="No news feed is connected yet — populated once the calendar source is live." />
+        ) : sourceCount === 0 ? (
+          <EmptyState
+            testId="calendar-empty-window"
+            title="No releases scheduled in this window"
+            hint="The feed is healthy — there is genuinely nothing on the calendar right now." />
         ) : rowCount === 0 ? (
           <EmptyState
             testId="calendar-no-match"
@@ -90,7 +113,8 @@ export function CalendarExpanded({ open, api, positions }: {
       {data?.horizon_truncated && (
         <div data-testid="calendar-truncated"
              className="border-t border-border bg-surface-1 px-4 py-2 text-xs text-warning">
-          Next week's calendar is unavailable — showing only what this week's feed carries.
+          Next week's calendar is unavailable
+          {truncatedAtMs !== null ? ` — showing through ${dayFormatter.format(new Date(truncatedAtMs))}.` : "."}
         </div>
       )}
     </div>

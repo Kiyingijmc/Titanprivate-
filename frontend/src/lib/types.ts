@@ -121,3 +121,23 @@ export interface EquitySeries {
   points: (EquityPoint | null)[];
   coverage: EquityCoverage;
 }
+
+export interface CalendarEventRow {
+  when_utc: string;
+  currency: string;
+  importance: "HIGH" | "MEDIUM" | "LOW";
+  title: string;
+  forecast?: string | null;
+  previous?: string | null;
+  url?: string | null;
+  affects: string[];
+}
+
+/** GET /api/news/calendar. Separate from NewsBlock, which rides the 2s
+ *  /api/state poll and stays deliberately lean (spec §3.3). */
+export interface NewsCalendar {
+  status: "ok" | "degraded" | "stale" | "unavailable";
+  cache_age_min?: number | null;
+  horizon_truncated?: boolean;
+  events: CalendarEventRow[];
+}

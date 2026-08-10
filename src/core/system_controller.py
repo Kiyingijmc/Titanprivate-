@@ -86,6 +86,59 @@ class SystemController:
     RESERVED_RISK_TTL_S = 300
     # Throttle on the "total risk un-computable, everything is blocked" alarm.
     UNCOMPUTABLE_ALERT_INTERVAL_S = 1800
+    # Throttle on the "the per-symbol news gate is itself faulting" alarm. The
+    # gate fails CLOSED (see _news_blocks_symbol), so a persistent fault is a
+    # silent trading stop -- and it re-raises for every symbol on every candle
+    # close, so it needs the same time throttle UNCOMPUTABLE_ALERT_INTERVAL_S
+    # puts on _alert_uncomputable_book. Deliberately NOT re-armed by a
+    # successful check: with 12 symbols an intermittent fault would otherwise
+    # alternate clear/fault and spam the channel within a single close.
+    NEWS_FAULT_ALERT_INTERVAL_S = 1800
+    _news_fault_alert_at = None   # ts of the last gate-fault Telegram
+    # The news sweep's CANCEL is the same fire-and-forget PUSH the breaker
+    # sweep uses, so it gets the same verify-from-HEARTBEAT treatment and the
+    # same escalation thresholds (see _sweep_news_blocked_pendings). A cancel
+    # is only believed once the broker stops reporting the ticket in a
+    # heartbeat that is actually FRESH: after a restart inside a news window
+    # the DB still holds PENDING rows while `current_pending_orders` is an
+    # empty list nothing has published yet, and treating that emptiness as
+    # proof would delete every row on the second tick (RS023 CRITICAL-1).
+    NEWS_CANCEL_ESCALATE_AFTER_SENDS = 3
+    NEWS_CANCEL_ALERT_INTERVAL_S = 1800
+    NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S = 60
+    _news_cancel_sent = None      # ticket -> CANCELs sent, awaiting proof
+    _news_cancel_alert_at = None  # ts of the last stuck-cancel escalation
+    _news_cancel_send_warned = None  # tickets whose failed-send WARN was logged
+    # Hysteresis band on the daily-DD breaker alarm, in percentage points of
+    # the day anchor. The breaker's verdict is mark-to-market (floating P&L,
+    # re-evaluated every 5s heartbeat), so a losing position parked ON the
+    # -max_dd line flips it True/False indefinitely. Re-arming on the bare
+    # crossing therefore made every flip a fresh "trip": a Telegram plus a
+    # sweep, up to ~12/minute during the worst minutes of a day (RS022
+    # MAJOR-2). Equity must climb clear of the trip line by this much before
+    # the alarm re-arms.
+    DD_BREAKER_REARM_MARGIN_PCT = 0.25
+    # CANCEL is fire-and-forget on PUSH, so an EA-side refusal (retcode 10018
+    # market closed, 10027 AutoTrading disabled -- under which broker-side
+    # pendings STILL fill) is visible only as the ticket surviving in later
+    # heartbeats' `orders` -- while the trip Telegram has already told the
+    # operator the order is being pulled. Once a cancel has gone unconfirmed
+    # for this many successful sends, escalate: Telegram the operator that the
+    # order is STILL RESTING, throttled to one message per
+    # DD_CANCEL_ALERT_INTERVAL_S the same way UNCOMPUTABLE_ALERT_INTERVAL_S
+    # throttles _alert_uncomputable_book (RS022 round-2 MAJOR-1).
+    DD_CANCEL_ESCALATE_AFTER_SENDS = 3
+    DD_CANCEL_ALERT_INTERVAL_S = 1800
+
+    # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
+    # defaults rather than __init__ assignments: instance writes shadow them,
+    # every read is total without a defensive getattr, and a test can pin the
+    # disarmed default without constructing a whole controller (RS022
+    # MINOR-5 -- the __init__ line these replace was uncovered).
+    _dd_breaker_tripped = False   # armed while healthy; set on the trip
+    _dd_breaker_cancel_sent = None  # ticket -> CANCELs sent, awaiting proof
+    _dd_cancel_alert_at = None    # ts of the last stuck-cancel escalation
+    _dd_cancel_send_warned = None  # tickets whose failed-send WARN was logged
 
     def __init__(self):
         # 1. Path Robustness
@@ -106,8 +159,13 @@ class SystemController:
         self.telemetry.register_controller(self)
         self.bridge = None
         self.last_heartbeat_time = datetime.now()
-        
-        self.market_data = {} 
+        # Stamped ONLY by the HEARTBEAT branch, beside its write of
+        # current_pending_orders/positions. last_heartbeat_time is bumped by
+        # every EA message (and fabricated by _reboot_terminal), so it cannot
+        # certify the book snapshot (RS023 R2-MINOR-1). None = never synced.
+        self.last_book_snapshot_at = None
+
+        self.market_data = {}
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
@@ -515,6 +573,14 @@ class SystemController:
                 # --- E. GHOST CLEANUP ---
                 if now_dt.second == 0 and now_dt.microsecond < 10000:
                     await self._cleanup_ghost_orders()
+                    # TTL first: an expired row is already gone and needs no
+                    # calendar lookup. Guarded locally like every other news
+                    # call site in this loop — the loop's own `except` re-raises.
+                    try:
+                        await self._sweep_news_blocked_pendings()
+                    except Exception as e:
+                        self.logger.log_event(
+                            "WARN", "NEWS", f"News pending sweep failed: {e}")
 
                 # --- F. UGANDA REPORTING ---
                 now_uganda = datetime.now(self.uganda_tz)
@@ -541,9 +607,15 @@ class SystemController:
                 # the rollover/reset wrote the OLD day's anchor under the NEW
                 # day's key on the first iteration after the boundary -- a real
                 # wrong-day row observed live on 2026-08-01 23:45:00.748.
-                # Kept out of the HEARTBEAT branch on purpose: this is periodic
-                # bookkeeping like the Sync Guard and ghost cleanup above, and
-                # _process_incoming_data must stay pure data-routing.
+                # Kept out of the HEARTBEAT branch on purpose: this is
+                # CLOCK-driven bookkeeping, like the Sync Guard and ghost
+                # cleanup above, and it belongs on the loop's cadence rather
+                # than on whatever rate the EA happens to publish at. The rule
+                # is about cadence, not about which subsystems may run there:
+                # a reaction that must fire the instant an EA message changes
+                # the picture — _check_dd_breaker and its pending sweep, which
+                # need the equity and the book from that very message — does
+                # belong in the HEARTBEAT branch (RS022 MINOR-6).
                 self._persist_daily_anchor(now_uganda)
 
                 # --- G. PULSE SYNC ---
@@ -585,18 +657,278 @@ class SystemController:
             self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
-    def _news_blocks_symbol(self, symbol):
-        """Per-symbol red-folder gate. Never raises: a news fault must not
-        crash the trade path, so an internal error degrades to 'not blocked'
-        while the global stale-cache guard remains in force."""
+    async def _news_blocks_symbol(self, symbol):
+        """Per-symbol red-folder gate. Never raises, and fails CLOSED.
+
+        An internal fault used to degrade to 'not blocked', which made a broken
+        gate indistinguishable from a quiet calendar and let graded signals
+        through a red-folder release unchecked (audit-2026-08-07 D11). A gate
+        that cannot answer must block: the cost of failing closed is a missed
+        setup the strategy re-signals later, the cost of failing open is
+        entering INTO the release. The returned reason names the fault so the
+        skip log and the sweep's Telegram can never read as a scheduled event
+        that does not exist.
+
+        Async because a fail-closed gate is a SILENT trading stop unless the
+        fault reaches the operator (see _alert_news_gate_fault).
+        """
+        blocked, reason, _kind = await self._news_verdict(symbol)
+        return blocked, reason
+
+    async def _news_verdict(self, symbol):
+        """(blocked, reason, kind) — _news_blocks_symbol plus WHY it blocked.
+
+        `kind` is 'event' (a real red-folder release), 'halt' (the calendar is
+        too stale to trust — no scheduled event is involved), 'fault' (the gate
+        itself raised) or None when nothing blocks. Callers that only decide
+        whether to trade want the 2-tuple; a caller that TELLS THE OPERATOR
+        what happened needs the third element, because two of the three
+        blocking paths are feed failures and describing them as "the symbol
+        entered a red-folder window" is simply false (RS023 MAJOR-2) — and it
+        is exactly in those two that the operator needs the right diagnosis.
+
+        The staleness branch is asked first rather than sniffed out of the
+        reason string: `check_symbol` already consults `is_globally_blocked`
+        first (manager.py:108-110), so this returns the same verdict and the
+        same text, only classified.
+        """
         try:
-            return self.news_manager.check_symbol(symbol)
+            halted, halt_reason = self._news_feed_halted()
+            if halted:
+                return True, halt_reason, 'halt'
+            blocked, reason = self.news_manager.check_symbol(symbol)
+            return blocked, reason, ('event' if blocked else None)
         except Exception as exc:
             self.logger.log_event("WARN", "NEWS", f"Symbol gate failed for {symbol}: {exc}")
+            await self._alert_news_gate_fault(symbol, exc)
+            return True, f"news gate fault, failing closed: {exc}", 'fault'
+
+    def _news_feed_halted(self):
+        """The calendar-too-stale global halt, or (False, None).
+
+        Tolerates a news manager without the method (test doubles, and any
+        future source that has no staleness notion): the classification
+        degrades to 'event', never to 'not blocked'.
+        """
+        fn = getattr(self.news_manager, 'is_globally_blocked', None)
+        if not callable(fn):
             return False, None
+        return fn()
+
+    async def _alert_news_gate_fault(self, symbol, exc):
+        """Operator alarm when the news gate itself raises.
+
+        Same shape and same reasoning as _alert_uncomputable_book: a fail-safe
+        that stops trading has to be louder than the thing it is protecting
+        against, or an unattended forward test cannot tell a blocked bot from a
+        quiet market. Throttled to one Telegram per NEWS_FAULT_ALERT_INTERVAL_S.
+        """
+        now = datetime.now().timestamp()
+        last = self._news_fault_alert_at
+        if last is not None and (now - last) < self.NEWS_FAULT_ALERT_INTERVAL_S:
+            return
+        self._news_fault_alert_at = now
+        await self.telemetry.send_message(
+            "📵 **News Gate Faulted**\nThe per-symbol red-folder check raised on "
+            f"`{symbol}`, so it is failing **closed**: affected symbols will not "
+            "trade and Titan's resting pending orders are being pulled until it "
+            f"clears.\nError: `{exc}`\nUsual cause: a calendar fetch or parse "
+            f"failure. Next alert in {self.NEWS_FAULT_ALERT_INTERVAL_S // 60} min "
+            "at the earliest.", parse_mode="Markdown")
+
+    def _news_feed_is_fresh(self):
+        """True while a HEARTBEAT recently rewrote `current_pending_orders`, so
+        the list describes the broker's book NOW. Reads the HEARTBEAT-only
+        stamp, not `last_heartbeat_time`: that one is bumped by every message
+        type and fabricated by `_reboot_terminal`, so ticks flowing through a
+        heartbeat-specific stall would certify a stale book (RS023 R2-MINOR-1).
+        Absence from a stale (or never populated) list is not evidence a
+        cancel landed."""
+        last = getattr(self, 'last_book_snapshot_at', None)
+        if last is None:
+            return False
+        return (datetime.now() - last).total_seconds() <= self.NEWS_CANCEL_CONFIRM_MAX_FEED_AGE_S
+
+    async def _sweep_news_blocked_pendings(self):
+        """Pull Titan's resting pendings when their symbol enters a blackout.
+
+        The gate in _execute_signal runs ONCE, at send time. A LIMIT/STOP then
+        rests for 12 bars of the owning strategy's timeframe (up to 12h on H1 —
+        _init_strategies), so an order placed on a clear calendar can sit right
+        through a red-folder release and fill into it. Runs on the same 60 s
+        tick as _cleanup_ghost_orders.
+
+        It does NOT copy _cleanup_ghost_orders' CANCEL-then-delete_order: that
+        pattern was remediated out of the breaker sweep 200 lines below (RS022
+        MAJOR-1) and re-appeared here (RS023 CRITICAL-1). `CANCEL` is
+        fire-and-forget on PUSH, `send_command` returns False on a wire error,
+        and an EA-side reject (10018 market closed, 10027 AutoTrading off —
+        under which broker-side pendings STILL fill) never reaches Python at
+        all. Nothing can re-register a swept PENDING row (state_manager.py:233),
+        so deleting on the strength of the send leaves an order resting through
+        the very release this sweep exists to protect against — untracked,
+        uncancellable, and uncounted by the portfolio risk cap. Worse than no
+        sweep. And this one fires for ANY blocked symbol, including the
+        every-symbol verdicts a gate fault or a stale calendar produce, so that
+        mistake had whole-book blast radius.
+
+        So it follows _sweep_pendings_on_breaker_trip exactly: keep the row,
+        re-send the cancel on each tick while the symbol stays blocked, forget
+        the row only once a fresh heartbeat stops reporting the ticket, and
+        escalate to Telegram once a cancel has gone unconfirmed for
+        NEWS_CANCEL_ESCALATE_AFTER_SENDS sends. Tickets already reported as
+        POSITIONS are skipped: a limit that filled seconds ago is still a
+        PENDING row until the next heartbeat's adoption pass flips it
+        (:1530-1541), and cancelling/deleting it there would strip the DB row
+        off a live position — no TradeManager, no BE, no partials, invisible to
+        the cap (RS023 MAJOR-1, the RS022 MINOR-4 case).
+
+        No re-placement is attempted on purpose: the owning strategy re-signals
+        on its next candle close if the setup still qualifies once the window
+        clears, and the send-time gate blocks it until then.
+        """
+        resting = {int(o['t']) for o in (getattr(self, 'current_pending_orders', None) or [])
+                   if 't' in o}
+        filled = {int(p['t']) for p in (getattr(self, 'current_open_positions', None) or [])
+                  if 't' in p}
+        fresh = self._news_feed_is_fresh()
+        sent = self._news_cancel_sent
+        if sent is None:
+            sent = self._news_cancel_sent = {}
+        verdicts = {}   # symbol -> verdict, so N rows on a pair walk the calendar ONCE
+        overdue, live_rows = [], set()
+
+        for o in (self.state_manager.get_pending_orders() or []):
+            symbol = o.get('symbol')
+            if not symbol:
+                continue  # nothing to check a calendar against
+            ticket = int(o['ticket_id'])
+            live_rows.add(ticket)
+            label = f"`#{ticket}` {symbol}"
+            if ticket in filled:
+                sent.pop(ticket, None)
+                continue  # already a position; not ours to cancel or delete
+            attempts = sent.get(ticket, 0)
+            if attempts and fresh and ticket not in resting:
+                # The broker no longer reports it resting: the cancel landed.
+                self.state_manager.delete_order(ticket)
+                sent.pop(ticket, None)
+                self._forget_news_cancel_warning(ticket)
+                self.logger.log_event(
+                    "RISK", "NEWS",
+                    f"News CANCEL for #{ticket} confirmed: the broker no longer "
+                    f"reports it resting; DB row removed.")
+                continue
+            if symbol not in verdicts:
+                verdicts[symbol] = await self._news_verdict(symbol)
+            blocked, reason, kind = verdicts[symbol]
+            if not blocked:
+                if attempts:
+                    # Window cleared with the cancel still unproven. Stop
+                    # chasing it: we no longer want it gone, and if the cancel
+                    # does land late the row is left to the Sync Guard.
+                    sent.pop(ticket, None)
+                    self._forget_news_cancel_warning(ticket)
+                continue
+            if attempts >= self.NEWS_CANCEL_ESCALATE_AFTER_SENDS:
+                overdue.append(label)  # still resting despite repeated sends
+            if await self.bridge.send_command("CANCEL", {"ticket": ticket}) is False:
+                warned = self._news_cancel_send_warned
+                if warned is None:
+                    warned = self._news_cancel_send_warned = set()
+                if ticket not in warned:
+                    # One WARN per stuck ticket, not one per 60s tick.
+                    warned.add(ticket)
+                    self.logger.log_event(
+                        "WARN", "NEWS",
+                        f"News CANCEL for #{ticket} failed to send; DB row kept, "
+                        f"retrying on the next tick while {symbol} is blocked")
+                continue
+            sent[ticket] = attempts + 1
+            self._forget_news_cancel_warning(ticket)  # wire recovered
+            if attempts == 0:
+                self.logger.log_event(
+                    "WARN", "NEWS",
+                    f"Pulling resting order #{ticket} on {symbol}: {reason}")
+                await self._announce_news_pull(o, ticket, symbol, reason, kind)
+            elif attempts == 1:
+                self.logger.log_event(
+                    "WARN", "NEWS",
+                    f"News CANCEL for #{ticket} did not take (still resting at "
+                    f"the broker); re-sending while {symbol} is blocked")
+        for ticket in [t for t in sent if t not in live_rows]:
+            # The row went away by some other route (the TTL cleaner, the Sync
+            # Guard, adoption): drop the attempt counter with it so this dict
+            # cannot accumulate over a multi-day run.
+            sent.pop(ticket, None)
+            self._forget_news_cancel_warning(ticket)
+        await self._escalate_stuck_news_cancels(overdue)
+
+    def _forget_news_cancel_warning(self, ticket):
+        warned = self._news_cancel_send_warned
+        if warned:
+            warned.discard(ticket)  # a new outage re-warns
+
+    async def _announce_news_pull(self, row, ticket, symbol, reason, kind):
+        """The one-per-ticket operator notice, edge-triggered on the FIRST
+        cancel send (the row now survives an unconfirmed cancel, so a message
+        per tick would be a message every 60s until the EA recovered).
+
+        The explanatory sentence branches on `kind`: only a real blocking event
+        is a red-folder window the strategy can re-signal after. A gate fault
+        or a stale calendar has no window and no end time — saying otherwise
+        contradicts the `reason` printed one line above it and sends the
+        operator looking for an event that does not exist (RS023 MAJOR-2).
+        """
+        if kind == 'event':
+            why = ("Not a TTL expiry — the symbol entered a red-folder window "
+                   "while the order was still resting. The strategy re-signals "
+                   "after the window if the setup still qualifies.")
+        else:
+            why = ("Not a TTL expiry, and **no scheduled event** — the news "
+                   "gate itself could not clear this symbol, so it is failing "
+                   "**closed**. There is no window to wait out: it clears when "
+                   "the calendar feed does.")
+        await self.telemetry.send_message(
+            f"📰 **News Pull:** Cancelling resting {row.get('strategy', 'unknown')} "
+            f"order `#{ticket}` on `{symbol}`\nReason: `{reason}`\n{why}\n"
+            "CANCEL is fire-and-forget: the pull is confirmed only when the "
+            "broker stops reporting the order, and you will be alerted if it "
+            "does not take.", parse_mode="Markdown")
+
+    async def _escalate_stuck_news_cancels(self, overdue):
+        """Correct the pull notice once a cancel is overdue.
+
+        Same failure and same shape as _escalate_stuck_cancels: the operator
+        was told an order is being cancelled, and an EA that keeps refusing
+        leaves it resting into the release. Throttled to one Telegram per
+        NEWS_CANCEL_ALERT_INTERVAL_S while anything is overdue, re-armed as
+        soon as nothing is.
+        """
+        if not overdue:
+            self._news_cancel_alert_at = None
+            return
+        now = datetime.now().timestamp()
+        last = self._news_cancel_alert_at
+        if last is not None and (now - last) < self.NEWS_CANCEL_ALERT_INTERVAL_S:
+            return
+        self._news_cancel_alert_at = now
+        names = ", ".join(overdue)
+        self.logger.log_event(
+            "WARN", "NEWS",
+            f"News cancel NOT confirmed for {names}: still resting at the broker "
+            f"after {self.NEWS_CANCEL_ESCALATE_AFTER_SENDS}+ CANCELs; escalating "
+            f"to Telegram.")
+        await self.telemetry.send_message(
+            "🚨 **News cancel NOT confirmed**\nThese orders are **STILL RESTING** "
+            f"at the broker despite repeated CANCELs: {names}\nThe earlier "
+            "\"News Pull\" is not yet true — they can still fill into the "
+            "release. Likely an EA-side reject (AutoTrading off, market closed): "
+            "check the MT5 Experts log. Retrying every tick while the symbol "
+            "stays blocked.", parse_mode="Markdown")
 
     async def _execute_signal(self, symbol, decision, name, htf_bias, grade=""):
-        news_blocked, news_reason = self._news_blocks_symbol(symbol)
+        news_blocked, news_reason = await self._news_blocks_symbol(symbol)
         if news_blocked:
             self.logger.log_event("INFO", "NEWS", f"{symbol} signal skipped: {news_reason}")
             return
@@ -620,15 +952,40 @@ class SystemController:
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
         if lot <= 0:
-            # Fail-safe skip (specs missing, or min-lot risk exceeds the
-            # per-trade budget at this balance). Must be LOUD: a graded,
-            # passing signal that vanishes silently is indistinguishable
-            # from a dead pipeline (cost a live debugging session 2026-08-01
-            # when Gyroscope's first BTCUSD signal was unsizeable at $459).
-            self.logger.log_event(
-                "RISK", "SIZING",
-                f"{symbol} {name} signal skipped: lot=0 "
-                f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
+            # Fail-safe skip. Must be LOUD: a graded, passing signal that
+            # vanishes silently is indistinguishable from a dead pipeline
+            # (cost a live debugging session 2026-08-01 when Gyroscope's
+            # first BTCUSD signal was unsizeable at $459).
+            #
+            # calculate_lot_size returns 0.0 for TWO very different reasons:
+            # the daily-DD circuit breaker has tripped (a deliberate max-loss
+            # -day halt) or the trade cannot be sized (specs missing /
+            # unsizeable stop). Attributing the first to the second sends the
+            # operator hunting a data outage during a risk halt, so ask the
+            # breaker directly and label them apart. getattr-guarded like the
+            # throttle_factor lookup above: fixture risk_managers may not
+            # implement check_can_trade, and those are never breaker trips.
+            can_trade_fn = getattr(self.risk_manager, 'check_can_trade', None)
+            if callable(can_trade_fn) and not can_trade_fn():
+                # State the ACTUAL recovery condition. check_can_trade clears
+                # as soon as pnl_pct > -max_dd, i.e. equity back above the
+                # day-loss line it tripped on -- NOT back above the anchor.
+                # Overstating the bar by the full max_dd% both misinforms the
+                # operator and hides how easily the verdict flips (RS022
+                # MINOR-3/MAJOR-2).
+                limit = getattr(self.risk_manager, 'max_dd', 0) or 0
+                line = f"-{limit}% day-loss line" if limit else "day-loss line"
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"{symbol} {name} signal skipped: lot=0 "
+                    f"(DAILY DRAWDOWN BREAKER TRIPPED — max-loss day; no new "
+                    f"entries until equity recovers back above the {line} or "
+                    f"the day's anchor rolls)")
+            else:
+                self.logger.log_event(
+                    "RISK", "SIZING",
+                    f"{symbol} {name} signal skipped: lot=0 "
+                    f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
             return
 
         allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
@@ -762,6 +1119,240 @@ class SystemController:
             f"symbols are blocked** until it clears.\nReason: `{reason}`{culprit}\n"
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
+
+    def _dd_breaker_pnl(self, rm):
+        """(equity, anchor, pnl_pct) on the SAME anchor check_can_trade uses
+        (day_start_equity, else starting_balance — risk_manager.py:249), so the
+        number quoted in the alert can never disagree with the verdict."""
+        equity = float(getattr(rm, 'current_equity', 0.0) or 0.0)
+        anchor = float(getattr(rm, 'day_start_equity', 0.0) or 0.0)
+        if anchor <= 0:
+            anchor = float(getattr(rm, 'starting_balance', 0.0) or 0.0)
+        pnl_pct = ((equity - anchor) / anchor * 100.0) if anchor > 0 else 0.0
+        return equity, anchor, pnl_pct
+
+    def _dd_breaker_rearmed(self, rm):
+        """True once equity has climbed CLEAR of the trip line, not merely
+        back across it — see DD_BREAKER_REARM_MARGIN_PCT for why the bare
+        crossing is not enough. A missing/zero max_dd (fixture risk managers,
+        or a limit that is off) leaves no meaningful band, so the breaker's
+        own verdict is the only gate."""
+        max_dd = float(getattr(rm, 'max_dd', 0) or 0)
+        if max_dd <= 0:
+            return True
+        margin = min(self.DD_BREAKER_REARM_MARGIN_PCT, max_dd * 0.5)
+        return self._dd_breaker_pnl(rm)[2] > -(max_dd - margin)
+
+    async def _sweep_pendings_on_breaker_trip(self, broker_orders, broker_positions):
+        """Pull every Titan-placed resting order while the breaker is tripped.
+
+        Returns (requested, stuck) for the trip alert's body: the tickets whose
+        FIRST cancel went out on this pass, and the ones whose cancel could not
+        even be put on the wire.
+
+        Deleting the DB row on the strength of the send alone loses orders
+        (RS022 MAJOR-1): `CANCEL` is fire-and-forget on PUSH, so an EA-side
+        rejection (retcode 10018, market closed) never reaches Python, and
+        `ZMQBridge.send_command` itself returns False and swallows the
+        exception on a wire error. Nothing can re-register a swept PENDING row
+        (state_manager.py:233), so a still-live order whose row was deleted
+        becomes exactly the untracked pending the portfolio cap is documented
+        as blind to — worse than before the sweep existed.
+
+        So this follows the project's verify-from-HEARTBEAT convention: keep
+        the row, re-send the cancel on every tripped heartbeat, and only forget
+        the row once the broker stops reporting the ticket in the heartbeat's
+        `orders` list. Tickets that appear in `pos` filled before the cancel
+        landed — they belong to the adoption/backfill path below, and
+        cancelling or deleting them there would strip the row of a LIVE
+        position (RS022 MINOR-4).
+
+        Manually-placed MT5 pendings have no DB row and cannot be swept from
+        here (known gap: it would take an EA change to enumerate them).
+        """
+        resting = {int(o['t']) for o in (broker_orders or []) if 't' in o}
+        filled = {int(p['t']) for p in (broker_positions or []) if 't' in p}
+        sent = self._dd_breaker_cancel_sent
+        if sent is None:
+            sent = self._dd_breaker_cancel_sent = {}
+
+        requested, stuck, overdue = [], [], []
+        for o in (self.state_manager.get_pending_orders() or []):
+            ticket = int(o['ticket_id'])
+            label = f"`#{ticket}` {o.get('symbol', '?')}"
+            if ticket in filled:
+                continue  # already a position; not ours to cancel or delete
+            attempts = sent.get(ticket, 0)
+            if attempts and ticket not in resting:
+                # The broker no longer reports it resting: the cancel landed.
+                self.state_manager.delete_order(ticket)
+                sent.pop(ticket, None)
+                # The only DB-row remover in this file that said nothing
+                # (RS022 round-2 MINOR-3): the operator was told "Cancelling"
+                # and never told it completed, and nothing tied the vanished
+                # row back to this sweep.
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"CANCEL for #{ticket} confirmed: the broker no longer "
+                    f"reports it resting; DB row removed.")
+                continue
+            if attempts >= self.DD_CANCEL_ESCALATE_AFTER_SENDS:
+                overdue.append(label)  # still resting despite repeated sends
+            if await self.bridge.send_command("CANCEL", {"ticket": ticket}) is False:
+                stuck.append(label)
+                warned = self._dd_cancel_send_warned
+                if warned is None:
+                    warned = self._dd_cancel_send_warned = set()
+                if ticket not in warned:
+                    # One WARN per stuck ticket, not one per 5s heartbeat
+                    # (RS022 round-2 MINOR-2 -- same intent as the refused
+                    # branch below).
+                    warned.add(ticket)
+                    self.logger.log_event(
+                        "WARN", "BREAKER",
+                        f"CANCEL for #{ticket} failed to send; DB row kept, "
+                        f"retrying on the next heartbeat while the breaker is tripped")
+                continue
+            sent[ticket] = attempts + 1
+            warned = self._dd_cancel_send_warned
+            if warned:
+                warned.discard(ticket)  # wire recovered; a new outage re-warns
+            if attempts == 0:
+                requested.append(label)
+            elif attempts == 1:
+                # One WARN per stuck ticket, not one per 5s heartbeat.
+                self.logger.log_event(
+                    "WARN", "BREAKER",
+                    f"CANCEL for #{ticket} did not take (still resting at the "
+                    f"broker); re-sending every heartbeat until it clears")
+        await self._escalate_stuck_cancels(overdue)
+        return requested, stuck
+
+    async def _escalate_stuck_cancels(self, overdue):
+        """Correct the trip Telegram's pull claim once a cancel is overdue.
+
+        The trip alert says "Cancelling resting orders: ..."; an EA that keeps
+        refusing (AutoTrading disabled is the sharp case -- broker-side
+        pendings fill regardless) leaves those orders live on a max-loss day
+        with the operator believing otherwise (RS022 round-2 MAJOR-1).
+        Throttled exactly like _alert_uncomputable_book: one Telegram per
+        DD_CANCEL_ALERT_INTERVAL_S while anything is overdue, re-armed as soon
+        as nothing is (so a fresh stuck ticket alerts afresh).
+        """
+        if not overdue:
+            self._dd_cancel_alert_at = None
+            return
+        now = datetime.now().timestamp()
+        last = self._dd_cancel_alert_at
+        if last is not None and (now - last) < self.DD_CANCEL_ALERT_INTERVAL_S:
+            return
+        self._dd_cancel_alert_at = now
+        names = ", ".join(overdue)
+        self.logger.log_event(
+            "WARN", "BREAKER",
+            f"Breaker cancel NOT confirmed for {names}: still resting at the "
+            f"broker after {self.DD_CANCEL_ESCALATE_AFTER_SENDS}+ CANCELs; "
+            f"escalating to Telegram.")
+        await self.telemetry.send_message(
+            "🚨 **Breaker cancel NOT confirmed**\nThese orders are **STILL "
+            f"RESTING** at the broker despite repeated CANCELs: {names}\n"
+            "The earlier \"Cancelling resting orders\" is not yet true — they "
+            "can still fill on a max-loss day. Likely an EA-side reject "
+            "(AutoTrading off, market closed): check the MT5 Experts log. "
+            "Retrying every heartbeat while the breaker is tripped.",
+            parse_mode="Markdown")
+
+    async def _check_dd_breaker(self, broker_orders=None, broker_positions=None):
+        """Make a tripped daily-drawdown breaker loud, and keep it enforced.
+
+        `RiskManager.check_can_trade()` is the 3% max-loss-day hard breaker,
+        but its only observable effect was `calculate_lot_size` returning 0.0
+        — which the skip log then attributed to missing specs. Two things go
+        wrong when a trip is quiet:
+
+        1. the operator cannot tell a deliberate risk halt from a data
+           outage (audit-2026-08-07 D9), and
+        2. Titan's OWN resting LIMIT/STOP orders keep sitting in the book.
+           The breaker only blocks NEW entries; a pending placed before the
+           trip can still fill afterwards, adding exposure on exactly the day
+           risk should be shrinking. So the trip cancels them.
+
+        The ALERT is one-shot per trip (`_dd_breaker_tripped`). The SWEEP is
+        not: it re-runs on every tripped heartbeat until the broker confirms
+        each cancel, because a single fire-and-forget attempt is not proof
+        (see _sweep_pendings_on_breaker_trip).
+
+        Re-arming needs a genuine recovery — equity back above the day-loss
+        line by DD_BREAKER_REARM_MARGIN_PCT, whether intraday or via a fresh
+        anchor from roll_daily_anchor — so a later trip is announced again but
+        equity oscillating on the line is not re-announced. A boolean latch
+        plus that band is used rather than `_alert_uncomputable_book`'s time
+        throttle because the two failures differ: an un-computable book is an
+        ongoing outage worth re-nagging about on a timer, while a second
+        max-loss trip after a real recovery is a new event that must not be
+        swallowed by a timer that happens to still be running.
+        """
+        rm = self.risk_manager
+        can_trade_fn = getattr(rm, 'check_can_trade', None)
+        if not callable(can_trade_fn):
+            return
+        if can_trade_fn():
+            if self._dd_breaker_tripped and self._dd_breaker_rearmed(rm):
+                self._dd_breaker_tripped = False
+                # Anything still un-confirmed is left to the Sync Guard: with
+                # the breaker clear we no longer want these cancelled.
+                self._dd_breaker_cancel_sent = None
+                self._dd_cancel_alert_at = None
+                self._dd_cancel_send_warned = None
+                equity, anchor, pnl_pct = self._dd_breaker_pnl(rm)
+                self.logger.log_event(
+                    "RISK", "BREAKER",
+                    f"Daily drawdown breaker RE-ARMED: equity ${equity:,.2f} vs "
+                    f"anchor ${anchor:,.2f} ({pnl_pct:+.2f}%), clear of the "
+                    f"day-loss line by the re-arm margin.")
+                # The trip Telegram made a standing claim ("no new entries");
+                # retract it, or the operator has no way short of tailing the
+                # log to know the bot resumed taking risk (RS022 round-2
+                # MINOR-4). One message per recovery: this branch runs exactly
+                # once per trip, gated by the same latch as the trip alert.
+                await self.telemetry.send_message(
+                    "✅ **Daily Drawdown Breaker RE-ARMED**\nEquity is back "
+                    f"clear of the day-loss line: `${equity:,.2f}` vs day "
+                    f"anchor `${anchor:,.2f}` (`{pnl_pct:+.2f}%`).\nThe "
+                    "earlier \"no new entries\" halt is lifted — new entries "
+                    "are allowed again.", parse_mode="Markdown")
+            return
+
+        requested, stuck = await self._sweep_pendings_on_breaker_trip(
+            broker_orders, broker_positions)
+        if self._dd_breaker_tripped:
+            return  # already announced this trip; the sweep above still ran
+        self._dd_breaker_tripped = True
+
+        equity, anchor, pnl_pct = self._dd_breaker_pnl(rm)
+        pulled = ""
+        if requested:
+            pulled += "\nCancelling resting orders: " + ", ".join(requested)
+        if stuck:
+            # Never report a cancel that never left the process as a pull.
+            pulled += ("\n⚠️ CANCEL could not be sent for: " + ", ".join(stuck)
+                       + " — retrying every heartbeat while tripped.")
+        if not pulled:
+            pulled = "\nNo resting Titan orders to cancel."
+
+        self.logger.log_event(
+            "RISK", "BREAKER",
+            f"DAILY DRAWDOWN BREAKER TRIPPED: equity ${equity:,.2f} vs anchor "
+            f"${anchor:,.2f} ({pnl_pct:+.2f}%); cancelling {len(requested)} "
+            f"resting order(s) (confirmed against later heartbeats), "
+            f"{len(stuck)} un-sent; no new entries until it clears.")
+        await self.telemetry.send_message(
+            "🛑 **Daily Drawdown Breaker TRIPPED**\nNo new entries for the rest "
+            f"of the day (or until equity recovers above the day-loss line)."
+            f"\nEquity: `${equity:,.2f}` vs "
+            f"day anchor `${anchor:,.2f}` (`{pnl_pct:+.2f}%`, limit "
+            f"`-{getattr(rm, 'max_dd', 0)}%`).{pulled}\nOpen positions are left "
+            "under normal trade management.", parse_mode="Markdown")
 
     async def _dispatch_mgmt_command(self, c):
         """
@@ -940,9 +1531,12 @@ class SystemController:
                 self.risk_manager.update_account_info(bal, eq)
                 self.risk_manager.track_equity(eq)
                 self.equity_recorder.record(bal, eq)
-            
+
             self.current_open_positions = msg.get('pos', [])
             self.current_pending_orders = msg.get('orders', [])
+            # The one place the broker book is rewritten — the only event
+            # allowed to certify it fresh (RS023 R2-MINOR-1).
+            self.last_book_snapshot_at = datetime.now()
             self._publish(HeartbeatReceived(
                 balance=bal, equity=eq,
                 n_positions=len(self.current_open_positions),
@@ -965,6 +1559,16 @@ class SystemController:
                         self.state_manager.backfill_position_state(
                             tid, entry=float(p.get('p', 0)), tp=float(p.get('tp', 0))
                         )
+
+            # Equity just moved: the breaker's verdict may have flipped. Runs
+            # LAST in this branch on purpose — the sweep must see the book
+            # state THIS message carries and the PENDING->ACTIVE flips the
+            # adoption loop just applied, or a limit that filled on the same
+            # heartbeat as the trip is still a PENDING row and gets a doomed
+            # CANCEL plus a deleted row (RS022 MINOR-4).
+            if eq > 0:
+                await self._check_dd_breaker(
+                    self.current_pending_orders, self.current_open_positions)
 
     async def _cleanup_ghost_orders(self):
         pending = self.state_manager.get_pending_orders()

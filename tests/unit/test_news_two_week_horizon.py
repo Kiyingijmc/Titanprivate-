@@ -92,6 +92,34 @@ class ThisWeekGovernsFailure(unittest.TestCase):
         self.assertFalse(src.next_week_ok)
         self.assertTrue(any(lvl == "WARN" for lvl, _, _ in logger.events))
 
+    def test_next_week_gets_one_attempt_not_the_full_retry_ladder(self):
+        # The next-week fetch is display-only enrichment, but fetch() runs
+        # inline on SystemController's trading loop (_check_news_status,
+        # ahead of bridge ingestion and trade management). If a dead
+        # next-week endpoint were retried on the this-week ladder (3
+        # attempts, 1s+2s backoff, 15s timeout), it could suspend the loop
+        # for ~48s. Guards the explicit max_retries=1/backoff_base_s=0/
+        # timeout_s=5 override on the next-week call in fetch().
+        calls = {THIS_URL: 0, NEXT_URL: 0}
+
+        def _counting_get(url):
+            calls[url] = calls.get(url, 0) + 1
+            if url == NEXT_URL:
+                raise OSError("connection refused")
+            return _Response(200, THIS_CSV)
+
+        src = ForexFactoryCsvSource(_StubLogger())
+        src.backoff_base_s = 0          # keep the this-week ladder instant
+        src._get = _counting_get
+        events = _run(src.fetch())
+
+        self.assertTrue(events, "this week must still succeed")
+        self.assertEqual(calls[THIS_URL], 1, "this week succeeds on the first try")
+        self.assertEqual(
+            calls[NEXT_URL], 1,
+            "next-week fetch spent more than its bounded single attempt")
+        self.assertFalse(src.next_week_ok)
+
     def test_a_broken_this_week_is_not_rescued_by_next_week(self):
         # THE load-bearing rule. rows_seen>0 and events==[] is how
         # NewsManager detects a date-format drift; appending next week's

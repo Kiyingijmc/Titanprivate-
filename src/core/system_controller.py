@@ -145,6 +145,11 @@ class SystemController:
     # is broken".
     BAR_ENRICHMENT_FAULT_SOURCE = "BarEnrichment"
 
+    # How long trigger_panic waits for fresh HEARTBEATs before it declares the
+    # flatten unverified (see _verify_panic_flatten). ~2 EA heartbeats at the
+    # 5s publish rate, with slack for the close/cancel round trip.
+    PANIC_VERIFY_TIMEOUT_S = 6.0
+
     # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
     # defaults rather than __init__ assignments: instance writes shadow them,
     # every read is total without a defensive getattr, and a test can pin the
@@ -2233,16 +2238,33 @@ class SystemController:
         m_count = await self.close_all_market_orders()
         p_count = await self.cancel_pending_orders('all')
 
-        surviving_positions, surviving_orders = await self._verify_panic_flatten(
-            close_tickets, cancel_tickets)
+        surviving_positions, surviving_orders, heartbeats_seen = \
+            await self._verify_panic_flatten(
+                close_tickets, cancel_tickets,
+                timeout_s=getattr(self, 'PANIC_VERIFY_TIMEOUT_S', 6.0))
 
-        if not surviving_positions and not surviving_orders:
+        still_open = ", ".join(f"#{t}" for t in sorted(surviving_positions)) or "none"
+        still_pending = ", ".join(f"#{t}" for t in sorted(surviving_orders)) or "none"
+
+        if heartbeats_seen == 0:
+            # No fresh book was observed at all, so there is NO evidence either
+            # way -- reporting success here would be the very false assurance
+            # this verification exists to remove (RS026 CRITICAL-1).
             await self.telemetry.send_message(
-                f"✅ **Global Flatten Verified:** Closed `{m_count}` | Cancelled `{p_count}`",
+                f"🆘 **PANIC FLATTEN UNVERIFIED — no fresh heartbeat**\n"
+                f"Sent: Closed `{m_count}` | Cancelled `{p_count}`, but no HEARTBEAT "
+                f"arrived within the verification window, so the broker book is "
+                f"UNKNOWN.\nLast known positions: `{still_open}`\n"
+                f"Last known orders: `{still_pending}`\n"
+                f"Management stays active in EMERGENCY; check MT5 directly.",
+                parse_mode="Markdown")
+        elif not surviving_positions and not surviving_orders:
+            await self.telemetry.send_message(
+                f"✅ **Global Flatten Verified:** book observed EMPTY "
+                f"(0 positions / 0 orders) after `{heartbeats_seen}` heartbeat(s).\n"
+                f"Sent: Closed `{m_count}` | Cancelled `{p_count}`",
                 parse_mode="Markdown")
         else:
-            still_open = ", ".join(f"#{t}" for t in sorted(surviving_positions)) or "none"
-            still_pending = ", ".join(f"#{t}" for t in sorted(surviving_orders)) or "none"
             await self.telemetry.send_message(
                 f"🆘 **PANIC FLATTEN UNVERIFIED — book still exposed**\n"
                 f"Positions still open: `{still_open}`\n"
@@ -2252,43 +2274,58 @@ class SystemController:
 
     async def _verify_panic_flatten(self, close_tickets, cancel_tickets,
                                      timeout_s=6.0, poll_interval=0.25):
-        """Blocks (bounded) for up to two fresh heartbeats and reports which of
-        the tickets `trigger_panic` attempted to close/cancel are still present
-        in the observed broker book. Sending CLOSE_POS/CANCEL is fire-and-forget
-        (EA rejects are invisible on the PUSH path -- e.g. 10018 market closed),
-        so a command being sent is not evidence it took effect; only a fresh
-        HEARTBEAT is. Actively drains the bridge itself: this coroutine runs on
-        the same single-threaded loop as `run()`'s poll, so nothing else will
-        read the socket while it awaits. Stops at the first heartbeat that
-        shows a clean book; otherwise re-checks once more against a second
-        heartbeat (a close/cancel may have been in flight when the first one
-        was captured) before giving up as of whatever it last observed.
+        """Blocks (bounded) for up to two fresh heartbeats and reports what the
+        OBSERVED broker book still holds, plus how many fresh heartbeats backed
+        that reading. Sending CLOSE_POS/CANCEL is fire-and-forget (EA rejects
+        are invisible on the PUSH path -- e.g. 10018 market closed), so a
+        command being sent is not evidence it took effect; only a fresh
+        HEARTBEAT is.
+
+        Survivors are whatever the fresh heartbeat ACTUALLY reports, never an
+        intersection with the pre-panic snapshot: `/panic` flattens everything,
+        and a book that `current_open_positions` understated at panic time (EA
+        reconnect gap, a fill between the last processed heartbeat and the
+        command) is precisely the case that must escalate -- `close_all_market_orders`
+        iterates that same stale list, so such a ticket was never even sent a
+        CLOSE_POS (RS026 CRITICAL-1). `close_tickets`/`cancel_tickets` are kept
+        only as the last-known fallback for the no-heartbeat case, which
+        `heartbeats_seen == 0` marks as unverified rather than clean.
+
+        Freshness is taken from `last_book_snapshot_at` -- stamped by the
+        HEARTBEAT branch of `_process_incoming_data` whoever drained it -- not
+        from this coroutine's own poll. A GUI-triggered panic runs as its own
+        asyncio Task (`src/ops/web/server.py` serves on a separate Task) while
+        `run()` polls the same unlocked ZMQ socket every ~1ms, so `run()` wins
+        that race nearly every time; keying off our own batch would starve this
+        verifier and cry "book still exposed" on successful GUI panics
+        (RS026 MAJOR-1). We still poll ourselves because on the Telegram path
+        `run()` is suspended inside this very call and nobody else will.
         """
         deadline = time.time() + timeout_s
-        surviving_positions, surviving_orders = close_tickets, cancel_tickets
+        surviving_positions, surviving_orders = set(close_tickets), set(cancel_tickets)
         heartbeats_seen = 0
+        last_stamp = getattr(self, 'last_book_snapshot_at', None)
         while heartbeats_seen < 2 and time.time() < deadline:
-            got_heartbeat = False
             if self.bridge:
                 msgs = await self.bridge.poll_data()
                 for msg in msgs:
-                    if isinstance(msg, dict) and msg.get('type') == 'HEARTBEAT':
-                        got_heartbeat = True
                     await self._process_incoming_data(msg)
 
-            if not got_heartbeat:
+            stamp = getattr(self, 'last_book_snapshot_at', None)
+            if stamp is None or stamp == last_stamp:
                 await asyncio.sleep(poll_interval)
                 continue
+            last_stamp = stamp
 
             heartbeats_seen += 1
-            open_tickets = {int(p.get('t', 0)) for p in self.current_open_positions}
-            pending_tickets = {int(o.get('t', 0)) for o in getattr(self, 'current_pending_orders', [])}
-            surviving_positions = close_tickets & open_tickets
-            surviving_orders = cancel_tickets & pending_tickets
+            surviving_positions = {int(p.get('t', 0)) for p in self.current_open_positions
+                                   if int(p.get('t', 0)) > 0}
+            surviving_orders = {int(o.get('t', 0)) for o in getattr(self, 'current_pending_orders', [])
+                                if int(o.get('t', 0)) > 0}
             if not surviving_positions and not surviving_orders:
                 break
 
-        return surviving_positions, surviving_orders
+        return surviving_positions, surviving_orders, heartbeats_seen
 
     async def close_all_market_orders(self):
         count = 0

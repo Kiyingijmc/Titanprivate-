@@ -22,6 +22,7 @@
 | S021 | 2026-08-09 | trade-management-math-uses-intended-entry | DONE | order_lifecycle | finalized via mig (review UNKNOWN) | parent: none |
 | S022 | 2026-08-09 | dd-breaker-trip-must-be-loud | DONE | risk_management | finalized via mig (review CHANGES) | parent: none |
 | S023 | 2026-08-09 | news-window-must-suspend-resting-limit | DONE | risk_management | finalized via mig (review CHANGES) | parent: none |
+| S024 | 2026-08-10 | one-strategy-exception-is-bot-fatal | DONE | execution | finalized via mig (review CHANGES) | parent: none |
 <!-- MIG-BUILD-ROWS-END (mig finalize inserts build rows before this marker) -->
 
 ## R-series (independent reviews)
@@ -47,4 +48,5 @@
 | RS021 | 2026-08-09 | S021 (trade-management-math-uses-intended-entry) | DONE | UNKNOWN (mig orchestrator in-session independent review) | [RS021.md](../session-reviews/RS021.md) |
 | RS022 | 2026-08-09 | S022 (dd-breaker-trip-must-be-loud) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS022.md](../session-reviews/RS022.md) |
 | RS023 | 2026-08-09 | S023 (news-window-must-suspend-resting-limit) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS023.md](../session-reviews/RS023.md) |
+| RS024 | 2026-08-10 | S024 (one-strategy-exception-is-bot-fatal) | DONE | CHANGES (mig orchestrator in-session independent review) | [RS024.md](../session-reviews/RS024.md) |
 <!-- MIG-REVIEW-ROWS-END (mig finalize inserts review rows before this marker) -->

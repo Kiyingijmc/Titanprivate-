@@ -22,8 +22,9 @@ def _event(offset_h, currency, importance, title):
 
 
 class _Policy:
-    def __init__(self):
+    def __init__(self, stale=False):
         self.calls = []
+        self._stale = stale
 
     def mapped_symbols(self):
         return list(SYMBOLS)
@@ -33,7 +34,7 @@ class _Policy:
         return CURRENCIES[symbol]
 
     def is_stale(self, age):
-        return False
+        return self._stale
 
 
 class _Store:
@@ -51,11 +52,24 @@ class _Store:
 
 
 class _Manager:
-    def __init__(self, events, raises=False, truncated=False):
+    def __init__(self, events, raises=False, truncated=False, stale=False):
         self.store = _Store(events, raises)
-        self.policy = _Policy()
+        self.policy = _Policy(stale=stale)
         self.feed_degraded = False
         self.horizon_truncated = truncated
+
+    def snapshot(self, now=None):
+        # The real /api/state payload (src/analysis/news/manager.py
+        # NewsManager.snapshot): a LEAN block, deliberately without "events" --
+        # that key only exists on /api/news/calendar's build_calendar() output.
+        return {
+            "status": "ok",
+            "cache_age_min": 42,
+            "sources": {"forexfactory": "ok"},
+            "next": None,
+            "blocked_symbols": {},
+            "today": [],
+        }
 
 
 class _Controller:
@@ -116,6 +130,17 @@ class CalendarShape(unittest.TestCase):
         self.assertTrue(out["horizon_truncated"])
         self.assertEqual(out["status"], "ok")
 
+    def test_a_stale_cache_reports_stale_but_still_serves_its_events(self):
+        # policy.is_stale(None) is True (no successful refresh yet -- a cold
+        # start, exactly the state right after a restart). `stale` is also
+        # the one condition that halts trading, so it needs its own coverage
+        # on both sides of the wire. A stale cache is still SERVED -- it is
+        # not the same degraded case as "unavailable" (no manager / raising
+        # store), which returns no events at all.
+        out = build_calendar(_Controller(_Manager(EVENTS, stale=True)))
+        self.assertEqual(out["status"], "stale")
+        self.assertTrue(out["events"], "a stale cache must still serve its events")
+
 
 class CalendarDegrades(unittest.TestCase):
     def test_missing_news_manager_is_unavailable(self):
@@ -137,10 +162,18 @@ class CalendarDegrades(unittest.TestCase):
 class StateEndpointIsUnaffected(unittest.TestCase):
     def test_state_snapshot_does_not_carry_the_calendar(self):
         # The whole point of a separate endpoint: /api/state is polled every
-        # 2s and must not grow by 46-93 KB (spec §3.3).
+        # 2s and must not grow by 46-93 KB (spec §3.3). The fake manager's
+        # snapshot() returns the REAL lean shape (status/cache_age_min/
+        # sources/next/blocked_symbols/today) so this test proves the block
+        # got a genuine payload rather than passing because the fake had no
+        # snapshot() at all and _news_block's except-Exception degraded it
+        # to {"status": "unavailable"} -- a payload "events" is trivially
+        # never in.
         from src.ops.web.state_view import _news_block
         block = _news_block(_Controller(_Manager(EVENTS)))
         self.assertNotIn("events", block)
+        for key in ("status", "cache_age_min", "sources", "next", "blocked_symbols", "today"):
+            self.assertIn(key, block)
 
 
 if __name__ == "__main__":

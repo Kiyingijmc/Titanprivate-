@@ -93,6 +93,17 @@ describe("CalendarExpanded", () => {
     expect(screen.queryByTestId("calendar-truncated")).not.toBeInTheDocument();
   });
 
+  it("shows the stale banner for a stale payload and not for an ok one", async () => {
+    const stale: NewsCalendar = { ...OK, status: "stale", cache_age_min: 90 };
+    const first = render(<CalendarExpanded open api={apiFor(stale)} positions={[]} />);
+    await waitFor(() => expect(screen.getByTestId("calendar-stale")).toBeInTheDocument());
+    first.unmount();
+
+    render(<CalendarExpanded open api={apiFor(OK)} positions={[]} />);
+    await waitFor(() => expect(screen.getAllByTestId("calendar-row").length).toBeGreaterThan(0));
+    expect(screen.queryByTestId("calendar-stale")).not.toBeInTheDocument();
+  });
+
   it("does not fetch while closed", async () => {
     const api = apiFor(OK);
     render(<CalendarExpanded open={false} api={api} positions={[]} />);

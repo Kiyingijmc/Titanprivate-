@@ -105,6 +105,33 @@ class FetchFails(unittest.TestCase):
         self.assertEqual(_run(src.fetch()), [])
 
 
+class NextWeekBudgetIsTighter(unittest.TestCase):
+    def test_a_dead_next_week_is_not_retried_and_this_week_is_unaffected(self):
+        """Next week is display-only enrichment, but fetch() runs inline on
+        SystemController's trading loop ahead of bridge ingestion and trade
+        management (_check_news_status). A dead next-week endpoint must not
+        spend the same retry ladder as the load-bearing this-week fetch."""
+        src = ForexFactoryCsvSource(_StubLogger())
+        src.backoff_base_s = 0  # keep this-week's own ladder instant if hit
+        calls = {ForexFactoryCsvSource.URL: 0, ForexFactoryCsvSource.NEXT_URL: 0}
+
+        def router(url):
+            calls[url] = calls.get(url, 0) + 1
+            if url == ForexFactoryCsvSource.URL:
+                return _Response(200, CSV)
+            raise ConnectionError("next week dead")
+
+        src._get = router
+        events = _run(src.fetch())
+
+        self.assertEqual(len(events), 1)  # this week alone survives
+        self.assertEqual(calls[ForexFactoryCsvSource.URL], 1,
+                          "this week succeeded first try -- its own ladder is untouched")
+        self.assertEqual(calls[ForexFactoryCsvSource.NEXT_URL], 1,
+                          "next week must not retry on its tighter budget")
+        self.assertFalse(src.next_week_ok)
+
+
 class ParseBugsAreNotOutages(unittest.TestCase):
     def test_parse_error_propagates_and_is_not_retried(self):
         """A programming error in parse() must not masquerade as a feed outage."""

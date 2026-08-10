@@ -77,7 +77,7 @@ export function CalendarExpanded({ open, api, positions }: {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto">
         {loading && !data ? (
           <EmptyState testId="calendar-loading" title="Loading calendar…"
                       hint="Fetching upcoming releases." />

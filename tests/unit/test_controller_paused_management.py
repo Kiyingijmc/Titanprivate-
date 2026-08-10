@@ -122,11 +122,18 @@ class PausedKeepsManagingOpenTrades(unittest.TestCase):
         self.assertEqual([a for a, _ in sc.bridge.commands], ["MODIFY"])
 
     def test_non_trading_states_still_skip_management(self):
-        for state in (BotState.BOOTING, BotState.WARMUP, BotState.EMERGENCY):
+        for state in (BotState.BOOTING, BotState.WARMUP):
             with self.subTest(state=state.name):
                 sc = make_controller(state)
                 run(sc._process_incoming_data(TICK))
                 self.assertEqual(sc.bridge.commands, [])
+
+    def test_emergency_tick_still_dispatches_ratchet_modify(self):
+        # A failed/partial panic flatten must not abandon a surviving
+        # position -- management has to keep running in EMERGENCY too.
+        sc = make_controller(BotState.EMERGENCY)
+        run(sc._process_incoming_data(TICK))
+        self.assertEqual([a for a, _ in sc.bridge.commands], ["MODIFY"])
 
 
 class PausedStillSuppressesNewSignals(unittest.TestCase):

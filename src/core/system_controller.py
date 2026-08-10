@@ -1557,13 +1557,15 @@ class SystemController:
                 # live spread for strategy screens (Gyroscope max_spread_atr_frac)
                 self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
-            # In-trade management also runs while PAUSED. Pausing stops the bot
-            # taking NEW risk; it must never abandon the open book, whose
-            # ratchet/BE/partials/kill-switch are the only things standing
-            # between a live position and an unmanaged loss. Same "ready to
-            # trade" grouping _readiness() uses; BOOTING/WARMUP/EMERGENCY still
-            # skip management.
-            if self.state in (BotState.ACTIVE, BotState.PAUSED):
+            # In-trade management also runs while PAUSED and EMERGENCY.
+            # Pausing/panicking stops the bot taking NEW risk; it must never
+            # abandon the open book, whose ratchet/BE/partials/kill-switch are
+            # the only things standing between a live position and an
+            # unmanaged loss -- a failed panic flatten is exactly the case
+            # where a surviving position most needs its protection to keep
+            # running. BOOTING/WARMUP still skip management (no book state
+            # yet).
+            if self.state in (BotState.ACTIVE, BotState.PAUSED, BotState.EMERGENCY):
                 if self.current_open_positions and symbol in self.live_prices:
                     relevant = [p for p in self.current_open_positions if p.get('s') == symbol]
                     cmds = self.trade_manager.sync_positions(relevant, self.live_prices)
@@ -2223,9 +2225,70 @@ class SystemController:
     async def trigger_panic(self):
         self.state = BotState.EMERGENCY
         await self.telemetry.send_message("🚨 **PANIC PROTOCOL ENGAGED** 🚨", parse_mode="Markdown")
+
+        close_tickets = {int(p.get('t', 0)) for p in self.current_open_positions if int(p.get('t', 0)) > 0}
+        cancel_tickets = {int(o.get('t', 0)) for o in getattr(self, 'current_pending_orders', [])
+                           if int(o.get('t', 0)) > 0}
+
         m_count = await self.close_all_market_orders()
         p_count = await self.cancel_pending_orders('all')
-        await self.telemetry.send_message(f"✅ **Global Flatten:** Closed `{m_count}` | Cancelled `{p_count}`", parse_mode="Markdown")
+
+        surviving_positions, surviving_orders = await self._verify_panic_flatten(
+            close_tickets, cancel_tickets)
+
+        if not surviving_positions and not surviving_orders:
+            await self.telemetry.send_message(
+                f"✅ **Global Flatten Verified:** Closed `{m_count}` | Cancelled `{p_count}`",
+                parse_mode="Markdown")
+        else:
+            still_open = ", ".join(f"#{t}" for t in sorted(surviving_positions)) or "none"
+            still_pending = ", ".join(f"#{t}" for t in sorted(surviving_orders)) or "none"
+            await self.telemetry.send_message(
+                f"🆘 **PANIC FLATTEN UNVERIFIED — book still exposed**\n"
+                f"Positions still open: `{still_open}`\n"
+                f"Orders still pending: `{still_pending}`\n"
+                f"Management stays active in EMERGENCY; manual intervention may be required.",
+                parse_mode="Markdown")
+
+    async def _verify_panic_flatten(self, close_tickets, cancel_tickets,
+                                     timeout_s=6.0, poll_interval=0.25):
+        """Blocks (bounded) for up to two fresh heartbeats and reports which of
+        the tickets `trigger_panic` attempted to close/cancel are still present
+        in the observed broker book. Sending CLOSE_POS/CANCEL is fire-and-forget
+        (EA rejects are invisible on the PUSH path -- e.g. 10018 market closed),
+        so a command being sent is not evidence it took effect; only a fresh
+        HEARTBEAT is. Actively drains the bridge itself: this coroutine runs on
+        the same single-threaded loop as `run()`'s poll, so nothing else will
+        read the socket while it awaits. Stops at the first heartbeat that
+        shows a clean book; otherwise re-checks once more against a second
+        heartbeat (a close/cancel may have been in flight when the first one
+        was captured) before giving up as of whatever it last observed.
+        """
+        deadline = time.time() + timeout_s
+        surviving_positions, surviving_orders = close_tickets, cancel_tickets
+        heartbeats_seen = 0
+        while heartbeats_seen < 2 and time.time() < deadline:
+            got_heartbeat = False
+            if self.bridge:
+                msgs = await self.bridge.poll_data()
+                for msg in msgs:
+                    if isinstance(msg, dict) and msg.get('type') == 'HEARTBEAT':
+                        got_heartbeat = True
+                    await self._process_incoming_data(msg)
+
+            if not got_heartbeat:
+                await asyncio.sleep(poll_interval)
+                continue
+
+            heartbeats_seen += 1
+            open_tickets = {int(p.get('t', 0)) for p in self.current_open_positions}
+            pending_tickets = {int(o.get('t', 0)) for o in getattr(self, 'current_pending_orders', [])}
+            surviving_positions = close_tickets & open_tickets
+            surviving_orders = cancel_tickets & pending_tickets
+            if not surviving_positions and not surviving_orders:
+                break
+
+        return surviving_positions, surviving_orders
 
     async def close_all_market_orders(self):
         count = 0

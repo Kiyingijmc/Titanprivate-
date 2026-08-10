@@ -191,8 +191,11 @@ class TelegramBot:
             elif cmd == "confirm":
                 await self._handle_confirm()
             elif cmd == "panic":
+                # trigger_panic() is the single source of truth for panic
+                # outcome -- it sends its own engaged/verified/escalation
+                # messages. A second unconditional "EXECUTED" message here
+                # would contradict a verified-incomplete flatten.
                 await c.trigger_panic()
-                await self.send_message("🚨 <b>PANIC PROTOCOL EXECUTED</b> 🚨")
             elif cmd == "strategies":
                 await self.send_message(c.get_strategies_report(), parse_mode="Markdown")
             elif cmd == "enable":

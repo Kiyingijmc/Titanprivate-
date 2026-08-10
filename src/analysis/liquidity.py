@@ -13,7 +13,11 @@ import logging
 import pandas as pd
 import numpy as np
 
-_LOG = logging.getLogger(__name__)
+# Under "TitanBot" so the record inherits the RotatingFileHandler that
+# AuditLogger._setup_logging attaches there; a bare __name__ logger has no
+# handler anywhere in this process and dies in logging.lastResort (RS024
+# MINOR-1). See the fuller note in src/analysis/bias_engine.py.
+_LOG = logging.getLogger("TitanBot." + __name__)
 
 class LiquidityEngine:
     """

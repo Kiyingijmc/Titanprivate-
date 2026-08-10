@@ -138,6 +138,12 @@ class SystemController:
     # everywhere, and collapsing them to one global timer would hide that.
     STRATEGY_FAULT_ALERT_INTERVAL_S = 1800
     _strategy_fault_alert_at = None   # (strategy, symbol) -> ts of last alert
+    # Throttle/journal identity for a fault in the pre-strategy enrichment
+    # prologue (RS024 MINOR-2). Not a strategy name, so it can never collide
+    # with one, and it earns its own throttle slot: "the bar itself is
+    # unreadable on this pair" is a different diagnosis from "one strategy
+    # is broken".
+    BAR_ENRICHMENT_FAULT_SOURCE = "BarEnrichment"
 
     # Daily-DD breaker alarm state (see _check_dd_breaker). Class-level
     # defaults rather than __init__ assignments: instance writes shadow them,
@@ -1129,8 +1135,9 @@ class SystemController:
             "Usual cause: an open position with no stop-loss, or a symbol whose "
             "broker specs never loaded.", parse_mode="Markdown")
 
-    async def _alert_strategy_fault(self, strategy_name, symbol, exc):
-        """Operator alarm when one strategy raises on one symbol's close.
+    async def _alert_strategy_fault(self, strategy_name, symbol, exc,
+                                    lost="was skipped for this bar"):
+        """Operator alarm when the strategy cycle raises on one symbol's close.
 
         WARN, not FATAL: the exception is contained in _run_strategies, so
         the bot -- and in particular in-trade management for every open
@@ -1139,6 +1146,12 @@ class SystemController:
         than the audit-log line alone. Throttled per (strategy, symbol) so a
         strategy broken for a whole session costs one Telegram per
         STRATEGY_FAULT_ALERT_INTERVAL_S per pair rather than one per bar.
+
+        `lost` names what the fault actually cost, because the two callers
+        differ: a per-strategy fault costs one strategy, while a prologue
+        (BAR_ENRICHMENT_FAULT_SOURCE) fault costs every strategy on the
+        symbol. Reporting the wider outage as "was skipped for this bar"
+        would understate it to the operator.
         """
         telemetry = getattr(self, 'telemetry', None)
         if telemetry is None:
@@ -1162,9 +1175,9 @@ class SystemController:
         detail = " ".join(detail.split())
         await telemetry.send_message(
             f"⚠️ **Strategy Fault**\n`{strategy_name}` raised on `{symbol}` and "
-            f"was skipped for this bar.\nError: `{detail}`\nThe rest of the bot "
-            "(other strategies, other symbols, trade management) is still "
-            "running.", parse_mode="Markdown")
+            f"{lost}.\nError: `{detail}`\nThe rest of the bot "
+            "(other symbols, trade management) is still running.",
+            parse_mode="Markdown")
 
     def _dd_breaker_pnl(self, rm):
         """(equity, anchor, pnl_pct) on the SAME anchor check_can_trade uses
@@ -1708,18 +1721,41 @@ class SystemController:
         h1 = self.market_data[symbol].get_data("H1")
         fb = getattr(self, 'feature_bus', None)
         arb = getattr(self, 'arbiter', None)
-        # own_token: this bar's identity, used both as the FeatureBus cache
-        # key and (below) as the Arbiter's bar_key for thesis-aging. Only
-        # computed when something needs it: legacy __new__ fixtures pass
-        # frames without a 'time' column and have neither a bus nor arbiter.
-        own_token = str(tf_df.iloc[-1]['time']) if (fb is not None or arb is not None) else ""
-        if fb is not None:
-            h1_token = str(h1.iloc[-1]['time']) if h1 is not None and len(h1) else "warmup"
-            enriched_df = fb.evaluate('smc.enriched_df', symbol, tf, token=own_token, window=tf_df)
-            bias_str, liq = fb.evaluate('smc.bias_context', symbol, tf, token=h1_token, h1_df=h1)
-        else:  # __new__-built test fixtures without a bus: original inline path
-            enriched_df = SMCAnalyzer(tf_df).process()
-            bias_str, liq = BiasEngine(h1).get_bias_context()
+        # Containment, prologue half (RS024 MINOR-2). This block touches the
+        # bar BEFORE any strategy is called -- tf_df.iloc[-1]['time'] and the
+        # two FeatureBus evaluations, which re-raise their pack's exception
+        # by contract (src/features/feature_bus.py:128-132). A bar that
+        # breaks enrichment rather than a strategy body is the backlog row's
+        # literal headline scenario ("a single malformed candle in ONE symbol
+        # ... halts trading AND management for everything") and stayed
+        # bot-fatal after the per-strategy guard below was added. Scope is
+        # this symbol, this bar: no strategy can run without `enriched_df`,
+        # so this returns where the per-strategy handler continues.
+        try:
+            # own_token: this bar's identity, used both as the FeatureBus
+            # cache key and (below) as the Arbiter's bar_key for thesis-aging.
+            # Only computed when something needs it: legacy __new__ fixtures
+            # pass frames without a 'time' column and have neither a bus nor
+            # an arbiter.
+            own_token = str(tf_df.iloc[-1]['time']) if (fb is not None or arb is not None) else ""
+            if fb is not None:
+                h1_token = str(h1.iloc[-1]['time']) if h1 is not None and len(h1) else "warmup"
+                enriched_df = fb.evaluate('smc.enriched_df', symbol, tf, token=own_token, window=tf_df)
+                bias_str, liq = fb.evaluate('smc.bias_context', symbol, tf, token=h1_token, h1_df=h1)
+            else:  # __new__-built test fixtures without a bus: original inline path
+                enriched_df = SMCAnalyzer(tf_df).process()
+                bias_str, liq = BiasEngine(h1).get_bias_context()
+        except Exception as e:
+            self.logger.log_event(
+                "ERROR", self.BAR_ENRICHMENT_FAULT_SOURCE,
+                f"{symbol} bar enrichment raised {type(e).__name__}: {e} "
+                f"-- all {len(active)} strategy(s) skipped for this bar",
+                payload={'symbol': symbol, 'timeframe': tf,
+                         'error_type': type(e).__name__, 'error': str(e)})
+            await self._alert_strategy_fault(
+                self.BAR_ENRICHMENT_FAULT_SOURCE, symbol, e,
+                lost="every strategy on this symbol was skipped for this bar")
+            return
 
         ctx = {
             'symbol': symbol,
@@ -1739,71 +1775,94 @@ class SystemController:
         pending_meta = {}
 
         for strat in active:
+            # Containment (audit 2026-08-07 D6). Uncaught, ONE malformed bar
+            # in ONE strategy on ONE symbol reaches the main loop's top-level
+            # handler, which Telegrams FATAL SYSTEM CRASH and re-raises --
+            # killing the whole async loop, and with it in-trade management
+            # (BE, partials, trail) for every open position on every other
+            # symbol. The blast radius must be this strategy, this symbol,
+            # this bar: journal it, alert the operator (throttled), and let
+            # the rest of `active` run.
+            #
+            # The guarded unit is the WHOLE loop body, not just the await
+            # (RS024 MAJOR-1). A strategy that RETURNS a malformed decision
+            # dict -- missing 'sl', a non-float 'price', an unexpected
+            # 'type' -- never "raised on this bar" in the narrow sense, yet
+            # the KeyError/TypeError it causes when the controller
+            # dereferences that output (the HTF filter, the grader, the
+            # SIGNAL journal line, the Intent constructor) escapes by
+            # exactly the same route and is exactly as fatal. Guarding only
+            # the first line also re-opened the hazard
+            # test_later_strategies_still_run_this_bar exists to prevent:
+            # every strategy queued behind the faulting one lost its bar too.
+            #
+            # DELIBERATE: the dispatch calls -- _execute_signal on the
+            # arb-is-None path and arb.submit -- sit INSIDE this guard.
+            # _execute_signal does its own gating (news lockout, portfolio
+            # cap, spec fail-safe) and hands the actual send to the bridge;
+            # an exception escaping it is a fault in THIS strategy's signal
+            # on THIS symbol on THIS bar, and letting it kill the loop (and
+            # in-trade management book-wide) is strictly worse than
+            # journalling it and moving on. Order-send truth never depends
+            # on this handler: fills are reconciled from EXECUTION/HEARTBEAT
+            # state, not from _execute_signal returning cleanly.
             try:
                 decision = await strat.on_new_candle(enriched_df, context=ctx)
+                if decision:
+                    # v15.3 (Plan 07): the HTF filter is manifest-driven. Absent
+                    # attribute == honors (registry-less fixtures/parity harness
+                    # keep today's behavior); non-SMC strategies whose manifest
+                    # sets honors_htf_bias: false carry their own bias.
+                    if getattr(strat, 'honors_htf_bias', True) and (
+                            (bias_str == "BULLISH" and decision['signal'] == "SELL") or
+                            (bias_str == "BEARISH" and decision['signal'] == "BUY")):
+                        continue
+
+                    # Confluence grading: journal every signal; execute only those
+                    # at or above the configured quality floor (signal_grading cfg).
+                    g = self.signal_grader.grade(decision, ctx, enriched_df.iloc[-1])
+                    self.logger.log_event(
+                        "SIGNAL", strat.name,
+                        f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
+                        payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
+                    )
+                    if not self.signal_grader.passes(g['grade'], strat.name):
+                        self.logger.log_event("SIGNAL", strat.name,
+                                              f"{symbol} skipped: {g['grade']} below floor "
+                                              f"{self.signal_grader.min_grade}")
+                        continue
+
+                    if arb is None:
+                        await self._execute_signal(symbol, decision, strat.name, bias_str, grade=g['grade'])
+                        continue
+
+                    registry = getattr(self, 'registry', None)
+                    strategy_id = registry.id_of(strat) if registry is not None else None
+                    if strategy_id is None:
+                        strategy_id = strat.name
+                    intent = Intent(
+                        strategy_id=strategy_id,
+                        symbol=symbol, direction=decision['signal'], kind=decision['type'],
+                        price=float(decision['price']), sl=float(decision['sl']), tp=float(decision['tp']),
+                        grade=g['grade'],
+                        priority=(registry.priority_of(strategy_id)
+                                  if registry is not None else 50),
+                    )
+                    arb.submit(intent)
+                    # Keyed by intent IDENTITY: resolve() returns the same
+                    # submitted objects (never copies), and two strategies can
+                    # emit the SAME thesis string with different decisions — a
+                    # value key would let the loser overwrite the winner's slot.
+                    pending_meta[id(intent)] = (decision, strat.name, g['grade'])
             except Exception as e:
-                # Containment (audit 2026-08-07 D6). Uncaught, ONE malformed
-                # bar in ONE strategy on ONE symbol reaches the main loop's
-                # top-level handler, which Telegrams FATAL SYSTEM CRASH and
-                # re-raises -- killing the whole async loop, and with it
-                # in-trade management (BE, partials, trail) for every open
-                # position on every other symbol. The blast radius must be
-                # this strategy, this symbol, this bar: journal it, alert the
-                # operator (throttled), and let the rest of `active` run.
                 self.logger.log_event(
                     "ERROR", strat.name,
-                    f"{symbol} on_new_candle raised {type(e).__name__}: {e} "
+                    f"{symbol} strategy cycle raised {type(e).__name__}: {e} "
                     "-- strategy skipped for this bar",
                     payload={'symbol': symbol, 'timeframe': tf,
                              'error_type': type(e).__name__, 'error': str(e)})
                 await self._alert_strategy_fault(strat.name, symbol, e)
                 continue
-            if decision:
-                # v15.3 (Plan 07): the HTF filter is manifest-driven. Absent
-                # attribute == honors (registry-less fixtures/parity harness
-                # keep today's behavior); non-SMC strategies whose manifest
-                # sets honors_htf_bias: false carry their own bias.
-                if getattr(strat, 'honors_htf_bias', True) and (
-                        (bias_str == "BULLISH" and decision['signal'] == "SELL") or
-                        (bias_str == "BEARISH" and decision['signal'] == "BUY")):
-                    continue
-
-                # Confluence grading: journal every signal; execute only those
-                # at or above the configured quality floor (signal_grading cfg).
-                g = self.signal_grader.grade(decision, ctx, enriched_df.iloc[-1])
-                self.logger.log_event(
-                    "SIGNAL", strat.name,
-                    f"{symbol} {decision['signal']} graded {g['grade']} ({g['score']})",
-                    payload={'factors': g['factors'], 'decision': {k: float(decision[k]) for k in ('price', 'sl', 'tp')}}
-                )
-                if not self.signal_grader.passes(g['grade'], strat.name):
-                    self.logger.log_event("SIGNAL", strat.name,
-                                          f"{symbol} skipped: {g['grade']} below floor "
-                                          f"{self.signal_grader.min_grade}")
-                    continue
-
-                if arb is None:
-                    await self._execute_signal(symbol, decision, strat.name, bias_str, grade=g['grade'])
-                    continue
-
-                registry = getattr(self, 'registry', None)
-                strategy_id = registry.id_of(strat) if registry is not None else None
-                if strategy_id is None:
-                    strategy_id = strat.name
-                intent = Intent(
-                    strategy_id=strategy_id,
-                    symbol=symbol, direction=decision['signal'], kind=decision['type'],
-                    price=float(decision['price']), sl=float(decision['sl']), tp=float(decision['tp']),
-                    grade=g['grade'],
-                    priority=(registry.priority_of(strategy_id)
-                              if registry is not None else 50),
-                )
-                arb.submit(intent)
-                # Keyed by intent IDENTITY: resolve() returns the same
-                # submitted objects (never copies), and two strategies can
-                # emit the SAME thesis string with different decisions — a
-                # value key would let the loser overwrite the winner's slot.
-                pending_meta[id(intent)] = (decision, strat.name, g['grade'])
 
         if arb is not None:
             # resolve() runs every cycle (not just when this call submitted

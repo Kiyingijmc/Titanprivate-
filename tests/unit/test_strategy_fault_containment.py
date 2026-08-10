@@ -10,6 +10,12 @@ a data fault vanished silently.
 
 These tests pin the blast radius at (this strategy, this symbol, this bar)
 and the operator signal at a throttled WARN.
+
+RS024 widened two boundaries that the first cut left open, both of them
+still bot-fatal: a strategy that RETURNS a malformed decision dict never
+"raises on this bar" but detonates one line later when the controller
+dereferences that output (MAJOR-1), and the enrichment prologue runs before
+any strategy is called at all (MINOR-2).
 """
 import asyncio
 import os
@@ -173,6 +179,135 @@ class TestExceptionContainment(unittest.TestCase):
         c = make_controller([boom, ok])
         run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
         self.assertEqual(ok.calls, ["EURUSD"])
+
+
+class TestMalformedDecisionContainment(unittest.TestCase):
+    """RS024 MAJOR-1: the guarded unit is the loop body, not the await.
+
+    Guarding only `await strat.on_new_candle(...)` leaves every line that
+    dereferences that strategy's own output unguarded -- the HTF filter's
+    decision['signal'], the grader, the SIGNAL journal's
+    float(decision[k]) for 'price'/'sl'/'tp', the Intent constructor. A
+    strategy emitting a short dict reaches the main loop's handler by
+    exactly the route the narrow guard was meant to close, and takes every
+    strategy queued behind it on that bar with it. Not hypothetical here:
+    the same audit sweep recorded Gambit Judas dying on a shape the
+    controller was not written for.
+    """
+
+    SHORT = {"signal": "BUY", "type": "MARKET", "price": 1.1}  # no 'sl'/'tp'
+
+    def test_malformed_decision_does_not_propagate(self):
+        c = make_controller([Survivor(name="BadShape", decision=self.SHORT)],
+                            telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))  # must not raise
+
+    def test_later_strategies_still_run_after_a_malformed_decision(self):
+        """The raiser is FIRST again -- the ordering that a `return` (or an
+        escape) sails through."""
+        bad = Survivor(name="BadShape", decision=self.SHORT)
+        ok = Survivor(name="Downstream")
+        c = make_controller([bad, ok], telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
+        self.assertEqual(ok.calls, ["EURUSD"])
+
+    def test_malformed_decision_is_journalled_and_alerted(self):
+        tel = FakeTelemetry()
+        c = make_controller([Survivor(name="BadShape", decision=self.SHORT)],
+                            telemetry=tel)
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
+        errors = c.logger.errors()
+        self.assertEqual(len(errors), 1)
+        level, source, message, payload = errors[0]
+        self.assertEqual(source, "BadShape")
+        self.assertEqual(payload["error_type"], "KeyError")
+        self.assertIn("EURUSD", message)
+        self.assertEqual(len(tel.messages), 1)
+        self.assertIn("BadShape", tel.messages[0][0])
+        self.assertNotIn("FATAL", tel.messages[0][0])
+
+    def test_a_grader_fault_is_contained_too(self):
+        """The grader is controller machinery reached only via a decision;
+        it is inside the same per-strategy unit of work."""
+        class BoomGrader(FakeGrader):
+            def grade(self, decision, ctx, bar):
+                raise TypeError("bad bar")
+
+        good = {"signal": "BUY", "type": "MARKET",
+                "price": 1.1, "sl": 1.09, "tp": 1.12}
+        first = Survivor(name="Signaller", decision=good)
+        ok = Survivor(name="Downstream")
+        c = make_controller([first, ok], telemetry=FakeTelemetry())
+        c.signal_grader = BoomGrader()
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
+        self.assertEqual(ok.calls, ["EURUSD"])
+        self.assertEqual(c.logger.errors()[0][1], "Signaller")
+
+
+class TestBarEnrichmentContainment(unittest.TestCase):
+    """RS024 MINOR-2: the prologue runs before any strategy is called.
+
+    own_token = str(tf_df.iloc[-1]['time']) and the two FeatureBus
+    evaluations (which re-raise their pack's exception by contract) touch
+    the bar first. That is the backlog row's literal headline scenario -- "a
+    single malformed candle in ONE symbol ... halts trading AND management
+    for everything" -- and it survived the per-strategy guard.
+    """
+
+    def _bad_bar(self):
+        return pd.DataFrame([{"close": 1.1}])  # no 'time' column
+
+    def test_unenrichable_bar_does_not_propagate(self):
+        c = make_controller([Survivor()], telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+
+    def test_no_strategy_runs_on_an_unenrichable_bar(self):
+        """Skipping is the correct outcome, not a regression: enriched_df
+        never got built, so there is nothing to hand a strategy."""
+        ok = Survivor()
+        c = make_controller([ok], telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+        self.assertEqual(ok.calls, [])
+
+    def test_the_fault_is_journalled_under_its_own_source(self):
+        c = make_controller([Survivor()], telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+        errors = c.logger.errors()
+        self.assertEqual(len(errors), 1)
+        level, source, message, payload = errors[0]
+        self.assertEqual(source, SystemController.BAR_ENRICHMENT_FAULT_SOURCE)
+        self.assertNotIn(source, {s.name for s in c.strategies})
+        self.assertIn("EURUSD", message)
+        self.assertEqual(payload["error_type"], "KeyError")
+        self.assertEqual(payload["symbol"], "EURUSD")
+
+    def test_alert_says_every_strategy_was_lost_not_one(self):
+        """A prologue fault costs the whole symbol; reporting it with the
+        per-strategy wording would understate the outage."""
+        tel = FakeTelemetry()
+        c = make_controller([Survivor()], telemetry=tel)
+        run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+        self.assertEqual(len(tel.messages), 1)
+        text = tel.messages[0][0]
+        self.assertNotIn("FATAL", text)
+        self.assertIn("every strategy on this symbol", text)
+
+    def test_other_symbols_and_later_bars_are_unaffected(self):
+        ok = Survivor()
+        c = make_controller([ok], symbols=("EURUSD", "GBPUSD"),
+                            telemetry=FakeTelemetry())
+        run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+        run(c._run_strategies("GBPUSD", _bar_df(), tf="H1"))
+        run(c._run_strategies("EURUSD", _bar_df(), tf="H1"))
+        self.assertEqual(ok.calls, ["GBPUSD", "EURUSD"])
+
+    def test_alert_is_throttled_but_every_bar_is_journalled(self):
+        tel = FakeTelemetry()
+        c = make_controller([Survivor()], telemetry=tel)
+        for _ in range(3):
+            run(c._run_strategies("EURUSD", self._bad_bar(), tf="H1"))
+        self.assertEqual(len(tel.messages), 1)
+        self.assertEqual(len(c.logger.errors()), 3)
 
 
 class TestFaultJournalling(unittest.TestCase):

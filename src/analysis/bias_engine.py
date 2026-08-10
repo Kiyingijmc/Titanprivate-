@@ -13,7 +13,14 @@ import logging
 from src.analysis.market_structure import MarketStructure
 from src.analysis.liquidity import LiquidityEngine
 
-_LOG = logging.getLogger(__name__)
+# Under "TitanBot", not a bare __name__: AuditLogger._setup_logging is the
+# project's ONLY logging configuration and it attaches its RotatingFileHandler
+# to the logger named "TitanBot" (src/core/audit_logger.py:78). There is no
+# basicConfig and no root handler, so a logger in a sibling hierarchy is
+# handled by logging.lastResort -- bare stderr -- and never reaches
+# data/logs/titan_system.log, which is where the operator actually looks
+# (RS024 MINOR-1).
+_LOG = logging.getLogger("TitanBot." + __name__)
 
 class BiasEngine:
     """

@@ -14,8 +14,7 @@ from datetime import datetime, timezone
 def _unavailable() -> dict:
     # A fresh dict per call -- a shared module constant could be mutated by a
     # caller and would then poison every later response.
-    return {"status": "unavailable", "cache_age_min": None,
-            "horizon_truncated": False, "events": []}
+    return {"status": "unavailable", "cache_age_min": None, "events": []}
 
 
 def build_calendar(controller) -> dict:

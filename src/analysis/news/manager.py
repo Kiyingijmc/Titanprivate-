@@ -101,13 +101,6 @@ class NewsManager:
                 f"unreachable -- trading halted until it refreshes.")
         return False, None
 
-    @property
-    def horizon_truncated(self) -> bool:
-        """The last completed refresh could not reach next week (spec §3.2).
-        Display-only: it never implies the trading calendar is unhealthy --
-        that is `status` / `cache_age_min`."""
-        return not getattr(self.source, "next_week_ok", True)
-
     def check_symbol(self, symbol: str, now=None):
         if not self.enabled:
             return False, None

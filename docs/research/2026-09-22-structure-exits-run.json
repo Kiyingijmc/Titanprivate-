@@ -1,0 +1,61 @@
+{
+  "quick": true,
+  "sources": {
+    "src/analysis/structure_management.py": "01ebb27137428bef4c2d37e8140bb555aa563b4166f9bdfba390827717a2f215",
+    "src/research/structure_execution.py": "e8b4863d4beef5259ca3e06c791cf09d12f47d64f85687a38961fcc3e9bd8291",
+    "src/research/sb_execution.py": "5fbcb1567f230f3f56a4018f9e00f31f168a7d8f705a90c86c59968166d73e80",
+    "scripts/structure_exit_study.py": "a0659067c220278b093c3b60125285d0caa967bf6747bee5d2936566c725ff20",
+    "scripts/poc_sb_stops.py": "1cf959397a0941af515e86c5d9bf317f51789db13f45eeabe688729df9450671",
+    "scripts/sb_component_diagnostic.py": "9c3bbafd653776e4bbce26a81ca66555825f8edaba11fd1bb795ed614a3b5c8b",
+    "src/research/costs.py": "390bd26ea283f8efe65f38b4530475e5c6e6ad1dc93746d492a309044eee4494",
+    "data/specs.json": "d5cf2baf9461ac582b3a70c973ff0c06bee6842806a7be6013e4e94fa1320cc2"
+  },
+  "data": {
+    "EURUSD": {
+      "sha256": "bde54fa44d903787fc34c3f66c4d8b4ea0508a232e1d2f05ffa76614472987ed",
+      "first": "2026-01-29T04:30:00.000000000",
+      "last": "2026-06-24T19:50:00.000000000",
+      "bars": 30000,
+      "candidates": 42,
+      "spread": 8e-05,
+      "tight_runner_OHLC_busy": 7,
+      "tight_runner_OLHC_busy": 7,
+      "structure_OHLC_busy": 7,
+      "structure_OLHC_busy": 7
+    },
+    "USDJPY": {
+      "sha256": "93bd67a8f2cc668c5b1654dfe9a0579066c1206518fc869ec3860b93ce9f43a0",
+      "first": "2026-01-05T09:05:00.000000000",
+      "last": "2026-06-01T01:30:00.000000000",
+      "bars": 30000,
+      "candidates": 28,
+      "spread": 0.01,
+      "tight_runner_OHLC_busy": 4,
+      "tight_runner_OLHC_busy": 4,
+      "structure_OHLC_busy": 4,
+      "structure_OLHC_busy": 4
+    },
+    "XAUUSD": {
+      "sha256": "549ea9bb5f00564cb4695f63874f039bc28b27130b7528bcafcb10cbd0b3e9d1",
+      "first": "2026-01-20T22:30:00.000000000",
+      "last": "2026-06-24T19:50:00.000000000",
+      "bars": 30000,
+      "candidates": 34,
+      "spread": 0.2,
+      "tight_runner_OHLC_busy": 6,
+      "tight_runner_OLHC_busy": 6,
+      "structure_OHLC_busy": 6,
+      "structure_OLHC_busy": 6
+    }
+  },
+  "assumptions": [
+    "Legacy H1 bias-and-grade collector, unchanged across arms",
+    "Constant spread, $7/lot round-turn commission; spread in executable prices",
+    "Two assumed M5 paths are sensitivity cases, not bounds",
+    "Immediate software execution, continuous volume; no latency, swap, stop-level or lot rounding",
+    "Each arm schedules its own one-order occupancy; not paired trades",
+    "M15 uses closed bars only; swings require two following closed M15 bars",
+    "No fresh holdout; diagnostic only; no parameter search"
+  ],
+  "complete": true
+}

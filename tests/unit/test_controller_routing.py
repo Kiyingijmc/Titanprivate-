@@ -23,6 +23,7 @@ class FakeState:
         self.registered = {}
         self.backfilled = []
         self.deleted = []
+        self.cancel_requested = []
     def register_order(self, ticket, sym, strat, otype, status="PENDING", entry=0.0,
                        tp=0.0, sl=0.0, lots=0.0, grade=""):
         self.registered[ticket] = dict(sym=sym, strat=strat, otype=otype, status=status,
@@ -33,6 +34,7 @@ class FakeState:
     def get_pending_orders(self):
         return [{"ticket_id": 77, "strategy": "SilverBullet", "time_placed": time.time() - 9999}]
     def delete_order(self, t): self.deleted.append(t)
+    def mark_cancel_requested(self, t): self.cancel_requested.append(t)
     def get_order(self, t): return None
 
 
@@ -169,7 +171,8 @@ class GhostCleanup(unittest.TestCase):
         sc = make_controller()
         run(sc._cleanup_ghost_orders())
         self.assertEqual(sc.bridge.commands, [("CANCEL", {"ticket": 77})])
-        self.assertEqual(sc.state_manager.deleted, [77])
+        self.assertEqual(sc.state_manager.deleted, [])
+        self.assertEqual(sc.state_manager.cancel_requested, [77])
 
 
 if __name__ == "__main__":

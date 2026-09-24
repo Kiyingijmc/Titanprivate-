@@ -86,11 +86,10 @@ class MgmtDispatchNotifyTests(unittest.IsolatedAsyncioTestCase):
         await c._dispatch_mgmt_command({"action": "MODIFY", "ticket": 9, "symbol": "XAUUSD", "sl": 2005.0, "tp": 2025.0, "comment": "Runner Trail"})
         self.assertEqual(c.telemetry.mgmt, [])
 
-    async def test_partial_notifies(self):
+    async def test_partial_waits_for_broker_confirmation_before_notifying(self):
         c = _controller()
         await c._dispatch_mgmt_command({"action": "CLOSE_PARTIAL", "ticket": 9, "volume": 0.03, "comment": "Bank 30%"})
-        self.assertEqual(len(c.telemetry.partials), 1)
-        self.assertEqual(c.telemetry.partials[0], ("Bank 30%", 9, 0.03))
+        self.assertEqual(c.telemetry.partials, [])
 
     async def test_risk_guard_close_notifies(self):
         c = _controller()

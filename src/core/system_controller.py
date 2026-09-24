@@ -189,6 +189,7 @@ class SystemController:
         self.current_open_positions = []
         self.current_pending_orders = [] 
         self.live_prices = {}
+        self.live_asks = {}
         self.live_spreads = {}   # symbol -> ask-bid from the latest TICK (price units)
         self.active_symbols = set()
         
@@ -515,6 +516,8 @@ class SystemController:
         # Handshake
         await self._wait_for_bridge_connection()
 
+        from src.core.broker_universe import prepare_universe
+        await prepare_universe(self)
         self._init_strategies()
         try:
             await self.news_manager.update_calendar()
@@ -591,10 +594,10 @@ class SystemController:
                         await self._process_incoming_data(msg)
 
                 # --- E. GHOST CLEANUP ---
-                if now_dt.second == 0 and now_dt.microsecond < 10000:
+                if self._pending_sweep_due():
                     await self._cleanup_ghost_orders()
-                    # TTL first: an expired row is already gone and needs no
-                    # calendar lookup. Guarded locally like every other news
+                    # TTL first: cancellation keeps the row risk-bearing until
+                    # broker absence is confirmed. Guarded like every other news
                     # call site in this loop — the loop's own `except` re-raises.
                     try:
                         await self._sweep_news_blocked_pendings()
@@ -674,7 +677,11 @@ class SystemController:
                         (getattr(self, 'current_pending_orders', None) or []) if 't' in o]
         ghosts = self.state_manager.reconcile_state(mt5_tickets)
         for tid in ghosts:
-            self.state_manager.archive_trade(tid, 0.0)
+            row = self.state_manager.get_order(tid)
+            if row and row.get('status') in ('PENDING', 'CANCEL_REQUESTED'):
+                self.state_manager.delete_order(tid)
+            else:
+                self.state_manager.archive_trade(tid, 0.0)
             await self.telemetry.send_message(f"⚠️ **Sync Guard:** Resolved Ticket `#{tid}` (Closed externally)", parse_mode="Markdown")
 
     async def _news_blocks_symbol(self, symbol):
@@ -953,16 +960,33 @@ class SystemController:
             self.logger.log_event("INFO", "NEWS", f"{symbol} signal skipped: {news_reason}")
             return
 
+        universe_snapshot = None
+        if symbol in getattr(self, '_broker_universe_symbols', set()):
+            from src.core.broker_universe import refresh_order_specs
+            universe_snapshot = await refresh_order_specs(self, symbol)
+            if universe_snapshot is None:
+                return
+
         p = self.risk_manager.normalize_price(decision['price'], symbol)
         sl = self.risk_manager.normalize_price(decision['sl'], symbol)
         tp = self.risk_manager.normalize_price(decision['tp'], symbol)
 
         cur_bid = self.live_prices.get(symbol, 0.0)
         cmd = decision['type']
-        if "LIMIT" in cmd and cur_bid > 0:
+        if "LIMIT" in cmd and cur_bid > 0 and universe_snapshot is None:
             if abs(p - cur_bid) < (cur_bid * 0.0002):
                 cmd = "MARKET"
                 p = cur_bid
+
+        if universe_snapshot is not None:
+            from src.strategies.universe import order_problem
+            info, tick = universe_snapshot
+            if cmd == "MARKET":
+                p = self.risk_manager.normalize_price(tick.ask if decision['signal'] == 'BUY' else tick.bid, symbol)
+            problem = order_problem(info, decision['signal'], cmd, p, sl, tp, tick.bid, tick.ask)
+            if problem:
+                self.logger.log_event("RISK", "UNIVERSE", f"{symbol} skipped: {problem}")
+                return
 
         # v15.2: config-gated drawdown throttle. Default (disabled) always
         # returns 1.0, so sizing stays byte-identical to pre-throttle.
@@ -971,6 +995,9 @@ class SystemController:
         throttle_fn = getattr(getattr(self, 'risk_manager', None), 'throttle_factor', None)
         risk_mult = throttle_fn() if callable(throttle_fn) else 1.0
         lot = self.risk_manager.calculate_lot_size(p, sl, symbol, htf_bias, risk_mult=risk_mult)
+        if universe_snapshot is not None:
+            from src.core.broker_universe import cap_volume
+            lot = cap_volume(lot, universe_snapshot[0])
         if lot <= 0:
             # Fail-safe skip. Must be LOUD: a graded, passing signal that
             # vanishes silently is indistinguishable from a dead pipeline
@@ -1008,7 +1035,7 @@ class SystemController:
                     f"(unsizeable stop {abs(p - sl):.5f} at current balance, or specs missing)")
             return
 
-        allowed, reason = self.exposure_manager.check_exposure(symbol, self.current_open_positions)
+        allowed, reason = self.exposure_manager.check_exposure(symbol, self._committed_positions())
         if not allowed:
             self.logger.log_event("RISK", "EXPOSURE", f"Block {symbol}: {reason}")
             return
@@ -1024,6 +1051,17 @@ class SystemController:
         # reported yet.
         sm = getattr(self, 'state_manager', None)
         resting = sm.get_pending_orders() if sm is not None else []
+        # Include broker-reported pending orders not present in SQLite.  The EA
+        # heartbeat must provide SL; an unknown SL is deliberately fail-closed
+        # in aggregate_open_risk rather than silently omitted.
+        known_pending = {int(r.get('ticket_id', 0) or 0) for r in resting}
+        for o in (getattr(self, 'current_pending_orders', None) or []):
+            tid = int(o.get('t', 0) or 0)
+            if tid and tid not in known_pending:
+                resting.append({'ticket_id': tid, 'symbol': o.get('s', ''),
+                                'initial_entry': o.get('p', 0),
+                                'initial_sl': o.get('sl', 0),
+                                'lots': o.get('vol', 0)})
         book_risk = self.risk_manager.aggregate_open_risk(self.current_open_positions, resting)
         if book_risk is not None:
             self._uncomputable_alert_at = None  # book computable again: re-arm
@@ -1062,6 +1100,34 @@ class SystemController:
             self.logger.log_event("EXEC", "SENT", f"Order {cmd} {symbol} [{grade}] sent. Handshake OK.")
         else:
             self.logger.log_event("ERROR", "EXECUTION", f"Order handshake FAILED for {symbol}")
+
+    def _committed_positions(self):
+        """One ticket per committed trade, including resting and in-flight orders."""
+        rows = list(getattr(self, 'current_open_positions', []) or [])
+        seen = {int(p.get('t', 0)) for p in rows if p.get('t')}
+        pending = list(getattr(self, 'current_pending_orders', []) or [])
+        sm = getattr(self, 'state_manager', None)
+        if sm is not None and hasattr(sm, 'get_pending_orders'):
+            pending += [{'t': r['ticket_id'], 's': r['symbol']}
+                        for r in sm.get_pending_orders()]
+        for row in pending:
+            ticket = int(row.get('t', 0) or 0)
+            if ticket and ticket not in seen:
+                rows.append(row)
+                seen.add(ticket)
+        self._reserved_risk_total()  # prune expired in-flight reservations
+        for symbol in getattr(self, '_reserved_risk', {}):
+            # Reservations are released on registration. Until then they
+            # represent an additional trade, even on an already occupied pair.
+            rows.append({'s': symbol})
+        return rows
+
+    def _pending_sweep_due(self):
+        now = time.monotonic()
+        if now < getattr(self, '_next_pending_sweep', 0.0):
+            return False
+        self._next_pending_sweep = now + 60.0
+        return True
 
     def _reserve_risk(self, symbol, risk):
         """Record $ risk dispatched but not yet visible in the book.
@@ -1425,18 +1491,25 @@ class SystemController:
         for order entry so a slow SLTP round-trip can never wedge it):
         - MODIFY   -> EA HandleCommand MODIFY branch (v14.4.1+ EA required);
                       outcome is observable in the next HEARTBEAT's SL/TP.
-        - CLOSE_PARTIAL becomes CLOSE_POS with an explicit volume.
+        - CLOSE_PARTIAL uses CLOSE_TO_VOLUME for durable, retryable targets;
+          legacy callers without a target use CLOSE_POS with explicit volume.
         - CLOSE_POS passes through.
         """
         action = c.get('action')
-        if action == "MODIFY":
-            await self.bridge.send_command("MODIFY", {
-                "ticket": int(c['ticket']), "symbol": c.get('symbol', ''),
-                "sl": float(c.get('sl', 0.0)), "tp": float(c.get('tp', 0.0))
-            })
-            self.logger.log_event("MGMT", "TRADE_MGR",
-                                  f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "
-                                  f"({c.get('comment', '')}) sent")
+        if action in ("MODIFY", "MODIFY_CONFIRMED"):
+            if action == "MODIFY":
+                sent = await self.bridge.send_command("MODIFY", {
+                    "ticket": int(c['ticket']), "symbol": c.get('symbol', ''),
+                    "sl": float(c.get('sl', 0.0)), "tp": float(c.get('tp', 0.0))
+                })
+                if sent is False:
+                    self.logger.log_event("ERROR", "TRADE_MGR", f"MODIFY #{c['ticket']} send failed; intent retained")
+                    return False
+                self.logger.log_event("MGMT", "TRADE_MGR",
+                                      f"MODIFY #{c['ticket']} sl={c.get('sl')} tp={c.get('tp')} "
+                                      f"({c.get('comment', '')}) sent")
+                if c.get('await_confirmation'):
+                    return True
             comment = c.get('comment', '')
             if comment != "Runner Trail" and any(k in comment for k in ("Ratchet L1", "Ratchet L2", "Ratchet L3")):
                 new_sl = float(c.get('sl', 0.0))
@@ -1450,17 +1523,34 @@ class SystemController:
                         tkt = int(c['ticket'])
                         live = next((p for p in self.current_open_positions if int(p.get('t', 0)) == tkt), None)
                         vol = float(live.get('vol', 0)) if live else (row.get('lots') or 0)
-                        is_long = init_sl < init_entry
+                        live_type = live.get('type') if live else None
+                        is_long = (int(live_type) == 0) if live_type is not None else (init_sl < init_entry)
                         dist = (new_sl - init_entry) if is_long else (init_entry - new_sl)
                         mag = self.risk_manager.money_for_move(symbol, dist, vol)
                         locked = mag if dist >= 0 else -mag
                 await self.telemetry.notify_management(comment, int(c['ticket']), new_sl, locked)
         elif action == "CLOSE_PARTIAL":
-            await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket']),
-                                                         "volume": float(c['volume'])})
+            payload = {"ticket": int(c['ticket']), "volume": float(c['volume'])}
+            action = "CLOSE_POS"
+            if 'target_volume' in c:
+                # A distinct action makes older gateways ignore this command
+                # instead of interpreting a retry as another absolute close.
+                if getattr(self, '_management_protocol', 0) < 2:
+                    now = time.monotonic()
+                    if now >= getattr(self, '_management_upgrade_alert_at', 0):
+                        self.logger.log_event("ERROR", "TRADE_MGR",
+                            "Target-volume partials require the updated Titan Gateway (mgmt_protocol=2); request retained")
+                        self._management_upgrade_alert_at = now + 60
+                    return False
+                action = "CLOSE_TO_VOLUME"
+                payload['target_volume'] = float(c['target_volume'])
+            sent = await self.bridge.send_command(action, payload)
+            if sent is False:
+                self.logger.log_event("ERROR", "TRADE_MGR", f"PARTIAL #{c['ticket']} send failed; intent retained")
+                return False
             self.logger.log_event("MGMT", "TRADE_MGR",
                                   f"PARTIAL #{c['ticket']} vol={c['volume']}")
-            await self.telemetry.notify_partial(c.get('comment', ''), int(c['ticket']), c['volume'])
+            # Only EXECUTION events announce banked profits; send is not fill.
         elif action == "CLOSE_POS":
             await self.bridge.send_command("CLOSE_POS", {"ticket": int(c['ticket'])})
             self.logger.log_event("MGMT", "TRADE_MGR",
@@ -1533,7 +1623,7 @@ class SystemController:
                     ticket, sym, msg.get('cmd'), entry_p, sl_v, tp_v, lots_v, grade_v, risk_money, strat_v
                 )
             
-            elif status == 'CLOSED':
+            elif status in ('PARTIAL', 'CLOSED'):
                 tid = msg.get('ticket')
                 row = self.state_manager.get_order(tid)
                 if row:
@@ -1541,27 +1631,58 @@ class SystemController:
                     strat_name = row.get('strategy') or "Manual"
                     sym = msg.get('s') or row.get('symbol')
 
+                    remaining = float(msg.get('remaining_volume', msg.get('remaining', 0.0)) or 0.0)
+                    # Exit deals are not position closures.  The EA reports the
+                    # broker's remaining position volume; retain the canonical
+                    # row whenever any volume remains.
+                    if status == 'PARTIAL' or remaining > 0:
+                        applied = self.state_manager.record_exit_deal(
+                            tid, msg.get('deal', 0), pnl, remaining,
+                            confirm_requested_stage=False)
+                        if applied:
+                            for position in getattr(self, 'current_open_positions', []):
+                                if int(position.get('t', 0)) == int(tid):
+                                    position['vol'] = remaining
+                            await self.telemetry.notify_partial(
+                                "Broker-confirmed partial", int(tid), msg.get('volume', 0.0))
+                        return
+
                     placed = row.get('time_placed') or 0
                     hold_seconds = (time.time() - placed) if placed else None
 
                     planned_risk = self.risk_manager.money_for_move(
                         sym, abs((row.get('initial_entry') or 0) - (row.get('initial_sl') or 0)), row.get('lots') or 0
                     )
-                    r_mult = (pnl / planned_risk) if planned_risk > 0 else None
-
-                    self.daily_closed_trades.append({'ticket': tid, 'sym': sym, 'pnl': pnl, 'strat': strat_name})
+                    total_pnl = float(row.get('realized_pnl') or 0.0) + pnl
+                    r_mult = (total_pnl / planned_risk) if planned_risk > 0 else None
+                    self.daily_closed_trades.append(
+                        {'ticket': tid, 'sym': sym, 'pnl': total_pnl, 'strat': strat_name})
                     self.state_manager.archive_trade(tid, pnl)
-                    await self.telemetry.notify_close(tid, pnl, sym, strat_name, hold_seconds, r_mult)
+                    await self.telemetry.notify_close(tid, total_pnl, sym, strat_name,
+                                                      hold_seconds, r_mult)
 
         elif msg_type == 'TICK':
             symbol = msg.get('s')
             if not symbol: return
             
             self.live_prices[symbol] = float(msg.get('b', 0))
+            if not hasattr(self, 'live_asks'):
+                self.live_asks = {}
             if msg.get('a') is not None:
+                self.live_asks[symbol] = float(msg['a'])
                 # live spread for strategy screens (Gyroscope max_spread_atr_frac)
                 self.live_spreads[symbol] = float(msg['a']) - self.live_prices[symbol]
+            else:
+                self.live_asks.pop(symbol, None)
             self._publish(TickReceived(symbol=symbol, bid=self.live_prices[symbol]))
+            closed_candles = None
+            if (getattr(self.trade_manager, 'structure_enabled', False) is True
+                    and self.state in (BotState.ACTIVE, BotState.PAUSED, BotState.EMERGENCY)
+                    and symbol in self.market_data):
+                store = self.market_data[symbol]
+                closed_candles = store.process_tick(msg)
+                self.trade_manager.update_structure_context(
+                    symbol, store.get_data('M5'), float(msg.get('t', time.time())))
             # In-trade management also runs while PAUSED and EMERGENCY.
             # Pausing/panicking stops the bot taking NEW risk; it must never
             # abandon the open book, whose ratchet/BE/partials/kill-switch are
@@ -1573,14 +1694,14 @@ class SystemController:
             if self.state in (BotState.ACTIVE, BotState.PAUSED, BotState.EMERGENCY):
                 if self.current_open_positions and symbol in self.live_prices:
                     relevant = [p for p in self.current_open_positions if p.get('s') == symbol]
-                    cmds = self.trade_manager.sync_positions(relevant, self.live_prices)
+                    cmds = self.trade_manager.sync_positions(relevant, self.live_prices, self.live_asks)
                     for c in cmds:
                         await self._dispatch_mgmt_command(c)
 
-            # New-signal generation stays ACTIVE-only: a paused bot builds no
-            # candles and runs no strategies, so it emits no new entries.
+            # Entries stay ACTIVE-only; structure management keeps bars fresh while paused.
             if self.state == BotState.ACTIVE:
-                closed_candles = self.market_data[symbol].process_tick(msg)
+                if closed_candles is None:
+                    closed_candles = self.market_data[symbol].process_tick(msg)
 
                 for tf, df in closed_candles:
                     last = df.iloc[-1]
@@ -1591,6 +1712,7 @@ class SystemController:
                     await self._run_strategies(symbol, df, tf)
 
         elif msg_type == 'HEARTBEAT':
+            self._management_protocol = int(msg.get('mgmt_protocol', 0))
             bal = float(msg.get('bal', 0))
             eq = float(msg.get('eq', 0))
             if eq > 0:
@@ -1644,7 +1766,7 @@ class SystemController:
             ttl = getattr(self, 'strategy_ttls', {}).get(o.get('strategy', ''), 7200)
             if now - o['time_placed'] > ttl:
                 await self.bridge.send_command("CANCEL", {"ticket": o['ticket_id']})
-                self.state_manager.delete_order(o['ticket_id'])
+                self.state_manager.mark_cancel_requested(o['ticket_id'])
                 await self.telemetry.send_message(f"♻️ **Auto-Clean:** Expired {o['strategy']} Order `#{o['ticket_id']}`", parse_mode="Markdown")
 
     async def _send_detailed_performance_report(self):
@@ -1876,7 +1998,7 @@ class SystemController:
             # something) so the Arbiter's bar-index — and therefore thesis
             # TTL aging — tracks real elapsed bars rather than only bars that
             # happened to carry a signal.
-            open_positions = getattr(self, 'current_open_positions', None) or []
+            open_positions = self._committed_positions()
             approved = arb.resolve(open_positions, bar_key=own_token, timeframe=tf)
             for intent in approved:
                 meta = pending_meta.get(id(intent))
@@ -1895,6 +2017,10 @@ class SystemController:
             # 500 H1 bars: H1 strategies need >=50 enriched bars + ATR warmup,
             # and BiasEngine reads a 100-bar context window.
             await self.bridge.send_command("GET_HISTORY", {"symbol": sym, "tf": "H1", "count": 500})
+            if getattr(self, '_broker_universe_symbols', None):
+                # Drain while subscribing a larger universe, not only afterward.
+                for message in await self.bridge.poll_data():
+                    await self._process_incoming_data(message)
         
         print(f"[WARMUP] Syncing {len(symbols_list)} pairs...")
         for _ in range(20): 

@@ -128,6 +128,20 @@ class AggregateOpenRiskTests(unittest.TestCase):
         resting = [_pending("XAUUSD", 2000.0, 1996.0, 1.0, ticket=77)]
         self.assertAlmostEqual(rm.aggregate_open_risk(book, resting), 400.0, places=6)
 
+    def test_multiple_pending_and_open_positions_bind_the_portfolio_cap(self):
+        """Every independently fillable order contributes once to the same cap."""
+        rm = _risk_manager()
+        book = [_pos("XAUUSD", 2000.0, 1996.0, 1.0, ticket=1)]       # $400
+        resting = [
+            _pending("XAUUSD", 2000.0, 1996.0, 0.5, ticket=2),       # $200
+            _pending("EURUSD", 1.1000, 1.0950, 1.0, ticket=3),       # $50
+        ]
+        aggregate = rm.aggregate_open_risk(book, resting)
+        self.assertAlmostEqual(aggregate, 650.0, places=6)
+        allowed, _reason = ExposureManager(_config(5.0), {}).check_total_risk(
+            aggregate, 1.0, 10000.0)
+        self.assertFalse(allowed)
+
     def test_stopless_pending_row_is_uncomputable(self):
         """Same fail-safe discipline on the pending side as on positions."""
         rm = _risk_manager()
@@ -374,7 +388,11 @@ class RestingPendingOrderTests(unittest.TestCase):
         """The reproduction from the review: 11 pairs x 1% through a 5% cap."""
         c = _controller([])
         for i in range(11):
-            self._fire(c)
+            # Distinct instruments isolate the monetary cap; duplicate and
+            # currency-saturation gates now also include pending orders.
+            symbol = f"INSTRUMENT{i}"
+            c.risk_manager.symbol_specs[symbol] = dict(c.risk_manager.symbol_specs['EURUSD'])
+            _run(c._execute_signal(symbol, LIMIT_DECISION, "SilverBullet", "BULLISH"))
             # Each accepted send rests as a real pending order the next signal
             # must see -- the state the live book is normally in.
             if len(c.bridge.reliable) > len(c.state_manager.pending):
@@ -398,7 +416,8 @@ class InCycleReservationTests(unittest.TestCase):
         # 1.5% cap: one trade's ~0.99% fits, two (~1.98%) do not.
         c = _controller([], cap=1.5)
         self._fire(c)
-        self._fire(c)
+        c.risk_manager.symbol_specs['GBPUSD'] = dict(c.risk_manager.symbol_specs['EURUSD'])
+        self._fire(c, 'GBPUSD')
         self.assertEqual(len(c.bridge.reliable), 1)
         self.assertTrue(any("Total Open Risk" in e[2] for e in c.logger.events),
                         c.logger.events)
@@ -612,7 +631,8 @@ class SyncGuardSeamTests(unittest.TestCase):
         c.current_pending_orders = [
             {"t": 111, "s": "EURUSD", "p": 1.1000, "type": 2, "vol": 0.99}]
         _run(c._perform_reconciliation())
-        _run(c._execute_signal("EURUSD", DECISION, "SilverBullet", "BULLISH"))
+        c.risk_manager.symbol_specs['GBPUSD'] = dict(c.risk_manager.symbol_specs['EURUSD'])
+        _run(c._execute_signal("GBPUSD", DECISION, "SilverBullet", "BULLISH"))
         self.assertEqual(c.bridge.reliable, [])
         self.assertTrue(any("Total Open Risk" in e[2] for e in c.logger.events
                             if e[0] == "RISK"), c.logger.events)

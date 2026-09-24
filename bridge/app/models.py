@@ -86,6 +86,9 @@ class SymbolInfo(BaseModel):
     volume_max: float
     volume_step: float
     trade_mode: int
+    order_mode: int | None = None
+    trade_stops_level: int | None = None
+    trade_freeze_level: int | None = None
     tick_value: float
     tick_size: float
     # swap survey (defaults keep old clients/bridges mutually compatible)

@@ -66,6 +66,11 @@ class SymbolInfo(BaseModel):
     volume_step: float
     tick_value: float
     tick_size: float
+    # None means an older bridge did not supply the trading permission.
+    trade_mode: int | None = None
+    order_mode: int | None = None
+    trade_stops_level: int | None = None
+    trade_freeze_level: int | None = None
     # swap survey (defaults tolerate bridges that predate these fields)
     swap_mode: int = 0
     swap_long: float = 0.0

@@ -20,7 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
                      "and unused for --unused-days. Dry-run by default; pass --execute to delete."
     )
     p.add_argument("--lake-root", default="data/lake")
-    p.add_argument("--active-years", type=int, default=4)
+    p.add_argument("--active-years", type=int, default=10)
     p.add_argument("--unused-days", type=int, default=180)
     p.add_argument("--execute", action="store_true", help="actually delete (default: dry-run)")
     return p

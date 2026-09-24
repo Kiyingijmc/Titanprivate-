@@ -1,0 +1,7 @@
+period,window,observed_session_days,warmed_closes,fvg,displacement_geometry,sweep_reclaim,in_window,cost_eligible,daily_cap,covered_parent,filled
+early,baseline,3659,187516,39766,12757,1130,265,256,242,241,109
+early,open_window,3659,187516,39766,12757,1130,349,333,314,311,148
+extension,baseline,559,28739,5967,1991,168,24,22,22,22,12
+extension,open_window,559,28739,5967,1991,168,37,30,30,30,17
+late,baseline,3435,176187,37016,12440,1143,212,211,206,204,105
+late,open_window,3436,176187,37016,12440,1143,292,282,275,271,141

@@ -285,7 +285,7 @@ class Lake:
     # ------------------------------------------------------------------
     def prune(
         self,
-        active_years: int = 4,
+        active_years: int = 10,
         unused_days: int = 180,
         now: Optional[datetime] = None,
         dry_run: bool = True,

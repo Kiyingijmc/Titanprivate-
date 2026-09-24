@@ -1,0 +1,18 @@
+# Example override fragment; NOT loaded automatically. Start with demo validation.
+# Settings are snapshotted per newly registered trade. Existing trades stay legacy.
+trade_management:
+  structure:
+    enabled: false
+    strategies: [SilverBullet, Gyroscope]
+    settings:
+      first_progress: 0.50
+      second_progress: 0.75
+      second_spacing_atr: 0.75
+      buffer_atr: 0.15
+      buffer_spreads: 1.5
+      trend_partial: 0.25
+      normal_partial: 0.35
+      defensive_partial: 0.50
+      second_partial: 0.25
+      volatility_trigger: 1.5
+      trend_efficiency: 0.55

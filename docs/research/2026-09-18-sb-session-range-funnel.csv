@@ -1,0 +1,4 @@
+period,observed_symbol_days,complete_ranges,first_events,ambiguous_days,invalidated_events,cost_rejections,eligible,covered_parents
+early,3702,3657,1538,28,683,2,162,161
+extension,560,559,192,10,65,3,15,15
+late,3439,3433,1313,30,601,0,139,137

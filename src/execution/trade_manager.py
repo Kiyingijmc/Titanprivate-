@@ -5,20 +5,23 @@
 #   1. Improved "Dust Guard" math (Error 4756 prevention).
 #   2. Added Zero-Division protections for Manual/Modified trades.
 #   3. Fully aligned with v14.3 Quantized Risk Manager.
-# STATUS: PRODUCTION READY
+# STATUS: Legacy ratchet with opt-in experimental M15 structure management
 # ==============================================================================
 
 import time
 import math
+from decimal import Decimal
 import pytz
 from datetime import datetime, timezone, timedelta
 
 from src.utils.instrument import InstrumentHelper
 from src.analysis import trading_days
+from src.analysis.structure_management import StructurePolicy, m15_context, management_plan
+from dataclasses import asdict
 
 class TradeManager:
     """
-    Titan Trade Management Engine (Fibonacci Ratchet).
+    Titan Trade Management Engine (legacy ratchet or durable M15 profile).
 
     Stages (progress toward original TP):
       L1 0.382  -> stop to break-even (+3 pip buffer)
@@ -27,8 +30,8 @@ class TradeManager:
       Runner    -> after L3 the remaining tail trails behind price
 
     Commands are dicts consumed by SystemController._dispatch_mgmt_command:
-      MODIFY        {ticket, symbol, sl, tp}   (routed via reliable REQ socket)
-      CLOSE_PARTIAL {ticket, volume}           (absolute lots, dust-guarded)
+      MODIFY        {ticket, symbol, sl, tp}   (reconciled against broker snapshots)
+      CLOSE_PARTIAL {ticket, volume, target_volume} (idempotent remaining-volume target)
       CLOSE_POS     {ticket}
     """
     def __init__(self, logger, state_manager, risk_manager, config=None):
@@ -36,6 +39,7 @@ class TradeManager:
         self.state_manager = state_manager
         self.risk_manager = risk_manager
         self.command_cooldowns = {}
+        self._legacy_partial_warned = set()
 
         # Standard Institutional Fibonacci Ratchet Levels
         self.L1_FIB = 0.382  # Stage 1: Break-Even
@@ -43,6 +47,16 @@ class TradeManager:
         self.L3_FIB = 0.886  # Stage 3: Bank 50%
 
         mgmt = (config or {}).get('trade_management', {})
+        structure = mgmt.get('structure', {})
+        self._structure_new = structure.get('enabled', False) is True
+        self._structure_policy = StructurePolicy(**structure.get('settings', {}))
+        self._structure_strategies = set(structure.get('strategies', ['SilverBullet', 'Gyroscope']))
+        self._started_at = time.time()
+        self._structure_context = {}
+        self._structure_cache = {}
+        persisted = (state_manager.has_structure_profiles()
+                     if callable(getattr(type(state_manager), 'has_structure_profiles', None)) else False)
+        self.structure_enabled = self._structure_new or persisted
         runner_cfg = mgmt.get('runner', {})
         self.runner_enabled = bool(runner_cfg.get('enabled', False))
         # Arm C (validated 2026-07-11): one-way runner-trail tighten on a give-back.
@@ -88,6 +102,36 @@ class TradeManager:
             except (ValueError, TypeError, AttributeError):
                 continue
 
+    def update_structure_context(self, symbol, m5, timestamp):
+        """Refresh once per source candle/15-minute boundary, including while paused."""
+        try:
+            if timestamp > 32503680000:
+                timestamp /= 1000.
+            last = str(m5.iloc[-1]['time']) if m5 is not None and len(m5) else None
+            key = (last, int(timestamp // 900))
+            if self._structure_cache.get(symbol) != key:
+                self._structure_context[symbol] = m15_context(
+                    m5, datetime.fromtimestamp(timestamp, timezone.utc))
+                self._structure_cache[symbol] = key
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            # Bad history must not suppress emergency exits or intent recovery.
+            self._structure_context[symbol] = None
+            self.logger.log_event('WARN', 'TRADE_MGR', f'{symbol}: invalid M15 context: {exc}')
+
+    def _management_profile(self, ticket, level, pending_intent=False):
+        if not self.structure_enabled:
+            return None
+        profile = self.state_manager.get_management_profile(ticket)
+        if profile is None:
+            meta = self.state_manager.get_order_meta(ticket)
+            eligible = (self._structure_new and level == 0 and not pending_intent and meta
+                        and meta[0] in self._structure_strategies and meta[1] >= self._started_at)
+            profile = ({'mode': 'm15_structure_v1', 'settings': asdict(self._structure_policy),
+                        'since': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
+                       if eligible else {'mode': 'legacy'})
+            profile = self.state_manager.save_management_profile(ticket, profile)
+        return profile
+
     def _time_exit_due(self, ticket, now):
         """True when the ticket belongs to a time-exit strategy whose calendar
         window has passed. UTC dates on both sides (time_placed is stored as
@@ -126,7 +170,7 @@ class TradeManager:
         today = datetime.fromtimestamp(now, tz=timezone.utc).date()
         return trading_days.should_time_exit(today, entry_d, exit_day)
 
-    def sync_positions(self, position_list_json, current_prices_dict):
+    def sync_positions(self, position_list_json, current_prices_dict, ask_prices=None):
         """
         Iterates active MT5 positions and applies management logic.
         Returns the list of commands to send to the bridge.
@@ -180,50 +224,120 @@ class TradeManager:
                 if range_size < 1e-9:
                     continue
 
-                is_long = (init_tp > init_entry)
+                is_long = (int(pos['type']) == 0) if pos.get('type') is not None else (init_tp > init_entry)
+                if not is_long and ask_prices is not None:
+                    # Never substitute bid for an unavailable executable ask.
+                    if symbol not in ask_prices:
+                        continue
+                    curr_price = float(ask_prices[symbol])
                 dist = (curr_price - init_entry) if is_long else (init_entry - curr_price)
                 pct = dist / range_size
 
                 curr_tp = float(pos.get('tp', 0))
                 current_vol = float(pos.get('vol', 0))
 
-                new_level = r_level
-                actions = []
-
                 def get_sl(price_level):
-                    return self.risk_manager.normalize_price(price_level, symbol)
+                    candidate = self.risk_manager.normalize_price(price_level, symbol)
+                    current_sl = float(pos.get('sl', 0) or 0)
+                    # Broker-side protection is monotonic even if local stage
+                    # state was lost and later recovered.
+                    if current_sl > 0:
+                        if is_long:
+                            candidate = max(candidate, current_sl)
+                        else:
+                            candidate = min(candidate, current_sl)
+                    return candidate
 
-                # --- STAGE 1: Break Even (0.382) ---
-                if pct >= self.L1_FIB and r_level < 1:
-                    pip = InstrumentHelper.get_pip_size(symbol)
-                    # 3-pip buffer to cover spread/swaps
-                    be_price = (init_entry + pip*3) if is_long else (init_entry - pip*3)
-                    actions.append({"action": "MODIFY", "ticket": ticket, "symbol": symbol,
-                                    "sl": get_sl(be_price), "tp": curr_tp, "comment": "Ratchet L1"})
-                    new_level = 1
+                intent = self.state_manager.get_management_intent(ticket)
+                profile = self._management_profile(ticket, r_level, bool(intent))
+                if intent:
+                    pending = self._intent_commands(ticket, symbol, pos, intent, is_long)
+                    if pending:
+                        commands.extend(pending)
+                        self.command_cooldowns[ticket] = now
+                        continue
+                    self.state_manager.confirm_management_intent(ticket, intent['level'])
+                    r_level = max(r_level, intent['level'])
+                    commands.append({'action': 'MODIFY_CONFIRMED', 'ticket': ticket,
+                                     'symbol': symbol, 'sl': float(pos.get('sl', 0)),
+                                     'tp': float(pos.get('tp', 0)),
+                                     'comment': intent.get('label', f"Ratchet L{intent['level']}" )})
 
-                # --- STAGE 2: Bank 30% (0.618) ---
+                if profile and profile['mode'] != 'legacy':
+                    if profile['mode'] != 'm15_structure_v1':
+                        raise ValueError('unknown durable management profile')
+                    # Both quotes are required for spread-aware structure stops.
+                    if not ask_prices or symbol not in ask_prices:
+                        continue
+                    spread = float(ask_prices[symbol]) - float(current_prices_dict[symbol])
+                    spec = self.risk_manager.symbol_specs.get(symbol, {})
+                    plan = management_plan(
+                        context=self._structure_context.get(symbol),
+                        policy=StructurePolicy(**profile['settings']), entry=init_entry,
+                        original_tp=init_tp, current_sl=float(pos.get('sl', 0)),
+                        current_tp=curr_tp, price=curr_price, is_long=is_long,
+                        spread=spread, tick_size=float(spec.get('ts', 0)),
+                        since=profile['since'], level=r_level)
+                    if plan:
+                        mode, amount = self._partial_volume(symbol, current_vol, plan['fraction'])
+                        # Keep a legal runner: never turn a partial into a full close.
+                        target = round(current_vol-amount, 8) if mode == 'PARTIAL' else current_vol
+                        plan.update(sl=get_sl(plan['sl']), target_volume=target,
+                                    partial=mode == 'PARTIAL')
+                        self.state_manager.save_management_intent(ticket, plan)
+                        commands.extend(self._intent_commands(ticket, symbol, pos, plan, is_long))
+                        self.command_cooldowns[ticket] = now
+                    continue
+
+                # A legacy request has no durable volume target. Do not guess
+                # a second close; continue to preserve its protective stop.
+                confirmed, requested = self.state_manager.get_partial_state(ticket)
+                partial_pending = requested > confirmed
+                if partial_pending and ticket not in self._legacy_partial_warned:
+                    self.logger.log_event("WARN", "TRADE_MGR",
+                        f"#{ticket}: legacy partial request has no volume target; broker reconciliation required before further partials")
+                    self._legacy_partial_warned.add(ticket)
+                # Older versions advanced levels at send time. Repair their
+                # protection too, without inventing another partial close.
+                if r_level in (1, 2):
+                    direction = 1 if is_long else -1
+                    distance = (InstrumentHelper.get_pip_size(symbol) * 3 if r_level == 1
+                                else range_size * self.L1_FIB)
+                    protection = {'level': r_level, 'sl': get_sl(init_entry + direction * distance),
+                                  'tp': curr_tp, 'partial': False, 'target_volume': current_vol}
+                    repair = self._intent_commands(ticket, symbol, pos, protection, is_long)
+                else:
+                    repair = []
+                level = None
                 if pct >= self.L2_FIB and r_level < 2:
-                    l1_price = init_entry + (range_size * self.L1_FIB) if is_long else init_entry - (range_size * self.L1_FIB)
-                    actions.append({"action": "MODIFY", "ticket": ticket, "symbol": symbol,
-                                    "sl": get_sl(l1_price), "tp": curr_tp, "comment": "Ratchet L2"})
-                    actions.extend(self._partial_actions(ticket, symbol, current_vol, 0.3))
-                    new_level = 2
-
-                # --- STAGE 3: Bank 50% (0.886) ---
-                if pct >= self.L3_FIB and r_level < 3:
-                    l2_price = init_entry + (range_size * self.L2_FIB) if is_long else init_entry - (range_size * self.L2_FIB)
-                    # Runner mode: release the TP so the tail can run; trailing takes over
-                    l3_tp = 0.0 if self.runner_enabled else curr_tp
-                    actions.append({"action": "MODIFY", "ticket": ticket, "symbol": symbol,
-                                    "sl": get_sl(l2_price), "tp": l3_tp, "comment": "Ratchet L3"})
-                    actions.extend(self._partial_actions(ticket, symbol, current_vol, 0.5))
-                    new_level = 3
-
-                if new_level > r_level:
-                    self.state_manager.update_ratchet_level(ticket, new_level)
-                    self.state_manager.update_trade_phase(ticket, new_level)
+                    level = 2
+                elif pct >= self.L1_FIB and r_level < 1:
+                    level = 1
+                elif pct >= self.L3_FIB and r_level < 3 and not partial_pending:
+                    level = 3
+                if level is not None:
+                    direction = 1 if is_long else -1
+                    distance = (InstrumentHelper.get_pip_size(symbol) * 3 if level == 1
+                                else range_size * (self.L1_FIB if level == 2 else self.L2_FIB))
+                    target = current_vol
+                    mode = 'SKIP'
+                    if level >= 2:
+                        mode, amount = self._partial_volume(symbol, current_vol, 0.3 if level == 2 else 0.5)
+                        if mode == 'PARTIAL':
+                            target = round(current_vol - amount, 8)
+                        elif mode == 'FULL':
+                            target = 0.0
+                    intent = {'level': level, 'sl': get_sl(init_entry + direction * distance),
+                              'tp': 0.0 if level == 3 and self.runner_enabled else curr_tp,
+                              'target_volume': target, 'partial': mode != 'SKIP'}
+                    self.state_manager.save_management_intent(ticket, intent)
+                    actions = self._intent_commands(ticket, symbol, pos, intent, is_long)
                     commands.extend(actions)
+                    self.command_cooldowns[ticket] = now
+                    continue
+
+                if repair:
+                    commands.extend(repair)
                     self.command_cooldowns[ticket] = now
                     continue
 
@@ -250,9 +364,9 @@ class TradeManager:
                     candidate = get_sl(candidate)
                     curr_sl = float(pos.get('sl', 0))
                     tighter = (candidate > curr_sl) if is_long else (curr_sl == 0 or candidate < curr_sl)
-                    if tighter:
+                    if tighter or curr_tp != 0.0:
                         commands.append({"action": "MODIFY", "ticket": ticket, "symbol": symbol,
-                                         "sl": candidate, "tp": curr_tp, "comment": "Runner Trail"})
+                                         "sl": candidate, "tp": 0.0, "comment": "Runner Trail"})
                         self.command_cooldowns[ticket] = now
 
             except Exception as e:
@@ -261,15 +375,29 @@ class TradeManager:
 
         return commands
 
-    def _partial_actions(self, ticket, symbol, vol, pct):
-        """Translate a partial-close intent into bridge commands (or none)."""
-        mode, close_vol = self._partial_volume(symbol, vol, pct)
-        if mode == "FULL":
-            return [{"action": "CLOSE_POS", "ticket": ticket, "comment": "Dust Guard Exit"}]
-        if mode == "PARTIAL":
-            return [{"action": "CLOSE_PARTIAL", "ticket": ticket, "volume": close_vol,
-                     "comment": f"Bank {int(pct * 100)}%"}]
-        return []
+    def _intent_commands(self, ticket, symbol, pos, intent, is_long):
+        """Reconcile desired protection and remaining volume with broker state.
+
+        Repeated close requests carry a remaining-volume target, so a delayed
+        first execution cannot make the retry close the same quantity twice.
+        """
+        commands = []
+        current_sl = float(pos.get('sl', 0) or 0)
+        sl = intent['sl']
+        protected = current_sl > 0 and (current_sl >= sl if is_long else current_sl <= sl)
+        if not protected or not math.isclose(float(pos.get('tp', 0)), intent['tp'], abs_tol=1e-9):
+            if protected:
+                sl = current_sl
+            commands.append({'action': 'MODIFY', 'ticket': ticket, 'symbol': symbol,
+                             'sl': sl, 'tp': intent['tp'], 'await_confirmation': True,
+                             'comment': intent.get('label', f"Ratchet L{intent['level']}" )})
+        remaining = float(pos.get('vol', 0))
+        if intent['partial'] and remaining > intent['target_volume'] + 1e-9:
+            commands.append({'action': 'CLOSE_PARTIAL', 'ticket': ticket,
+                             'volume': round(remaining - intent['target_volume'], 8),
+                             'target_volume': intent['target_volume'],
+                             'comment': intent.get('label', f"Ratchet L{intent['level']}" ) + ' partial requested'})
+        return commands
 
     def _partial_volume(self, symbol, vol, pct):
         """
@@ -289,13 +417,14 @@ class TradeManager:
         # Snap intended close to the volume step (floor + float tolerance)
         raw_close = vol * pct
         close_amt = math.floor((raw_close + 1e-9) / step_lot) * step_lot
-        close_amt = round(close_amt, 2)
+        precision = max(0, -Decimal(str(step_lot)).as_tuple().exponent)
+        close_amt = round(close_amt, precision)
 
         if close_amt < min_lot:
             return "SKIP", None
 
         # Dust check: the broker rejects a partial whose REMAINDER is below min lot
-        remainder = round(vol - close_amt, 5)
+        remainder = round(vol - close_amt, max(precision, 8))
         if remainder < min_lot and not math.isclose(remainder, 0.0, abs_tol=1e-9):
             return "FULL", None
 

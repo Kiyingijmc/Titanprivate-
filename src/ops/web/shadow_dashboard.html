@@ -1,0 +1,30 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SilverBullet · Prospective shadow</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e2e8f0;background:#0b1220;font-size:15px}body{max-width:1220px;margin:32px auto;padding:0 20px}h1{font-size:28px;margin-bottom:8px}h2{font-size:19px;margin-top:28px}p{color:#aebdd0;line-height:1.5}.banner{border:1px solid #334155;background:#162237;padding:14px;border-radius:10px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:16px}.card{padding:20px;border:1px solid #334155;border-radius:12px;background:#111c2e}.card h2{margin:0 0 16px}.metric{font-size:27px;font-weight:600}.muted{color:#94a3b8;font-size:13px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{padding:10px;text-align:left;border-bottom:1px solid #26364b;white-space:nowrap}th{font-size:12px;color:#94a3b8}.scroll{overflow:auto}select{background:#17253a;color:#e2e8f0;border:1px solid #475569;padding:8px;border-radius:6px}a{color:#7dd3fc}progress{width:100%;height:9px;accent-color:#38bdf8}.error{color:#fda4af}.toolbar{display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:20px 0}.export{display:flex;gap:16px;flex-wrap:wrap}code{font-size:12px}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#aebdd0}
+</style>
+<h1>SilverBullet prospective shadow</h1>
+<p>Two frozen candidates · hypothetical orders only · no broker trading permissions</p>
+<div class="banner">Quote-sampled observations can miss prices between polls. Incomplete trades are excluded from returns. Reaching the evidence gate requests review; it never enables live trading.</div>
+<div class="toolbar"><label>Scenario <select id="scenario"><option value="observed">Observed spread</option><option value="stress_1_5">1.5× spread and commission</option></select></label><span id="status">Connecting…</span></div>
+<div id="cards" class="cards"></div>
+<h2>Market-data coverage</h2><div id="coverage" class="scroll"></div>
+<h2>Setup decisions</h2><p class="muted">Reasons are recorded once per candidate, symbol and completed M15 bar. Outside-window and no-pattern observations are not rejected trade orders.</p><div id="reasons" class="scroll"></div>
+<h2>Latest hypothetical orders</h2><div id="trades" class="scroll"></div>
+<h2>Recorder events</h2><div id="events" class="scroll"></div>
+<h2>Export the audit trail</h2><div class="export"><a href="/api/export/trades.csv">Trades</a><a href="/api/export/decisions.csv">Decisions</a><a href="/api/export/quotes.csv">Quotes</a><a href="/api/export/bars.csv">Completed bars</a><a href="/api/export/events.csv">Events</a></div>
+<details style="margin-top:24px"><summary>Frozen cohort manifest</summary><pre id="manifest"></pre></details>
+<script>
+let data; const names={wider_midpoint:'Wider-window midpoint',session_range:'Completed-session range'};
+const num=(v,d=3)=>v==null?'—':Number(v).toFixed(d); const stamp=v=>v?new Date(v*1000).toISOString():'—';
+function el(tag,text,cls){let e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
+function table(id,headers,rows){const box=document.getElementById(id);box.replaceChildren();let t=el('table'),head=el('tr');headers.forEach(h=>head.append(el('th',h)));t.append(head);rows.forEach(row=>{let r=el('tr');row.forEach(v=>r.append(el('td',v)));t.append(r)});box.append(t);if(!rows.length)box.append(el('p','No observations yet.','muted'))}
+function render(){if(!data)return;const scenario=document.getElementById('scenario').value;const st=document.getElementById('status');st.textContent=`${data.status} · feed ${data.feed_status} · heartbeat ${num(data.heartbeat_age,0)}s ago · cohort started ${stamp(data.started)}`;st.className=data.heartbeat_age>15||data.status!=='RUNNING'||data.feed_status!=='HEALTHY'?'error':'muted';
+const cards=document.getElementById('cards');cards.replaceChildren();data.candidates.forEach(c=>{let s=c.scenarios.find(s=>s.scenario===scenario),card=el('section',undefined,'card');card.append(el('h2',names[c.name]),el('div',`${s.counts.CLOSED} / 100 complete trades`,'metric'));let p=el('progress');p.max=100;p.value=s.counts.CLOSED;card.append(p,el('p',`Mean net R: ${num(s.mean_net_r)} · ${c.gate.replaceAll('_',' ')}`),el('p',`${s.eligible_symbols} / 3 symbols with ≥20 complete trades; ${s.positive_eligible_symbols} positive.`,'muted'),el('p',`Pending ${s.counts.PENDING} · Open ${s.counts.OPEN} · Expired ${s.counts.EXPIRED} · Cost rejected ${s.counts.REJECTED} · Incomplete ${s.counts.CENSORED}`,'muted'));cards.append(card)});
+table('coverage',['Symbol','Bid','Ask','Spread','Valid quote age','Latest bar age','Latest quote status'],data.symbols.map(s=>[s.symbol,num(s.bid,5),num(s.ask,5),num(s.spread,5),num(s.last_valid_age,1)+'s',num(s.latest_bar_age,0)+'s',s.last_reason]));
+table('reasons',['Candidate','Reason','Count'],data.reasons.map(r=>[names[r.candidate],r.reason,r.count]));
+table('trades',['Admitted UTC','Candidate','Symbol','Status','Reason','Entry','Net R'],data.recent_trades.filter(r=>r.scenario===scenario).map(r=>[stamp(r.admitted),names[r.candidate],r.symbol,r.status,r.reason,num(r.entry,5),num(r.net_r)]));
+table('events',['UTC','Event','Details'],data.recent_events.map(e=>[stamp(e.observed),e.kind,e.details]));document.getElementById('manifest').textContent=JSON.stringify(data.manifest,null,2)}
+async function refresh(){try{let r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);data=await r.json();render()}catch(e){const st=document.getElementById('status');st.textContent='Dashboard disconnected: '+e.message;st.className='error'}}
+document.getElementById('scenario').addEventListener('change',render);refresh();setInterval(refresh,5000);
+</script></html>

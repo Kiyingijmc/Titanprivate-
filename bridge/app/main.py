@@ -203,7 +203,7 @@ async def list_symbols(_: AuthDep) -> dict[str, list[str]]:
     return {"symbols": await call_mt5(_mt5.alist_symbols())}
 
 
-@app.get("/symbol/{symbol}", response_model=SymbolInfo)
+@app.get("/symbol/{symbol:path}", response_model=SymbolInfo)
 async def symbol_info(symbol: str, _: AuthDep) -> SymbolInfo:
     info = await call_mt5(_mt5.aget_symbol_info(symbol))
     if info is None:

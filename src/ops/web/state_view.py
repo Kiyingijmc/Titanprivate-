@@ -1,6 +1,7 @@
 # src/ops/web/state_view.py
 """Read-only assembly of the /api/state snapshot and /api/history rows."""
 from datetime import datetime
+from src.ops.web.management_view import management_view
 
 _HEARTBEAT_STALE_S = 60.0
 _REGISTRY_FIELDS = ("id", "version", "status", "state", "tf", "priority")
@@ -246,6 +247,7 @@ def _map_position(controller, p: dict) -> dict:
     except Exception:
         row = None
     return {
+        "management": management_view(controller, p, row),
         "ticket": ticket,
         "symbol": p.get("s", "?"),
         "side": "BUY" if int(p.get("type", 0)) == 0 else "SELL",

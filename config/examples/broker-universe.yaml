@@ -1,0 +1,21 @@
+# Example override fragment. This file is NOT loaded automatically.
+# Deploy the updated Windows HTTP bridge and inspect scripts/broker_catalog.py
+# output before applying. Strategy enablement remains controlled separately.
+broker_universe:
+  max_symbols: 128
+
+strategies:
+  silver_bullet:
+    universe:
+      source: broker
+      include: ["*"]
+      exclude: []
+  gyroscope:
+    universe:
+      source: broker
+      include: ["*"]
+      exclude: []
+
+# Almanac retains its exact configured pairs (calendar-specific).
+# Gambit needs exact-name symbol_sessions, min_stop_price and max_spread_price
+# for every additional instrument. Research strategies are not auto-enabled.

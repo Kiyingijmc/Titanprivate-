@@ -4,37 +4,38 @@
 # AUDIT: 
 #   1. Integrated centralized 'validate_data' for dataframe safety.
 #   2. Added error handling for Time Window configuration parsing.
-#   3. Retained strict 10AM-11AM New York Session logic.
-# STATUS: PRODUCTION READY
+#   3. Configurable New York windows; current H1 setup allows all hours.
+#   4. Reject nonfinite inputs and invalid order geometry.
 # ==============================================================================
 
+import math
 import pandas as pd
 from src.strategies.base_strategy import BaseStrategy
 
 class SilverBullet(BaseStrategy):
     """
-    Silver Bullet V3.1 (Production).
-    
-    Concept:
-    Trading purely on TIME and MOMENTUM.
-    During the specific 10 AM (NY) window, macro volatility often injects
-    strong displacement. We trade the first strong FVG in this window.
+    Displacement/FVG limit entries on closed candles.
+
+    Windows use the supplied New York clock; current H1 configuration allows
+    all hours. No first-gap-per-session restriction is implemented here.
     """
     def __init__(self, config, logger):
         super().__init__("SilverBullet", config, logger)
         
-        # Timing windows (broker-time hours, end exclusive). Prefer multi-window
+        # Timing windows (New York hours, end exclusive). Prefer multi-window
         # 'windows'; fall back to the legacy single 'session_ny' window.
         self.windows = self._parse_windows(config)
-        self.rr = config.get('risk_reward', 2.0)
+        self.rr = float(config.get('risk_reward', 2.0))
 
         # Stop distance in ATR multiples from the ENTRY. The legacy 0.2 buffer
         # made every trade spread-fatal (~1 pip risk on M5); 1.0 ATR on H1 is
-        # the validated config — see docs/research/2026-07-11-silverbullet-h1-
-        # stop-study.md. Do not lower without re-running the cost study.
+        # the historical study config. Execution-sensitive results supersede
+        # its profitability claim; see the 2026-09-16 execution diagnostic.
         self.stop_atr = float(config.get('stop_atr', 1.0))
+        if not all(math.isfinite(v) and v > 0 for v in (self.rr, self.stop_atr)):
+            raise ValueError("SilverBullet risk_reward and stop_atr must be finite and positive")
 
-        # Validated on H1 (v14.4.2 default); M5 remains available via config
+        # H1 is the v14.4.2 default; M5 remains available via config
         # for research but is cost-dead live.
         self.timeframe = str(config.get('timeframe', 'H1'))
 
@@ -65,7 +66,7 @@ class SilverBullet(BaseStrategy):
 
     async def on_new_candle(self, df, context=None):
         """
-        Executed on every M5 candle close.
+        Executed on each closed candle of the configured timeframe.
         """
         # 1. Validation (Audit Update)
         if not self.validate_data(df, min_length=50):
@@ -79,7 +80,7 @@ class SilverBullet(BaseStrategy):
         try: 
             # Expecting "HH:MM:SS EST"
             h_part = int(ny_time_str.split(':')[0])
-        except (ValueError, IndexError): 
+        except (ValueError, IndexError, AttributeError, TypeError):
             return None
             
         # Strict Window Check (e.g. 10 <= Hour < 11)
@@ -88,15 +89,32 @@ class SilverBullet(BaseStrategy):
 
         # Get latest closed candle
         current = df.iloc[-1]
+
+        # Reject malformed inputs here, before NaN comparisons can bypass
+        # momentum checks or produce a non-executable order. Only the selected
+        # FVG edge is required: the unused edge may legitimately be absent.
+        try:
+            o, h, l, c, atr = (float(current[k]) for k in
+                               ('open', 'high', 'low', 'close', 'ATR'))
+            bull, bear = current['is_fvg_bull'], current['is_fvg_bear']
+            if pd.isna(bull) or pd.isna(bear):
+                return None
+            if bull not in (True, False) or bear not in (True, False):
+                return None
+            if bool(bull) == bool(bear):
+                return None
+            entry = float(current['fvg_top' if bull else 'fvg_bottom'])
+        except (KeyError, ValueError, TypeError, OverflowError):
+            return None
+        if not all(math.isfinite(v) and v > 0 for v in (o, h, l, c, atr, entry)):
+            return None
+        if l > min(o, c) or h < max(o, c):
+            return None
         
         # 3. MOMENTUM / DISPLACEMENT VERIFICATION
         # We need a volatile move, not just a quiet FVG.
-        atr = current.get('ATR', 0.0)
         
-        # Prevent math errors if ATR is missing/zero (Audit Fix)
-        if atr <= 0: return None
-            
-        body_size = abs(current['close'] - current['open'])
+        body_size = abs(c - o)
         
         # Rule: Body must be comparable to the ATR (at least 80% size)
         # This filters out low-volatility drifts
@@ -104,25 +122,27 @@ class SilverBullet(BaseStrategy):
             return None 
 
         # 4. EXECUTION
-        # Stop = stop_atr * ATR from the entry (v14.4.2 validated sizing; the
+        # Stop = stop_atr * ATR from the entry (v14.4.2 sizing; the
         # entry sits at the FVG edge, so the legacy candle-extreme formula and
         # entry-anchored formula coincide at stop_atr=0.2).
         # SELL Logic
-        if current['is_fvg_bear']:
-            entry = current['fvg_bottom']
+        if bear:
             sl = entry + (atr * self.stop_atr)
             dist = abs(entry - sl)
             tp = entry - (dist * self.rr)
+            if not (all(math.isfinite(v) for v in (sl, tp)) and 0 < tp < entry < sl):
+                return None
 
             self.log(f"🔫 SILVER BULLET (Sell) @ {entry}")
             return {'signal': 'SELL', 'type': 'LIMIT', 'price': entry, 'sl': sl, 'tp': tp}
 
         # BUY Logic
-        if current['is_fvg_bull']:
-            entry = current['fvg_top']
+        if bull:
             sl = entry - (atr * self.stop_atr)
             dist = abs(entry - sl)
             tp = entry + (dist * self.rr)
+            if not (all(math.isfinite(v) for v in (sl, tp)) and 0 < sl < entry < tp):
+                return None
 
             self.log(f"🔫 SILVER BULLET (Buy) @ {entry}")
             return {'signal': 'BUY', 'type': 'LIMIT', 'price': entry, 'sl': sl, 'tp': tp}

@@ -15,6 +15,20 @@ class FakeState:
     def __init__(self):
         self.ratchets = {}   # ticket -> (level, entry, tp)
         self.levels = {}
+        self.partial_states = {}
+        self.intents = {}
+    def get_management_intent(self, t): return self.intents.get(t)
+    def save_management_intent(self, t, intent):
+        self.intents[t] = intent
+        if intent['partial']:
+            self.mark_partial_requested(t, intent['level'] - 1)
+    def mark_partial_requested(self, t, stage):
+        self.partial_states[t] = (self.partial_states.get(t, (0, 0))[0], stage)
+    def confirm_management_intent(self, t, level):
+        self.intents.pop(t, None)
+        self.update_ratchet_level(t, level)
+        _, requested = self.partial_states.get(t, (0, 0))
+        self.partial_states[t] = (requested, requested)
     def get_ratchet_state(self, t):
         return self.ratchets.get(t, (0, 0.0, 0.0))
     def update_ratchet_level(self, t, lvl):
@@ -22,6 +36,7 @@ class FakeState:
         lvl_, e, tp = self.ratchets.get(t, (0, 0.0, 0.0))
         self.ratchets[t] = (lvl, e, tp)
     def update_trade_phase(self, t, p): pass
+    def get_partial_state(self, t): return self.partial_states.get(t, (0, 0))
 
 
 class FakeRisk:
@@ -73,6 +88,40 @@ class RatchetStages(unittest.TestCase):
         self.tm.state_manager.ratchets[101] = (1, 1.1000, 1.1100)
         cmds = self.tm.sync_positions([pos(vol=0.02)], {"EURUSD": 1.1065})
         self.assertEqual([c["action"] for c in cmds], ["MODIFY"])
+
+    def test_buy_l2_never_weakens_a_tighter_existing_stop(self):
+        """Recovered local stage may lag the broker; L2 must not move a BUY SL down."""
+        self.tm.state_manager.ratchets[101] = (1, 1.1000, 1.1100)
+        p = pos(sl=1.10450)
+        p["type"] = 0
+        cmds = self.tm.sync_positions([p], {"EURUSD": 1.1065})
+        self.assertFalse(any(c['action'] == 'MODIFY' for c in cmds))
+        self.assertAlmostEqual(self.tm.state_manager.intents[101]['sl'], 1.10450)
+
+    def test_sell_l2_never_weakens_a_tighter_existing_stop(self):
+        """The SELL comparison is inverted: a larger stop is weaker protection."""
+        self.tm.state_manager.ratchets[102] = (1, 1.1100, 1.1000)
+        p = pos(ticket=102, sl=1.10500, tp=1.1000)
+        p["type"] = 1
+        cmds = self.tm.sync_positions([p], {"EURUSD": 1.1035})
+        self.assertFalse(any(c['action'] == 'MODIFY' for c in cmds))
+        self.assertAlmostEqual(self.tm.state_manager.intents[102]['sl'], 1.10500)
+
+    def test_unconfirmed_l2_partial_blocks_l3_progression(self):
+        """Never send a second partial or move to L3 on send-time optimism."""
+        self.tm.state_manager.ratchets[101] = (2, 1.1000, 1.1100)
+        self.tm.state_manager.partial_states[101] = (0, 1)  # confirmed, requested
+        cmds = self.tm.sync_positions([pos(vol=0.10, sl=1.10382)], {"EURUSD": 1.1090})
+        self.assertEqual(cmds, [])
+        self.assertNotIn(101, self.tm.state_manager.levels)
+
+    def test_legacy_optimistic_stage_repairs_missing_stop_without_reclosing(self):
+        self.tm.state_manager.ratchets[101] = (2, 1.1000, 1.1100)
+        self.tm.state_manager.partial_states[101] = (0, 1)
+        commands = self.tm.sync_positions([pos(sl=1.095)], {"EURUSD": 1.105})
+        self.assertEqual([c['action'] for c in commands], ['MODIFY'])
+        self.assertAlmostEqual(commands[0]['sl'], 1.10382)
+        self.assertEqual(self.tm.state_manager.get_partial_state(101), (0, 1))
 
     def test_cooldown_blocks_immediate_second_command(self):
         self.tm.sync_positions([pos()], {"EURUSD": 1.1040})

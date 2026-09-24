@@ -132,11 +132,14 @@ class TtlPerTimeframe(unittest.TestCase):
             def __init__(self): self.commands = []
             async def send_command(self, a, p=None): self.commands.append((a, p))
         class State:
-            def __init__(self): self.deleted = []
+            def __init__(self):
+                self.deleted = []
+                self.cancel_requested = []
             def get_pending_orders(self):
                 return [{"ticket_id": 5, "strategy": "SilverBullet",
                          "time_placed": time.time() - age_s}]
             def delete_order(self, t): self.deleted.append(t)
+            def mark_cancel_requested(self, t): self.cancel_requested.append(t)
         class Tele:
             async def send_message(self, *a, **kw): pass
         sc.bridge = Bridge(); sc.state_manager = State(); sc.telemetry = Tele()
@@ -151,7 +154,8 @@ class TtlPerTimeframe(unittest.TestCase):
         sc = self.make_controller(age_s=13 * 3600)
         run(sc._cleanup_ghost_orders())
         self.assertEqual(sc.bridge.commands[0][0], "CANCEL")
-        self.assertEqual(sc.state_manager.deleted, [5])
+        self.assertEqual(sc.state_manager.cancel_requested, [5])
+        self.assertEqual(sc.state_manager.deleted, [])  # retain until broker confirmation
 
 
 if __name__ == "__main__":

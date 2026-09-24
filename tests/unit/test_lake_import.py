@@ -165,7 +165,7 @@ class TestPruneCli(unittest.TestCase):
         self.assertTrue(self.partition_path.exists())
 
     def test_execute_deletes(self):
-        rc = prune_main(["--lake-root", str(self.lake_root), "--execute"])
+        rc = prune_main(["--lake-root", str(self.lake_root), "--active-years", "4", "--execute"])
         self.assertEqual(rc, 0)
         self.assertFalse(self.partition_path.exists())
 

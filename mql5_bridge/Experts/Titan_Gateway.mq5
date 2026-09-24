@@ -21,6 +21,7 @@ input long     InpMagic       = 88000;
 TitanZmq       socket_pull, socket_push, socket_rep;
 long           last_heartbeat = 0;
 string         watchlist[];      
+double         last_ask_prices[];
 double         last_bid_prices[]; 
 
 //+------------------------------------------------------------------+
@@ -76,12 +77,13 @@ void OnTimer() {
    // --- 3. TICK STREAMER ---
    int count = ArraySize(watchlist);
    if(ArraySize(last_bid_prices) != count) ArrayResize(last_bid_prices, count);
+   if(ArraySize(last_ask_prices) != count) ArrayResize(last_ask_prices, count);
 
    for(int i=0; i<count; i++) {
       MqlTick t;
       if(SymbolInfoTick(watchlist[i], t)) {
          // Push only if price changes
-         if(t.bid != last_bid_prices[i]) {
+         if(t.bid != last_bid_prices[i] || t.ask != last_ask_prices[i]) {
             // v14.4: full symbol precision (%G truncates to 6 sig figs and
             // drops cents on BTC/index prices)
             int dig = (int)SymbolInfoInteger(watchlist[i], SYMBOL_DIGITS);
@@ -90,6 +92,7 @@ void OnTimer() {
                                        DoubleToString(t.ask, dig), t.time_msc);
             socket_push.Send(msg);
             last_bid_prices[i] = t.bid;
+            last_ask_prices[i] = t.ask;
          }
       }
    }
@@ -191,7 +194,7 @@ void SendHeartbeat() {
 
          // 'type' 0=BUY, 1=SELL in MT5
          pos_json += StringFormat(
-            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"sl\":%s,\"tp\":%s,\"pf\":%.2f,\"vol\":%.2f,\"type\":%d,\"comment\":\"%s\"}",
+            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"sl\":%s,\"tp\":%s,\"pf\":%.2f,\"vol\":%.8f,\"type\":%d,\"comment\":\"%s\"}",
             (long)t_id,
             p_sym,
             DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), p_dig),
@@ -222,10 +225,11 @@ void SendHeartbeat() {
 
          // Only send relevant info for tracking/cancelling
          ord_json += StringFormat(
-            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"type\":%d,\"vol\":%.2f}",
+            "{\"t\":%I64d,\"s\":\"%s\",\"p\":%s,\"sl\":%s,\"type\":%d,\"vol\":%.8f}",
             (long)ticket,
             o_sym,
             DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN), o_dig),
+            DoubleToString(OrderGetDouble(ORDER_SL), o_dig),
             (int)OrderGetInteger(ORDER_TYPE),
             OrderGetDouble(ORDER_VOLUME_INITIAL)
          );
@@ -236,7 +240,7 @@ void SendHeartbeat() {
 
    // Send Combined State
    // pos: Positions (Market), orders: Pending (Limits)
-   string json = StringFormat("{\"type\":\"HEARTBEAT\",\"bal\":%.2f,\"eq\":%.2f,\"pos\":%s,\"orders\":%s}",
+   string json = StringFormat("{\"type\":\"HEARTBEAT\",\"mgmt_protocol\":2,\"bal\":%.2f,\"eq\":%.2f,\"pos\":%s,\"orders\":%s}",
                               AccountInfoDouble(ACCOUNT_BALANCE), 
                               AccountInfoDouble(ACCOUNT_EQUITY), 
                               pos_json,
@@ -303,6 +307,13 @@ void HandleCommand(string json) {
       req.symbol   = GetJSONString(json, "symbol");
       req.sl       = GetJSONDouble(json, "sl");
       req.tp       = GetJSONDouble(json, "tp");
+      if(!PositionSelectByTicket(req.position)) return;
+      double live_sl = PositionGetDouble(POSITION_SL);
+      if(live_sl > 0) {
+         if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+            req.sl = MathMax(req.sl, live_sl);
+         else if(req.sl <= 0 || req.sl > live_sl) req.sl = live_sl;
+      }
       if(!OrderSend(req, res))
          Print("TITAN | Modify Failed: ", GetLastError());
       else if(res.retcode != TRADE_RETCODE_DONE)
@@ -323,7 +334,7 @@ void HandleCommand(string json) {
    }
    
    // CLOSE MARKET (full, or partial when a smaller "volume" is supplied)
-   if(StringFind(json, "CLOSE_POS") >= 0) {
+   if(StringFind(json, "CLOSE_POS") >= 0 || StringFind(json, "CLOSE_TO_VOLUME") >= 0) {
       long t_id = GetJSONLong(json, "ticket");
       if(PositionSelectByTicket((ulong)t_id)) {
          MqlTradeRequest req; ZeroMemory(req); MqlTradeResult res; ZeroMemory(res);
@@ -335,11 +346,47 @@ void HandleCommand(string json) {
          // v14.4: Partial close support. Python's Dust Guard guarantees the
          // remainder stays >= the broker minimum lot.
          double vol_req = GetJSONDouble(json, "volume");
-         if(vol_req > 0 && vol_req < req.volume) req.volume = vol_req;
+         bool targeted = StringFind(json, "CLOSE_TO_VOLUME") >= 0;
+         string close_key = StringFormat("TitanClose.%I64d.%I64d", AccountInfoInteger(ACCOUNT_LOGIN), t_id);
+         double before_volume = req.volume;
+         if(targeted) {
+            if(TargetCloseInFlight(close_key, before_volume)) return;
+            double target = GetJSONDouble(json, "target_volume");
+            if(StringFind(json, "\"target_volume\"") < 0 || !MathIsValidNumber(target)) return;
+            if(target < 0 || target >= req.volume - 1e-9) return;
+            double step = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+            double minimum = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+            if(step <= 0 || minimum <= 0) return;
+            // Compute against live broker volume, not the Python snapshot.
+            // Replaying this request after it filled is a no-op.
+            req.volume = NormalizeDouble(MathFloor((req.volume-target+1e-9)/step)*step, 8);
+            if(req.volume < minimum || (target > 1e-9 && target < minimum)) return;
+         } else if(vol_req > 0 && vol_req < req.volume) req.volume = vol_req;
          req.type = (PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
          req.price = (req.type==ORDER_TYPE_BUY) ? SymbolInfoDouble(sym, SYMBOL_ASK) : SymbolInfoDouble(sym, SYMBOL_BID);
          req.type_filling = GetFillingMode(sym);
-         if(!OrderSend(req, res)) Print("TITAN | Close Failed: ", res.retcode);
+         if(targeted) {
+            // Durable before send: after an uncertain result or EA restart,
+            // never submit a second close while the first may still execute.
+            req.comment = "TitanReduce";
+            if(GlobalVariableSet(close_key+".before", before_volume) == 0 ||
+               GlobalVariableSet(close_key+".request", 0) == 0 ||
+               GlobalVariableSet(close_key, -1.0) == 0) {
+               Print("TITAN | Cannot persist close intent; refusing unsafe send");
+               return;
+            }
+            GlobalVariablesFlush();
+         }
+         bool sent = OrderSend(req, res);
+         if(targeted) {
+            GlobalVariableSet(close_key+".request", (double)res.request_id);
+            if(res.order > 0) GlobalVariableSet(close_key, (double)res.order);
+            else if(TargetCloseRejected(res.retcode))
+               ClearTargetClose(close_key); // definitive rejection: retry is safe
+            GlobalVariablesFlush();
+         }
+         if(!sent || (res.retcode != TRADE_RETCODE_DONE && res.retcode != TRADE_RETCODE_DONE_PARTIAL))
+            Print("TITAN | Close result: ", res.retcode, " ", res.comment);
       }
    }
 }
@@ -347,6 +394,36 @@ void HandleCommand(string json) {
 //+------------------------------------------------------------------+
 //| UTILS                                                            |
 //+------------------------------------------------------------------+
+bool TargetCloseRejected(uint code) {
+   return code != TRADE_RETCODE_DONE && code != TRADE_RETCODE_DONE_PARTIAL &&
+          code != TRADE_RETCODE_PLACED && code != TRADE_RETCODE_TIMEOUT &&
+          code != TRADE_RETCODE_CONNECTION && code != 0;
+}
+
+void ClearTargetClose(string key) {
+   GlobalVariableDel(key);
+   GlobalVariableDel(key+".before");
+   GlobalVariableDel(key+".request");
+}
+
+bool TargetCloseInFlight(string key, double live_volume) {
+   if(!GlobalVariableCheck(key)) return false;
+   long order = (long)GlobalVariableGet(key);
+   // Unknown execution outcome stays blocked until broker volume confirms it.
+   // A timeout is not a broker rejection (OrderSend documentation).
+   if(order <= 0 || OrderSelect((ulong)order)) return true;
+   if(!HistoryOrderSelect((ulong)order)) return true;
+   long state = HistoryOrderGetInteger((ulong)order, ORDER_STATE);
+   if(state != ORDER_STATE_FILLED && state != ORDER_STATE_CANCELED &&
+      state != ORDER_STATE_REJECTED && state != ORDER_STATE_EXPIRED) return true;
+   double filled = HistoryOrderGetDouble((ulong)order, ORDER_VOLUME_INITIAL) -
+                   HistoryOrderGetDouble((ulong)order, ORDER_VOLUME_CURRENT);
+   double before = GlobalVariableGet(key+".before");
+   if(live_volume > before-filled+1e-9) return true; // wait for position update
+   ClearTargetClose(key);
+   return false;
+}
+
 ENUM_ORDER_TYPE_FILLING GetFillingMode(string symbol) {
    // Automatically find supported filling mode to prevent error 10030
    int filling = (int)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
@@ -356,13 +433,31 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode(string symbol) {
 }
 
 void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result) {
+   if(trans.type == TRADE_TRANSACTION_REQUEST && request.comment == "TitanReduce") {
+      string key = StringFormat("TitanClose.%I64d.%I64d", AccountInfoInteger(ACCOUNT_LOGIN), (long)request.position);
+      // A delayed callback from an earlier stage cannot replace the newer
+      // stage's in-flight order identity.
+      if(GlobalVariableCheck(key) && GlobalVariableCheck(key+".request") &&
+         (uint)GlobalVariableGet(key+".request") == result.request_id) {
+         if(result.order > 0) GlobalVariableSet(key, (double)result.order);
+         else if(TargetCloseRejected(result.retcode)) ClearTargetClose(key);
+         GlobalVariablesFlush();
+      }
+   }
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD) {
       if(HistoryDealSelect(trans.deal)) {
          long entry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
          // Detect Exit Deals (Closures)
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_OUT_BY) {
-            string json = StringFormat("{\"type\":\"EXECUTION\",\"status\":\"CLOSED\",\"ticket\":%I64d,\"pn\":%G,\"s\":\"%s\"}",
-                                        (long)trans.position, HistoryDealGetDouble(trans.deal, DEAL_PROFIT), trans.symbol);
+            ulong position_ticket = trans.position;
+            double remaining = 0.0;
+            if(PositionSelectByTicket(position_ticket))
+               remaining = PositionGetDouble(POSITION_VOLUME);
+            string status = (remaining > 0.0) ? "PARTIAL" : "CLOSED";
+            string json = StringFormat("{\"type\":\"EXECUTION\",\"status\":\"%s\",\"ticket\":%I64d,\"deal\":%I64d,\"volume\":%G,\"remaining_volume\":%G,\"pn\":%G,\"s\":\"%s\"}",
+                                        status, (long)position_ticket, (long)trans.deal,
+                                        HistoryDealGetDouble(trans.deal, DEAL_VOLUME), remaining,
+                                        HistoryDealGetDouble(trans.deal, DEAL_PROFIT), trans.symbol);
             socket_push.Send(json);
          }
       }

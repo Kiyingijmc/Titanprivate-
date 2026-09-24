@@ -13,6 +13,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -153,6 +154,10 @@ class MT5HttpBroker:
                           volume_min=float(d["volume_min"]), volume_max=float(d["volume_max"]),
                           volume_step=float(d["volume_step"]), tick_value=float(d["tick_value"]),
                           tick_size=float(d["tick_size"]),
+                          trade_mode=d.get("trade_mode"),
+                          order_mode=d.get("order_mode"),
+                          trade_stops_level=d.get("trade_stops_level"),
+                          trade_freeze_level=d.get("trade_freeze_level"),
                           swap_mode=int(d.get("swap_mode", 0)),
                           swap_long=float(d.get("swap_long", 0.0)),
                           swap_short=float(d.get("swap_short", 0.0)),
@@ -195,7 +200,14 @@ class MT5HttpBroker:
         return self._account(await self._request("GET", "/account", retry=True))
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
-        return self._symbol(await self._request("GET", f"/symbol/{symbol}", retry=True))
+        return self._symbol(await self._request("GET", f"/symbol/{quote(symbol, safe='')}", retry=True))
+
+    async def list_symbols(self) -> list[str]:
+        data = await self._request("GET", "/symbols", retry=True)
+        names = data.get("symbols") if isinstance(data, dict) else None
+        if not isinstance(names, list) or any(not isinstance(s, str) or not s for s in names):
+            raise BrokerError("invalid broker symbol catalog")
+        return sorted(set(names))
 
     async def get_candles(self, symbol: str, timeframe: Timeframe, count: int) -> list[Candle]:
         tf = _TF_TO_BRIDGE[timeframe]

@@ -8,6 +8,7 @@
 # STATUS: PRODUCTION READY
 # ==============================================================================
 
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -56,6 +57,12 @@ class StateManager:
                     initial_tp REAL DEFAULT 0.0,
                     initial_sl REAL DEFAULT 0.0,
                     lots REAL DEFAULT 0.0,
+                    remaining_volume REAL DEFAULT 0.0,
+                    realized_pnl REAL DEFAULT 0.0,
+                    partial_stage INTEGER DEFAULT 0,
+                    partial_stage_requested INTEGER DEFAULT 0,
+                    partial_stage_status TEXT DEFAULT 'NONE',
+                    last_deal_id INTEGER DEFAULT 0,
                     grade TEXT DEFAULT '',
                     comment TEXT DEFAULT '',
                     entry_synced INTEGER DEFAULT 0
@@ -91,11 +98,30 @@ class StateManager:
                     updated_at       REAL
                 )
             ''')
+            # A broker deal is the accounting identity for an exit.  Keeping a
+            # durable uniqueness record is stronger than remembering only the
+            # last delivered deal: deliveries may be duplicated or delayed.
+            self.conn.execute('''
+                CREATE TABLE IF NOT EXISTS processed_exit_deals (
+                    ticket_id INTEGER NOT NULL,
+                    deal_id INTEGER NOT NULL,
+                    pnl REAL NOT NULL,
+                    remaining_volume REAL NOT NULL,
+                    processed_at REAL NOT NULL,
+                    PRIMARY KEY (ticket_id, deal_id)
+                )
+            ''')
 
             # --- MIGRATION GUARD (Retained) ---
             # Checks for columns added in newer versions (v14.1/14.2/14.4)
             cursor = self.conn.execute("PRAGMA table_info(active_orders)")
             existing_cols = [col[1] for col in cursor.fetchall()]
+
+            if 'management_profile' not in existing_cols:
+                self.conn.execute("ALTER TABLE active_orders ADD COLUMN management_profile TEXT")
+
+            if 'management_intent' not in existing_cols:
+                self.conn.execute("ALTER TABLE active_orders ADD COLUMN management_intent TEXT")
 
             if 'comment' not in existing_cols:
                 self.conn.execute("ALTER TABLE active_orders ADD COLUMN comment TEXT DEFAULT ''")
@@ -125,6 +151,14 @@ class StateManager:
             if 'entry_synced' not in existing_cols:
                 self.conn.execute(
                     "ALTER TABLE active_orders ADD COLUMN entry_synced INTEGER DEFAULT 0")
+            for col, decl in [('remaining_volume', 'REAL DEFAULT 0.0'),
+                              ('realized_pnl', 'REAL DEFAULT 0.0'),
+                              ('partial_stage', 'INTEGER DEFAULT 0'),
+                              ('partial_stage_requested', 'INTEGER DEFAULT 0'),
+                              ('partial_stage_status', "TEXT DEFAULT 'NONE'"),
+                              ('last_deal_id', 'INTEGER DEFAULT 0')]:
+                if col not in existing_cols:
+                    self.conn.execute(f"ALTER TABLE active_orders ADD COLUMN {col} {decl}")
 
             cursor = self.conn.execute("PRAGMA table_info(trade_history)")
             hist_cols = [col[1] for col in cursor.fetchall()]
@@ -153,20 +187,82 @@ class StateManager:
         intended price forever; resetting it self-heals on the next heartbeat.
         """
         try:
+            existing = self.get_order(ticket)
+            if existing:
+                # A broker heartbeat/recovery must never replace immutable trade
+                # identity (strategy, placement time, original risk inputs).
+                self.conn.execute("""
+                    UPDATE active_orders SET symbol=?, order_type=?, status=?,
+                           initial_tp=CASE WHEN initial_tp=0 THEN ? ELSE initial_tp END,
+                           initial_sl=CASE WHEN initial_sl=0 THEN ? ELSE initial_sl END,
+                           remaining_volume=CASE WHEN remaining_volume=0 THEN lots ELSE remaining_volume END
+                     WHERE ticket_id=?
+                """, (sym, otype, status, tp, sl, ticket))
+                self.conn.commit()
+                return
             self.conn.execute("""
                 INSERT OR REPLACE INTO active_orders
                 (ticket_id, symbol, strategy, order_type, time_placed, status, phase, ratchet_level,
-                 initial_entry, initial_tp, initial_sl, lots, grade, comment)
+                 initial_entry, initial_tp, initial_sl, lots, remaining_volume,
+                 realized_pnl, partial_stage, partial_stage_requested, partial_stage_status,
+                 last_deal_id, grade, comment)
                 VALUES (?,?,?,?,?,?,
                     COALESCE((SELECT phase FROM active_orders WHERE ticket_id=?),0),
                     COALESCE((SELECT ratchet_level FROM active_orders WHERE ticket_id=?),0),
-                    ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, 0.0, 0, 0, 'NONE', 0, ?, ?
                 )
             """, (ticket, sym, strat, otype, time.time(), status, ticket, ticket,
-                  entry, tp, sl, lots, grade, strat))
+                  entry, tp, sl, lots, lots, grade, strat))
             self.conn.commit()
         except Exception as e:
             print(f"[DB ERROR] Register: {e}")
+
+    def has_structure_profiles(self):
+        rows = self.conn.execute("SELECT management_profile FROM active_orders WHERE management_profile IS NOT NULL").fetchall()
+        return any(json.loads(row[0]).get('mode') == 'm15_structure_v1' for row in rows)
+
+    def get_management_profile(self, ticket):
+        row = self.conn.execute("SELECT management_profile FROM active_orders WHERE ticket_id = ?", (ticket,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def save_management_profile(self, ticket, profile):
+        with self.conn:
+            result = self.conn.execute(
+                "UPDATE active_orders SET management_profile = COALESCE(management_profile, ?) WHERE ticket_id = ?",
+                (json.dumps(profile), ticket))
+            if result.rowcount != 1:
+                raise ValueError(f'Unknown management ticket {ticket}')
+        return self.get_management_profile(ticket)
+
+    def get_management_intent(self, ticket):
+        row = self.conn.execute("SELECT management_intent FROM active_orders WHERE ticket_id=?", (ticket,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def save_management_intent(self, ticket, intent):
+        # Persist before dispatch. Failure must propagate: an unrecorded close
+        # cannot be retried safely after a restart.
+        with self.conn:
+            changed = self.conn.execute(
+                "UPDATE active_orders SET management_intent=? WHERE ticket_id=?",
+                (json.dumps(intent), ticket))
+            if intent.get('partial'):
+                self.conn.execute("""UPDATE active_orders SET
+                    partial_stage_requested=MAX(partial_stage_requested,?),
+                    partial_stage_status='REQUESTED' WHERE ticket_id=?""",
+                    (intent['level'] - 1, ticket))
+            if changed.rowcount != 1:
+                raise ValueError(f"Unknown management ticket {ticket}")
+
+    def confirm_management_intent(self, ticket, level):
+        with self.conn:
+            self.conn.execute("""
+                UPDATE active_orders SET ratchet_level=MAX(ratchet_level,?),
+                    phase=MAX(phase,?), management_intent=NULL,
+                    partial_stage=MAX(partial_stage,partial_stage_requested),
+                    partial_stage_status=CASE WHEN partial_stage_requested>0
+                        THEN 'CONFIRMED' ELSE partial_stage_status END
+                WHERE ticket_id=?
+            """, (level, level, ticket))
 
     def get_order(self, ticket):
         """Returns the full active_orders row as a dict, or None."""
@@ -253,17 +349,58 @@ class StateManager:
         try:
             trade = self.conn.execute("SELECT * FROM active_orders WHERE ticket_id=?", (ticket,)).fetchone()
             if trade:
+                total_pnl = float(trade['realized_pnl'] or 0.0) + float(pnl or 0.0)
                 self.conn.execute("""
                     INSERT OR IGNORE INTO trade_history
                     (ticket_id, symbol, strategy, close_time, pnl, entry, sl, tp, lots, grade, comment)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (ticket, trade['symbol'], trade['strategy'], time.time(), pnl,
+                """, (ticket, trade['symbol'], trade['strategy'], time.time(), total_pnl,
                       trade['initial_entry'], trade['initial_sl'], trade['initial_tp'],
                       trade['lots'], trade['grade'], trade['comment']))
                 self.conn.execute("DELETE FROM active_orders WHERE ticket_id=?", (ticket,))
                 self.conn.commit()
         except Exception as e:
             print(f"[DB ERROR] Archive: {e}")
+
+    def record_exit_deal(self, ticket, deal_id, pnl, remaining_volume,
+                         confirm_requested_stage=False):
+        """Record one broker-confirmed partial deal without archiving the row.
+
+        ``partial_stage`` means confirmed, never merely requested.  A partial
+        event can confirm the currently outstanding local request, but an
+        uncorrelated/manual partial never invents a stage.  Returns ``True``
+        when applied, ``False`` for a duplicate, and ``None`` when no active
+        trade exists.
+        """
+        try:
+            row = self.get_order(ticket)
+            if not row:
+                return None
+            with self.conn:
+                if deal_id:
+                    inserted = self.conn.execute("""
+                        INSERT OR IGNORE INTO processed_exit_deals
+                        (ticket_id, deal_id, pnl, remaining_volume, processed_at)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (int(ticket), int(deal_id), float(pnl), float(remaining_volume), time.time()))
+                    if inserted.rowcount != 1:
+                        return False
+                confirmed = int(row.get('partial_stage') or 0)
+                if confirm_requested_stage:
+                    confirmed = max(confirmed, int(row.get('partial_stage_requested') or 0))
+                self.conn.execute("""
+                    UPDATE active_orders
+                       SET realized_pnl=COALESCE(realized_pnl,0)+?,
+                           remaining_volume=?, partial_stage=?,
+                           partial_stage_status=?, last_deal_id=?
+                     WHERE ticket_id=?
+                """, (float(pnl), float(remaining_volume), confirmed,
+                      'CONFIRMED' if confirm_requested_stage and confirmed else row.get('partial_stage_status') or 'NONE',
+                      int(deal_id or 0), ticket))
+            return True
+        except Exception as e:
+            print(f"[DB ERROR] ExitDeal: {e}")
+            return False
 
     def get_day_stats(self):
         """Aggregates PnL stats for the last 24h."""
@@ -306,7 +443,8 @@ class StateManager:
 
     def get_pending_orders(self):
         try:
-            rows = self.conn.execute("SELECT * FROM active_orders WHERE status='PENDING'").fetchall()
+            rows = self.conn.execute(
+                "SELECT * FROM active_orders WHERE status IN ('PENDING','CANCEL_REQUESTED')").fetchall()
             return [dict(r) for r in rows]
         except: return []
 
@@ -375,6 +513,40 @@ class StateManager:
             self.conn.execute("UPDATE active_orders SET phase=? WHERE ticket_id=?", (p, t))
             self.conn.commit()
         except: pass
+
+    def mark_partial_requested(self, t, stage):
+        """Durably record a sent partial request; it is not broker confirmation."""
+        try:
+            self.conn.execute(
+                "UPDATE active_orders SET partial_stage_requested="
+                "MAX(COALESCE(partial_stage_requested,0),?), partial_stage_status='REQUESTED' "
+                "WHERE ticket_id=?",
+                (int(stage), t))
+            self.conn.commit()
+        except: pass
+
+    def mark_cancel_requested(self, t):
+        """Keep a pending order risk-bearing until a later broker snapshot removes it."""
+        try:
+            self.conn.execute(
+                "UPDATE active_orders SET status='CANCEL_REQUESTED' "
+                "WHERE ticket_id=? AND status='PENDING'", (t,))
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def get_partial_state(self, t):
+        """Return (confirmed_stage, requested_stage) for one active trade."""
+        try:
+            row = self.conn.execute(
+                "SELECT partial_stage, partial_stage_requested FROM active_orders "
+                "WHERE ticket_id=?", (t,)).fetchone()
+            if not row:
+                return (0, 0)
+            return (int(row['partial_stage'] or 0),
+                    int(row['partial_stage_requested'] or 0))
+        except Exception:
+            return (0, 0)
 
     def get_trade_phase(self, t):
         try:

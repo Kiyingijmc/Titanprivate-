@@ -300,29 +300,17 @@ class RiskManager:
         # so this sizes any asset class the broker prices correctly.
         ticks_at_risk = diff / spec['ts']
         money_loss_per_lot = ticks_at_risk * spec['val']
-        lots_gross = raw_risk_money / money_loss_per_lot if money_loss_per_lot > 0 else 0.0
 
         # Volume constraints (guard against a broker reporting 0 to avoid /0).
         min_vol = spec['vm'] if spec['vm'] > 0 else 0.01
         vol_step = spec['vs'] if spec['vs'] > 0 else 0.01
 
-        # 5. RESTORED NET RISK ADJUSTMENT (The 2-Step Solver)
-        # Calculates "True" risk by accounting for Commission drag
-        adjusted_lots = 0.0
-        if lots_gross > 0:
-            estimated_comm = lots_gross * self.comm_per_lot
-            
-            # Only adjust if comm is significant, otherwise simple math
-            if estimated_comm < (raw_risk_money * 0.5):
-                # Reverse engineering ValuePerLot from Gross
-                # Risk = (Lots * ValPerLot) + (Lots * Comm)
-                # Risk = Lots * (ValPerLot + Comm)
-                # Lots = Risk / (ValPerLot + Comm)
-                
-                value_per_lot = raw_risk_money / lots_gross
-                adjusted_lots = raw_risk_money / (value_per_lot + self.comm_per_lot)
-            else:
-                adjusted_lots = lots_gross
+        # Solve the net-risk budget for every stop distance, including cases
+        # where commission dominates the price loss.
+        cost_per_lot = money_loss_per_lot + self.comm_per_lot
+        if not math.isfinite(raw_risk_money) or raw_risk_money <= 0 or cost_per_lot <= 0:
+            return 0.0
+        adjusted_lots = raw_risk_money / cost_per_lot
 
         # 6. SAFETY HARD CAPS & STEP ROUNDING
         if adjusted_lots > self.hard_max_lots: 
@@ -333,7 +321,8 @@ class RiskManager:
         
         # Precision Floor Math to match VolStep
         lots = math.floor(adjusted_lots / vol_step) * vol_step
-        return round(lots, 2)
+        precision = max(0, -Decimal(str(vol_step)).as_tuple().exponent)
+        return round(lots, precision)
 
     def throttle_factor(self) -> float:
         """v15.2 config-gated drawdown throttle.

@@ -34,6 +34,8 @@ class BaseStrategy(ABC):
         # bought EURUSD at turn-of-month). None/empty = unscoped (fixtures,
         # backtester, single-strategy configs).
         self.pairs = self.config.get('pairs') or None
+        if (self.config.get('universe') or {}).get('source') == 'broker':
+            self.pairs = self.config.get('pairs') or []  # no matches must never mean all
         # Required columns for most SMC strategies
         self._smc_columns = ['is_swing_high', 'is_swing_low', 'is_fvg_bull', 'is_fvg_bear', 'ATR']
 

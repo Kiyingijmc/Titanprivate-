@@ -32,6 +32,10 @@ class FakeState:
     def __init__(self):
         self.levels = []
         self.phases = []
+        self.intents = {}
+    def get_management_intent(self, ticket): return self.intents.get(ticket)
+    def save_management_intent(self, ticket, intent): self.intents[ticket] = intent
+    def get_partial_state(self, ticket): return (0, 0)
     def get_ratchet_state(self, ticket):
         return (0, 1.1000, 1.1100)      # level, initial_entry, initial_tp
     def update_ratchet_level(self, ticket, level): self.levels.append((ticket, level))

@@ -14,12 +14,12 @@ export function signedPnl(n: number): { text: string; tone: "profit" | "loss" | 
  * vary (JPY 3, FX 5, indices 1) and the client has no per-symbol digit count.
  */
 export function price(n: number): string {
-  return n.toLocaleString("en-US", { maximumFractionDigits: 5 });
+  return n.toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 
-/** Lot size to a stable 2 decimals so the column doesn't jitter. */
+/** Preserve fine broker volume steps, with at least two decimals. */
 export function lots(n: number): string {
-  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 8 });
 }
 
 /** The single P&L tone→text-color mapping shared by tiles, tables and the status bar. */

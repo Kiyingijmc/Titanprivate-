@@ -1,3 +1,4 @@
+import { PositionDetails } from "@/components/PositionManagement";
 import { X } from "lucide-react";
 import {
   Table,
@@ -18,28 +19,29 @@ export function PositionsTable({
   onClose,
   readOnly,
   blockedSymbols = {},
+  stale = false,
 }: {
   positions: Position[];
   onClose: (ticket: number) => void;
   readOnly: boolean;
+  stale?: boolean;
   /** symbol -> human reason it is currently news-blocked (Task 6). Omitted by
    * an old caller or absent snapshot.news is equivalent to "nothing blocked". */
   blockedSymbols?: Record<string, string>;
 }) {
   return (
-    <Table>
-      <TableHeader>
+    <Table className="whitespace-nowrap">
+      <TableHeader className="[&_th]:text-secondary-foreground">
         <TableRow>
-          <TableHead>Ticket</TableHead>
-          <TableHead>Symbol</TableHead>
+          <TableHead className="sticky left-0 z-10 bg-surface-1">Instrument</TableHead>
           <TableHead>Side</TableHead>
           <TableHead className="text-right">Lots</TableHead>
-          <TableHead className="text-right">Entry</TableHead>
-          <TableHead className="text-right">SL</TableHead>
-          <TableHead className="text-right">TP</TableHead>
+          <TableHead className="hidden lg:table-cell text-right">Entry</TableHead>
+          <TableHead className="hidden lg:table-cell text-right">SL</TableHead>
+          <TableHead className="hidden lg:table-cell text-right">TP</TableHead>
           <TableHead className="text-right">PnL</TableHead>
-          <TableHead>Grade</TableHead>
-          <TableHead>Strategy</TableHead>
+          <TableHead>Management</TableHead>
+          <TableHead className="hidden xl:table-cell">Strategy</TableHead>
           <TableHead className="text-right">Close</TableHead>
         </TableRow>
       </TableHeader>
@@ -48,10 +50,9 @@ export function PositionsTable({
           const pnl = signedPnl(p.pnl);
           return (
             <TableRow key={p.ticket}>
-              <TableCell className="font-mono tabnum">{p.ticket}</TableCell>
-              <TableCell>
-                <span className="flex items-center gap-1.5">
-                  {p.symbol}
+              <TableCell className="sticky left-0 z-10 bg-surface-1">
+                <span className="flex items-center gap-1.5 font-semibold">
+                  <PositionDetails position={p} stale={stale} compact />
                   {blockedSymbols[p.symbol] && (
                     <Badge
                       data-testid="news-blocked-badge"
@@ -63,19 +64,20 @@ export function PositionsTable({
                     </Badge>
                   )}
                 </span>
+                <span className="mt-1 block font-mono text-xs text-secondary-foreground">#{p.ticket}</span>
               </TableCell>
               <TableCell>
                 <SideChip side={p.side} />
               </TableCell>
               <TableCell className="text-right font-mono tabnum">{lots(p.lots)}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{price(p.entry)}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{price(p.sl)}</TableCell>
-              <TableCell className="text-right font-mono tabnum">{price(p.tp)}</TableCell>
+              <TableCell className="hidden lg:table-cell text-right font-mono tabnum">{price(p.entry)}</TableCell>
+              <TableCell className="hidden lg:table-cell text-right font-mono tabnum">{p.sl > 0 ? price(p.sl) : <span className="text-warning">No stop</span>}</TableCell>
+              <TableCell className="hidden lg:table-cell text-right font-mono tabnum">{p.tp > 0 ? price(p.tp) : <span className="text-secondary-foreground">No fixed TP</span>}</TableCell>
               <TableCell className={cn("text-right font-mono tabnum", pnlToneClass(pnl.tone))}>
                 {pnl.text}
               </TableCell>
-              <TableCell>{p.grade}</TableCell>
-              <TableCell>{p.strategy}</TableCell>
+              <TableCell><PositionDetails position={p} stale={stale} /></TableCell>
+              <TableCell className="hidden xl:table-cell"><span className="block">{p.strategy || "—"}</span><span className="text-xs text-secondary-foreground">{p.grade ? `Grade ${p.grade}` : "No grade"}</span></TableCell>
               <TableCell className="text-right">
                 <button
                   type="button"
@@ -83,9 +85,8 @@ export function PositionsTable({
                   disabled={readOnly}
                   onClick={() => onClose(p.ticket)}
                   className={cn(
-                    // 36px hit target (up from ~28px) — closer to the 44px touch min
-                    // without forcing tall rows in a dense desktop/tablet table.
-                    "inline-flex h-9 w-9 items-center justify-center rounded-md border border-border",
+                    // Full 44px touch target; destructive action still requires confirmation.
+                    "inline-flex h-11 w-11 items-center justify-center rounded-md border border-border",
                     "hover:bg-loss/15 hover:text-loss hover:border-loss/30",
                     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     "disabled:opacity-50 disabled:pointer-events-none"

@@ -1,8 +1,23 @@
 export interface Health { bridge_connected: boolean; last_heartbeat_age_s: number; paused: boolean; last_error: string | null; }
 export interface Account { balance: number; equity: number; }
+export interface PositionManagement {
+  mode: "legacy" | "m15_structure_v1" | "unassigned";
+  confirmed_level: number;
+  confirmed_partial_stage: number;
+  pending: boolean;
+  requested_sl: number | null;
+  requested_tp: number | null;
+  target_volume: number | null;
+  original_tp: number | null;
+  progress_pct: number | null;
+  first_partial_pct: number | null;
+  context_ready: boolean | null;
+  context_closed_at: string | null;
+}
 export interface Position {
   ticket: number; symbol: string; side: "BUY" | "SELL"; lots: number;
   entry: number; sl: number; tp: number; pnl: number; grade: string; strategy: string;
+  management?: PositionManagement | null;
 }
 /**
  * A resting LIMIT/STOP order. `tracked` is false when Titan has no state-DB row

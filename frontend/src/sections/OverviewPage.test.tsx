@@ -774,3 +774,17 @@ describe("news maximize", () => {
     await waitFor(() => expect(button).toHaveFocus());
   });
 });
+
+it("links to trades needing attention and labels disconnected snapshots", async () => {
+  const snapshot = makeSnapshot();
+  snapshot.health.bridge_connected = false;
+  snapshot.positions[0].sl = 0;
+  snapshot.positions[0].management = {
+    mode: "legacy", confirmed_level: 1, confirmed_partial_stage: 0, pending: true,
+    requested_sl: 1.086, requested_tp: 1.09, target_volume: .07, original_tp: 1.09,
+    progress_pct: 70, first_partial_pct: 61.8, context_ready: null, context_closed_at: null,
+  };
+  renderOverview({ snapshot });
+  expect(await screen.findByText(/1 position without a broker stop/)).toHaveTextContent("1 management request awaiting confirmation. Last received snapshot.");
+  expect(screen.getByRole("link", { name: "Inspect trades" })).toHaveAttribute("href", "/positions");
+});

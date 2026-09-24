@@ -124,7 +124,7 @@ export function AppShell() {
         <main
           ref={mainRef}
           tabIndex={-1}
-          className="flex-1 overflow-y-auto p-6 pb-20 outline-none md:pb-6"
+          className="min-w-0 flex-1 overflow-y-auto p-3 pb-24 outline-none sm:p-5 md:p-6 md:pb-6"
         >
           <Outlet />
         </main>

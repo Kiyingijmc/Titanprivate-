@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { PositionSummary } from "@/components/PositionManagement";
 import { Ban } from "lucide-react";
 import { Panel, type PanelStatus } from "@/components/shell/Panel";
 import { PositionsTable } from "@/components/PositionsTable";
@@ -62,7 +63,7 @@ export default function PositionsPage() {
   const status: PanelStatus =
     snapshot === null
       ? "loading"
-      : connectionStatus.stale
+      : connectionStatus.stale || !snapshot.health.bridge_connected
         ? "stale"
         : positions.length === 0
           ? "empty"
@@ -71,7 +72,7 @@ export default function PositionsPage() {
   const ordersStatus: PanelStatus =
     snapshot === null
       ? "loading"
-      : connectionStatus.stale
+      : connectionStatus.stale || !snapshot.health.bridge_connected
         ? "stale"
         : orders.length === 0
           ? "empty"
@@ -110,10 +111,18 @@ export default function PositionsPage() {
   }
 
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 gap-5">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div><p className="text-xs font-medium uppercase tracking-[0.16em] text-accent">Execution workspace</p><h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Your open book</h1><p className="mt-2 text-sm text-secondary-foreground">Track exposure, follow trade management, and review broker confirmations.</p></div>
+        <span className="rounded-full border border-border bg-surface-1 px-3 py-1.5 text-xs text-secondary-foreground">{snapshot === null ? "Connecting" : connectionStatus.stale || !snapshot.health.bridge_connected || !snapshot.health.bridge_connected ? "Snapshot delayed" : "Broker connected"}</span>
+      </header>
+      <PositionSummary positions={positions} loading={snapshot === null} stale={connectionStatus.stale || snapshot?.health.bridge_connected === false} />
+      {error && <div role="alert" className="rounded-lg border border-loss/30 bg-loss/10 p-3 text-sm text-loss">{error}</div>}
       <Panel
         status={status}
         title="Positions"
+        domain="execution"
+        className="min-w-0"
         emptyMessage="No open positions"
         actions={
           <Button
@@ -129,15 +138,17 @@ export default function PositionsPage() {
       >
         <div className="grid gap-3">
           <PositionsFilters value={filters} onChange={setFilters} />
-          {error && (
-            <div role="alert" className="text-sm text-loss">
-              {error}
-            </div>
-          )}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-secondary-foreground">
+            <span>{filtered.length} of {positions.length} positions · inspect a trade for its exit plan</span>
+            {(filters.symbol || filters.side !== "ALL") && <Button variant="ghost" size="sm" onClick={() => setFilters(DEFAULT_FILTERS)}>Reset filters</Button>}
+          </div>
+          {filtered.length === 0 && <div role="status" className="rounded-lg border border-dashed border-border py-8 text-center text-sm text-secondary-foreground">No positions match these filters.</div>}
+          <p className="text-xs text-secondary-foreground sm:hidden">Tap an instrument for details. Swipe for more columns.</p>
           <PositionsTable
             positions={filtered}
             onClose={(ticket) => setPendingClose(ticket)}
             readOnly={readOnly}
+            stale={connectionStatus.stale || snapshot?.health.bridge_connected === false}
             blockedSymbols={snapshot?.news?.blocked_symbols}
           />
         </div>
@@ -146,6 +157,7 @@ export default function PositionsPage() {
       <Panel
         status={ordersStatus}
         title="Pending Orders"
+        className="min-w-0"
         emptyMessage="No resting orders"
         actions={
           untracked > 0 ? (
@@ -192,7 +204,7 @@ export default function PositionsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Close position {pendingClose}?</AlertDialogTitle>
             <AlertDialogDescription>
-              This immediately closes the position. This cannot be undone.
+              Sends a close request to the broker. Execution is confirmed when the position disappears from the book. Filled closes cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -207,7 +219,7 @@ export default function PositionsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Close all positions?</AlertDialogTitle>
             <AlertDialogDescription>
-              This immediately closes every open position. This cannot be undone.
+              Sends close requests for every open position. Check the book for broker confirmation. Filled closes cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -148,3 +148,12 @@ describe("PositionsPage", () => {
     expect(await screen.findByRole("button", { name: /close all/i })).toBeDisabled();
   });
 });
+
+it("explains unmatched filters and resets them without sending commands", async () => {
+  const { api } = renderPage();
+  await userEvent.type(screen.getByLabelText("Filter by symbol"), "NO-MATCH");
+  expect(screen.getByText("No positions match these filters.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+  expect(screen.getAllByRole("row")).toHaveLength(4);
+  expect(api.postCommand).not.toHaveBeenCalled();
+});

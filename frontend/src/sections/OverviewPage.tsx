@@ -260,8 +260,19 @@ export default function OverviewPage() {
     risk: snapshot?.risk,
   };
 
+  const unprotectedCount = snapshot?.positions.filter(p => p.sl <= 0).length ?? 0;
+  const pendingManagementCount = snapshot?.positions.filter(p => p.management?.pending).length ?? 0;
+
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 gap-4">
+      <header className="flex flex-wrap items-end justify-between gap-3 pb-1">
+        <div><p className="text-xs font-medium uppercase tracking-[0.16em] text-accent">Trading workspace</p><h1 className="mt-1 text-2xl font-semibold tracking-tight sm:text-3xl">Account at a glance</h1><p className="mt-2 text-sm text-secondary-foreground">Market context, account exposure, and execution activity in one place.</p></div>
+        <Link to="/positions" className="inline-flex min-h-11 items-center rounded-md border border-border bg-surface-1 px-4 text-sm font-medium hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Review open book <span className="ml-3 rounded bg-accent/15 px-2 py-0.5 font-mono text-accent">{snapshot ? snapshot.positions.length : "—"}</span></Link>
+      </header>
+      {snapshot && (unprotectedCount > 0 || pendingManagementCount > 0) && <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
+        <p className="text-warning">{unprotectedCount > 0 ? `${unprotectedCount} position${unprotectedCount === 1 ? "" : "s"} without a broker stop.` : ""} {pendingManagementCount > 0 ? `${pendingManagementCount} management request${pendingManagementCount === 1 ? "" : "s"} awaiting confirmation.` : ""} {connectionStatus.stale || !snapshot.health.bridge_connected ? "Last received snapshot." : ""}</p>
+        <Link to="/positions" className="rounded px-2 py-1 font-medium underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Inspect trades</Link>
+      </div>}
       {/* Market Context strip (Task 12): always-on session timeline + local
           clock + USD bias + economic calendar, above the account KPIs. */}
       <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">

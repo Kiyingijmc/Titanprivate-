@@ -128,10 +128,10 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
   const openPnl = snapshot ? signedPnl(snapshot.positions.reduce((s, p) => s + p.pnl, 0)) : null;
 
   return (
-    <div className="flex h-12 shrink-0 items-center gap-4 border-b border-border bg-surface-1 px-4">
+    <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-surface-1 px-3 py-1.5 sm:gap-4 sm:px-4 sm:py-0">
       {/* Scoped live region: only the system-status cluster is announced — NOT the
           account figures, which change every tick and would make a screen reader noisy. */}
-      <div className="flex items-center gap-4" role="status" aria-live="polite" aria-label="System status">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-4" role="status" aria-live="polite" aria-label="System status">
       <StatusChip tone={conn.tone} icon={conn.icon}>
         {conn.label}
       </StatusChip>
@@ -157,9 +157,9 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
 
       <CondensedMarketContext snapshot={snapshot} />
 
-      <div className="ml-auto flex items-center gap-4">
+      <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-4">
         <div className="flex items-center gap-3 font-mono tabnum text-sm text-secondary-foreground">
-          <span>
+          <span className="hidden sm:inline">
             Balance <span className="text-foreground">{snapshot ? money(snapshot.account.balance) : "—"}</span>
           </span>
           <span>
@@ -180,13 +180,13 @@ export function StatusBar({ connection, snapshot, onOpenPalette }: StatusBarProp
           onClick={onOpenPalette}
           aria-label="Open command palette"
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm text-muted-foreground",
+            "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm text-secondary-foreground sm:min-h-0 sm:min-w-0",
             "hover:bg-surface-2 hover:text-foreground",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           )}
         >
           <Command className="size-4" aria-hidden />
-          <span>&#8984;K</span>
+          <span className="hidden sm:inline">&#8984;K</span>
         </button>
       </div>
     </div>

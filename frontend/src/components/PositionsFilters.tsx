@@ -40,7 +40,7 @@ export function PositionsFilters({
         placeholder="Filter by symbol…"
         value={value.symbol}
         onChange={(e) => onChange({ ...value, symbol: e.target.value })}
-        className="h-9 max-w-[200px]"
+        className="h-11 sm:h-9 w-full sm:max-w-[200px]"
       />
 
       <label htmlFor="positions-filter-side" className="sr-only">
@@ -51,7 +51,7 @@ export function PositionsFilters({
         aria-label="Side"
         value={value.side}
         onChange={(e) => onChange({ ...value, side: e.target.value as PositionsSide })}
-        className={cn(selectClass, "h-9 w-auto")}
+        className={cn(selectClass, "h-11 sm:h-9 w-auto")}
       >
         <option value="ALL">All sides</option>
         <option value="BUY">Buy</option>
@@ -66,7 +66,7 @@ export function PositionsFilters({
         aria-label="Sort by"
         value={value.sort}
         onChange={(e) => onChange({ ...value, sort: e.target.value as PositionsSort })}
-        className={cn(selectClass, "h-9 w-auto")}
+        className={cn(selectClass, "h-11 sm:h-9 w-auto")}
       >
         <option value="pnl">Sort: PnL</option>
         <option value="symbol">Sort: Symbol</option>

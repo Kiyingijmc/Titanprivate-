@@ -18,12 +18,14 @@ describe("format", () => {
   it("price trims float noise and avoids scientific notation", () => {
     expect(price(1.1)).toBe("1.1");
     expect(price(1.08500000001)).toBe("1.085");
+    expect(price(0.00000001)).toBe("0.00000001");
     expect(price(0.00001)).toBe("0.00001");   // not 1e-5
     expect(price(91000.5)).toBe("91,000.5");
   });
-  it("lots is a stable 2-decimal figure", () => {
+  it("lots preserves fine steps with at least two decimals", () => {
     expect(lots(0.1)).toBe("0.10");
     expect(lots(1)).toBe("1.00");
+    expect(lots(0.001)).toBe("0.001");
   });
   it("pnlToneClass maps tone to a text color", () => {
     expect(pnlToneClass("profit")).toBe("text-profit");
